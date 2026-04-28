@@ -40,6 +40,139 @@ def _utc() -> str:
     return utc_now_rfc3339_ms()
 
 
+# ── BTC 5m Dynamic Window Resolution (D70 Q1) ───────────────────────────────
+
+ET_OFFSET_SECS = -18000  # UTC-5 (ET standard); adjust for EDT if needed
+
+def current_5m_window_start_utc() -> int:
+    """
+    Return current 5-min window start in UTC Unix seconds.
+    BTC 5m slugs use ET-aligned 5-minute buckets.
+    Verified: slug = f"btc-updown-5m-{window_ts}"
+    where window_ts = (now_et // 300) * 300 expressed as UTC seconds.
+    """
+    now_utc = int(time.time())
+    now_et  = now_utc + ET_OFFSET_SECS
+    ws_et   = (now_et // 300) * 300
+    return ws_et - ET_OFFSET_SECS  # back to UTC
+
+
+async def resolve_btc_5m_windows(db: ShadowDB, lookahead: int = 3) -> int:
+    """
+    D70 Q1: Resolve current + next `lookahead` BTC 5m windows into link_map.
+    Called every 5 minutes from the resolve loop.
+    Returns number of NEW rows inserted.
+
+    Process per window slug:
+      1. Skip if already in link_map (avoid redundant API calls)
+      2. GET gamma-api.polymarket.com/markets?slug=<slug>
+      3. Extract conditionId + clobTokenIds[0]
+      4. INSERT OR IGNORE into polymarket_link_map
+         (slug, condition_id, token_id, market_tier='t1', source='btc5m_resolver')
+
+    RULE-API-1: clobTokenIds is returned as JSON STRING — must json.loads()
+    """
+    import json as _json
+
+    GAMMA = "https://gamma-api.polymarket.com"
+    now_utc   = int(time.time())
+    now_et    = now_utc + ET_OFFSET_SECS
+    ws_base   = (now_et // 300) * 300
+
+    # ws_base is window start in ET seconds; slug needs UTC timestamp:
+    # slug = f"btc-updown-5m-{ws_utc}" where ws_utc = ws_base - ET_OFFSET (convert ET->UTC)
+    ws_utc_current = ws_base - ET_OFFSET_SECS
+
+    slugs_to_try = [
+        f"btc-updown-5m-{ws_utc_current - 300}",   # previous window (UTC)
+    ]
+    for i in range(lookahead + 1):
+        slugs_to_try.append(f"btc-updown-5m-{ws_utc_current + i*300}")  # current + lookahead windows (UTC)
+
+    inserted = 0
+    for slug in slugs_to_try:
+        existing = db.execute(
+            "SELECT 1 FROM polymarket_link_map WHERE slug=?", (slug,)
+        ).fetchone()
+        if existing:
+            logger.debug("[LINK_MAP] %s already in link_map, skipping", slug)
+            continue
+
+        try:
+            import urllib.request as _urllib
+            params = urllib.parse.urlencode({"slug": slug})
+            url = f"{GAMMA}/markets?{params}"
+            req = _urllib.Request(url, headers={"User-Agent": "panopticon/1.0", "Accept": "application/json"})
+            with _urllib.urlopen(req, timeout=5) as resp:
+                markets = _json.loads(resp.read().decode("utf-8")) if resp.status == 200 else []
+            if not markets:
+                logger.debug("[LINK_MAP] %s not found yet", slug)
+                continue
+            m   = markets[0] if isinstance(markets, list) else markets
+            cid = m.get("conditionId", "")
+            ids = m.get("clobTokenIds") or "[]"
+            if isinstance(ids, str):
+                ids = _json.loads(ids)
+            token_id = ids[0] if ids else ""
+            if not cid or not token_id:
+                logger.warning("[LINK_MAP] %s missing conditionId or token_id", slug)
+                continue
+
+            # fetched_at is NOT NULL — include it; use INSERT with ON CONFLICT
+            db.execute("""
+                INSERT INTO polymarket_link_map
+                    (slug, condition_id, token_id, market_tier, source, fetched_at, created_at)
+                VALUES (?, ?, ?, 't1', 'btc5m_resolver', datetime('now'), datetime('now'))
+                ON CONFLICT(market_id) DO UPDATE SET
+                    slug = excluded.slug,
+                    condition_id = excluded.condition_id,
+                    token_id = excluded.token_id,
+                    market_tier = excluded.market_tier,
+                    source = excluded.source,
+                    fetched_at = excluded.fetched_at
+            """, (slug, cid, token_id))
+            db.commit()
+            inserted += 1
+            logger.info("[LINK_MAP] Resolved %s -> %s... token=%s...",
+                        slug, cid[:12], token_id[:12])
+        except Exception as e:
+            logger.warning("[LINK_MAP] resolve error %s: %s", slug, e)
+
+    return inserted
+
+
+async def _btc5m_resolve_loop(db: ShadowDB) -> None:
+    """
+    D70 Q1: Background loop that resolves BTC 5m windows every 5 minutes.
+    Runs as an independent asyncio task alongside _live_ticks.
+    """
+    import time as _time
+
+    last_resolve = 0.0
+    interval = 300.0  # 5 minutes
+
+    while True:
+        try:
+            now = _time.monotonic()
+            if now - last_resolve >= interval:
+                last_resolve = now
+                new_rows = await resolve_btc_5m_windows(db, lookahead=3)
+                if new_rows:
+                    total = db.execute(
+                        "SELECT COUNT(*) FROM polymarket_link_map"
+                    ).fetchone()[0]
+                    logger.info(
+                        "[LINK_MAP] +%d new BTC 5m rows, total=%d",
+                        new_rows, total,
+                    )
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("[BTC5M_RESOLVE_LOOP] error: %s", e)
+            await asyncio.sleep(30)
+
+
 # ── Dynamic subscription refresh ────────────────────────────────────────────
 
 # ── MetricsCollector JSON loop (5s cadence) ───────────────────────────────────
@@ -2242,6 +2375,15 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
     except Exception as e:
         logger.warning("[D58b] batch_fill failed: %s", e)
 
+    # ── D70 Q1: Immediately resolve BTC 5m windows on startup ──────────────
+    try:
+        initial_rows = await resolve_btc_5m_windows(db, lookahead=3)
+        if initial_rows:
+            total = db.execute("SELECT COUNT(*) FROM polymarket_link_map").fetchone()[0]
+            logger.info("[D70] Initial BTC 5m resolve: +%d rows, total=%d", initial_rows, total)
+    except Exception as e:
+        logger.warning("[D70] Initial BTC 5m resolve failed: %s", e)
+
     # ── Start 5s JSON write loop ───────────────────────────────────────────────
     if mc is not None:
         asyncio.create_task(
@@ -2253,10 +2395,21 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
     if args.synthetic:
         await _synthetic_ticks(ew, db, float(args.duration_sec))
     else:
+        # Start BTC 5m resolve loop as independent background task
+        btc_resolve_task = asyncio.create_task(
+            _btc5m_resolve_loop(db),
+            name="btc5m-resolve-loop",
+        )
         try:
             await _live_ticks(ew, db, signal_queue=signal_queue)
         except asyncio.CancelledError:
             pass
+        finally:
+            btc_resolve_task.cancel()
+            try:
+                await asyncio.wait_for(btc_resolve_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
     print(json.dumps({"ok": True, "entropy_state": ew.state_dict()}))
     return 0
 
@@ -2269,7 +2422,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-    PROCESS_VERSION = "v1.1.7-D69"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.8-D70"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

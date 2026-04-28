@@ -790,6 +790,18 @@ class ShadowDB:
         except Exception:
             pass  # column already exists
 
+        # D70: Add missing columns to polymarket_link_map for BTC 5m resolution
+        for col_def in [
+            ("slug", "TEXT"),
+            ("condition_id", "TEXT"),
+            ("market_tier", "TEXT"),
+            ("created_at", "TEXT"),
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE polymarket_link_map ADD COLUMN {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass  # column already exists
+
         # ── RVF Live Metrics Snapshots ──────────────────────────────────────
         self.conn.executescript(
             """

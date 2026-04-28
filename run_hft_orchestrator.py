@@ -64,7 +64,7 @@ logging.basicConfig(
 )
 # D51: Singleton enforcement — logging must be configured FIRST so guard logs appear
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.7-D69"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.8-D70"   # ← AGENT: bump on every change
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 # D30: whale scanner enabled by default (can still be explicitly set to 0 by operator env)
@@ -460,21 +460,31 @@ async def main_async() -> int:
         )
 
     async def run_insider_monitor(db: ShadowDB) -> None:
-        """Watch T1 markets and spin up InsiderDetectors for newly active ones."""
+        """Watch T1 markets and spin up InsiderDetectors for newly active ones.
+
+        D70 Q2: Orphan cleanup — stops detectors for expired condition_ids.
+        D70 Q3: Query from polymarket_link_map instead of series_members.
+                series_members may not have BTC 5m rows until D71 sync.
+                RULE-MKT-3: link_map is now the authoritative T1 market source.
+        """
         from panopticon_py.ingestion.insider_detector import InsiderDetector
         import time
         while not _close_event.is_set():
             try:
-                # Get active T1 market condition_ids from series table
+                # D70 Q3: query link_map directly (no series_members JOIN needed)
                 rows = db.execute("""
-                    SELECT DISTINCT sm.condition_id
-                    FROM series_members sm
-                    JOIN series s ON s.series_id = sm.series_id
-                    WHERE s.market_tier = 't1'
-                      AND sm.condition_id IS NOT NULL
-                      AND sm.condition_id != ''
+                    SELECT DISTINCT condition_id
+                    FROM polymarket_link_map
+                    WHERE market_tier = 't1'
+                      AND condition_id IS NOT NULL
+                      AND condition_id != ''
+                      AND token_id IS NOT NULL
+                      AND token_id != ''
                 """).fetchall()
-                for (cid,) in rows:
+                active_cids = {cid for (cid,) in rows}
+
+                # Start new detectors
+                for cid in active_cids:
                     if cid not in _insider_detectors:
                         try:
                             det = InsiderDetector(
@@ -491,6 +501,16 @@ async def main_async() -> int:
                             logger.info("[INSIDER] Started for %s", cid[:16])
                         except Exception as e:
                             logger.warning("[INSIDER] Failed to start %s: %s", cid[:16], e)
+
+                # D70 Q2: Stop orphaned detectors (market expired or removed)
+                orphans = set(_insider_detectors.keys()) - active_cids
+                for cid in orphans:
+                    try:
+                        _insider_detectors[cid].stop()
+                        del _insider_detectors[cid]
+                        logger.info("[INSIDER] Stopped orphan detector: %s", cid[:16])
+                    except Exception as e:
+                        logger.warning("[INSIDER] Failed to stop orphan %s: %s", cid[:16], e)
             except Exception as e:
                 logger.warning("[INSIDER] monitor error: %s", e)
             await asyncio.sleep(30.0)
