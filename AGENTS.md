@@ -56,6 +56,26 @@
 
 ## 架構師溝通協議（Architect Agent Handoff）
 
+### ⚠️ GitHub Repo 主動同步（每次 Handoff 前執行）
+
+Architect 可透過 GitHub 閱讀原始碼（含行號對照）。每個 handoff 完成後，**必須**確保 GitHub repo 為最新狀態：
+
+```
+# 每次 handoff 完成後（不遲於 Step 4）：
+git add -A
+git commit -m "D{sprint}: {sprint摘要}"
+git push
+```
+
+**禁止**：
+- `temp_architect_handoffs/*.md` 推入 repo（已列於 .gitignore）
+- 推入 `.env`、`secrets/`、`data/*.db`、`run/*.lock`、`run/*.pid`
+- 推入超過 100MB 的檔案（GitHub 限制）
+
+**Repo URL**：https://github.com/w062c30/panopticon-private
+
+---
+
 ### 觸發時機
 - 重大架構決策（刪除模組、重構核心路徑、修改不變量）
 - 候選方案需裁決
