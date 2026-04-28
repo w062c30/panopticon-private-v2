@@ -582,6 +582,45 @@ Suggested: Option A — smallest change, tests the pagination hypothesis.
 
 ---
 
+## Pre-Handoff Repository Push (REQUIRED)
+
+Before writing the handoff document, the agent MUST push the codebase to the private GitHub repo so the Architect can read the actual source files.
+
+### Steps (run in order):
+
+**1. Check git status**
+If not a git repo:
+```
+git init
+git add -A
+git commit -m "Snapshot: {sprint_tag}"
+```
+
+**2. Create private repo (one-time)**
+```
+gh repo create panopticon-private --private
+git remote add origin https://github.com/{user}/{repo}.git
+git push -u origin master
+```
+
+**3. Push on every handoff**
+```
+git add -A
+git commit -m "Snapshot: {sprint_tag} — handoff {date}"
+git push
+```
+
+### Excluded Files (in .gitignore)
+- `.env`, `secrets/`, `*.pem`, `*.key`
+- `data/*.db`, `data/*.sqlite`, `run/*.lock`, `run/*.pid`
+- `temp_*.py`, `reports/*.md`, `graphify-out/`
+- `temp_architect_handoffs/`, `FEATURE_INDEX.md`
+
+### What the Architect Gets
+The Architect can read `https://github.com/w062c30/panopticon-private` to see the actual source files, with line numbers matching what you reference in the handoff.
+
+---
+
 ## Language
 
 - Handoff headers: Traditional Chinese (e.g., `## 待決事項`, `## 診斷發現`)
