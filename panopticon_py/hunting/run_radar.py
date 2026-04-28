@@ -1607,6 +1607,15 @@ _WS_DIAG_LOG_INTERVAL_SEC = 60.0
 _FIRST_TRADE_TICK_LOGGED = False  # Task C: one-time TRADE_TICK diagnostic
 
 
+def _pctl(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    arr = sorted(values)
+    idx = int(round((len(arr) - 1) * pct))
+    idx = max(0, min(idx, len(arr) - 1))
+    return arr[idx]
+
+
 async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Queue | None = None) -> None:
     """
     Radar live tick loop with TWO collection layers:
@@ -1662,10 +1671,25 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     _book_snapshot: dict[str, dict] = {}  # asset_id -> {"mid": float, "ts": str}
     _pending_trade: dict[str, dict] = {}  # asset_id -> {"size", "price", "ts", "mid_before", "expire_ts"}
     _PENDING_TRADE_TTL_SEC = 30.0  # stale entry TTL
+    # D75 short-term diagnostics: event-type counters + entropy gate stage breakdown.
+    _evt_count: dict[str, int] = {
+        "last_trade_price": 0,
+        "book": 0,
+        "price_change": 0,
+        "other": 0,
+    }
+    _entropy_eval_total = 0
+    _entropy_locked_count = 0
+    _entropy_history_not_ready_count = 0
+    _entropy_z_ready_count = 0
+    _entropy_z_below_threshold_count = 0
+    _entropy_z_samples: list[float] = []
 
     # ── Message handler ────────────────────────────────────────────────────────
     async def _on_message(msg: dict | list) -> None:
         nonlocal _msg_count
+        nonlocal _entropy_eval_total, _entropy_locked_count, _entropy_history_not_ready_count
+        nonlocal _entropy_z_ready_count, _entropy_z_below_threshold_count, _entropy_z_samples
 
         # P2 DIAG: WebSocket L1 counters — do NOT modify business logic
         global _ws_raw_msg_count, _ws_trade_count, _ws_entropy_fire_count, _ws_kyle_sample_count
@@ -1692,6 +1716,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
 
             recv = time.monotonic()
             event_type = item.get("event_type", "")
+            if event_type in _evt_count:
+                _evt_count[event_type] += 1
+            else:
+                _evt_count["other"] += 1
 
             # ── [DIAG][WS_EVENT_RAW] for T1 assets — confirms T1 event types ─────
             asset_id_top = item.get("asset_id") or item.get("market") or ""
@@ -2041,6 +2069,20 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 # Push to EntropyWindow (Trade-Tick only)
                 ew.push(recv, buy, sell)
                 ew.record_H_sample(recv)
+                # D75: Entropy gate pre/post diagnostics to explain why fire doesn't happen.
+                _entropy_eval_total += 1
+                _d_diag, z_diag = ew.zscore_of_latest_delta()
+                state_diag = ew.state_dict()
+                if z_diag is None:
+                    if state_diag.get("trigger_locked"):
+                        _entropy_locked_count += 1
+                    else:
+                        _entropy_history_not_ready_count += 1
+                else:
+                    _entropy_z_ready_count += 1
+                    _entropy_z_samples.append(float(z_diag))
+                    if z_diag < get_z_threshold():
+                        _entropy_z_below_threshold_count += 1
 
                 # ── Task D: INSIDER_PATTERN_COLLECTOR — forensic only, no signal path ──
                 # Extract taker address: WS last_trade_price events carry no taker_address.
@@ -2341,6 +2383,64 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     z if z is not None else 999.0,
                     state.get("h_hist", 0),
                 )
+                # D75: minute-level event type + entropy gate breakdown.
+                z_min = min(_entropy_z_samples) if _entropy_z_samples else None
+                z_p50 = _pctl(_entropy_z_samples, 0.50)
+                z_p90 = _pctl(_entropy_z_samples, 0.90)
+                z_max = max(_entropy_z_samples) if _entropy_z_samples else None
+                logger.info(
+                    "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} "
+                    "gate_60s={eval:%d,locked:%d,history_not_ready:%d,z_ready:%d,z_below_threshold:%d,fired:%d} "
+                    "z_dist_60s={min:%s,p50:%s,p90:%s,max:%s,threshold:%s}",
+                    _evt_count["last_trade_price"],
+                    _evt_count["book"],
+                    _evt_count["price_change"],
+                    _evt_count["other"],
+                    _entropy_eval_total,
+                    _entropy_locked_count,
+                    _entropy_history_not_ready_count,
+                    _entropy_z_ready_count,
+                    _entropy_z_below_threshold_count,
+                    _ws_entropy_fire_count,
+                    f"{z_min:.3f}" if z_min is not None else "None",
+                    f"{z_p50:.3f}" if z_p50 is not None else "None",
+                    f"{z_p90:.3f}" if z_p90 is not None else "None",
+                    f"{z_max:.3f}" if z_max is not None else "None",
+                    f"{get_z_threshold():.3f}",
+                )
+                print(
+                    (
+                        "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} "
+                        "gate_60s={eval:%d,locked:%d,history_not_ready:%d,z_ready:%d,z_below_threshold:%d,fired:%d} "
+                        "z_dist_60s={min:%s,p50:%s,p90:%s,max:%s,threshold:%s}"
+                    )
+                    % (
+                        _evt_count["last_trade_price"],
+                        _evt_count["book"],
+                        _evt_count["price_change"],
+                        _evt_count["other"],
+                        _entropy_eval_total,
+                        _entropy_locked_count,
+                        _entropy_history_not_ready_count,
+                        _entropy_z_ready_count,
+                        _entropy_z_below_threshold_count,
+                        _ws_entropy_fire_count,
+                        f"{z_min:.3f}" if z_min is not None else "None",
+                        f"{z_p50:.3f}" if z_p50 is not None else "None",
+                        f"{z_p90:.3f}" if z_p90 is not None else "None",
+                        f"{z_max:.3f}" if z_max is not None else "None",
+                        f"{get_z_threshold():.3f}",
+                    ),
+                    flush=True,
+                )
+                # reset minute buckets
+                _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
+                _entropy_eval_total = 0
+                _entropy_locked_count = 0
+                _entropy_history_not_ready_count = 0
+                _entropy_z_ready_count = 0
+                _entropy_z_below_threshold_count = 0
+                _entropy_z_samples = []
                 _last_ws_diag_log_ts = now
                 # ── MetricsCollector: collect + persist (every 60s) ─────────────────
                 mc = _mc()
@@ -2474,7 +2574,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-    PROCESS_VERSION = "v1.1.11-D74"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.13-D74"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

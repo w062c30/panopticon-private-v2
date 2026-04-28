@@ -40,7 +40,9 @@ function Start-Backend {
 }
 
 function Start-Radar {
-    Start-Process python -ArgumentList "-m panopticon_py.hunting.run_radar" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+    $radarLog = "$runDir\radar.log"
+    $radarErr = "$runDir\radar.err.log"
+    Start-Process python -ArgumentList "-m panopticon_py.hunting.run_radar" -WorkingDirectory $projDir -WindowStyle Hidden -RedirectStandardOutput $radarLog -RedirectStandardError $radarErr -PassThru
 }
 
 function Start-Orchestrator {
@@ -112,6 +114,7 @@ function Kill-All {
     
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
     Remove-Item "$runDir\*.pid" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$runDir\radar.log","$runDir\radar.err.log" -Force -ErrorAction SilentlyContinue
     Write-Host "  Stale PID files cleared."
     Start-Sleep -Seconds 3
 }
