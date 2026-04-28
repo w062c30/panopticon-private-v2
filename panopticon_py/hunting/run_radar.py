@@ -91,7 +91,7 @@ async def resolve_btc_5m_windows(db: ShadowDB, lookahead: int = 3) -> int:
 
     inserted = 0
     for slug in slugs_to_try:
-        existing = db.execute(
+        existing = db.conn.execute(
             "SELECT 1 FROM polymarket_link_map WHERE slug=?", (slug,)
         ).fetchone()
         if existing:
@@ -119,7 +119,7 @@ async def resolve_btc_5m_windows(db: ShadowDB, lookahead: int = 3) -> int:
                 continue
 
             # fetched_at is NOT NULL — include it; use INSERT with ON CONFLICT
-            db.execute("""
+            db.conn.execute("""
                 INSERT INTO polymarket_link_map
                     (slug, condition_id, token_id, market_tier, source, fetched_at, created_at)
                 VALUES (?, ?, ?, 't1', 'btc5m_resolver', datetime('now'), datetime('now'))
@@ -131,7 +131,7 @@ async def resolve_btc_5m_windows(db: ShadowDB, lookahead: int = 3) -> int:
                     source = excluded.source,
                     fetched_at = excluded.fetched_at
             """, (slug, cid, token_id))
-            db.commit()
+            db.conn.commit()
             inserted += 1
             logger.info("[LINK_MAP] Resolved %s -> %s... token=%s...",
                         slug, cid[:12], token_id[:12])
@@ -158,7 +158,7 @@ async def _btc5m_resolve_loop(db: ShadowDB) -> None:
                 last_resolve = now
                 new_rows = await resolve_btc_5m_windows(db, lookahead=3)
                 if new_rows:
-                    total = db.execute(
+                    total = db.conn.execute(
                         "SELECT COUNT(*) FROM polymarket_link_map"
                     ).fetchone()[0]
                     logger.info(
@@ -797,6 +797,18 @@ def _refresh_tier1_tokens(db) -> list[str]:
                 "[T1_SERIES_SYNC] updated %d rolling window series",
                 len(t1_series),
             )
+
+            # D71e: Diagnostic — confirm BTC 5m condition_ids land in series_members
+            try:
+                _sm_t1_count = db.conn.execute(
+                    "SELECT COUNT(*) FROM series_members WHERE market_tier='t1'"
+                ).fetchone()
+                logger.info(
+                    "[DIAG][T1_SERIES_CHECK] series_detected=%d series_members_t1_count=%d",
+                    len(t1_series), _sm_t1_count[0] if _sm_t1_count else 0,
+                )
+            except Exception as _e:
+                logger.warning("[DIAG][T1_SERIES_CHECK] query failed: %s", _e)
 
     if not token_ids:
         logger.warning(
@@ -2379,10 +2391,50 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
     try:
         initial_rows = await resolve_btc_5m_windows(db, lookahead=3)
         if initial_rows:
-            total = db.execute("SELECT COUNT(*) FROM polymarket_link_map").fetchone()[0]
+            total = db.conn.execute("SELECT COUNT(*) FROM polymarket_link_map").fetchone()[0]
             logger.info("[D70] Initial BTC 5m resolve: +%d rows, total=%d", initial_rows, total)
     except Exception as e:
         logger.warning("[D70] Initial BTC 5m resolve failed: %s", e)
+
+    # ── D71b: Slug Consistency Audit ─────────────────────────────────────────
+    # Compare slugs in link_map (from resolve_btc_5m_windows) vs
+    # t1_market_clock.get_current_t1_window() (source-of-truth reference).
+    # t1_market_clock.py is read-only in D71 — do NOT modify it.
+    try:
+        from panopticon_py.hunting.t1_market_clock import get_current_t1_window
+
+        # Step 1: All BTC slugs currently in link_map
+        link_slugs = [
+            row[0] for row in db.conn.execute(
+                "SELECT slug FROM polymarket_link_map WHERE slug LIKE 'btc-updown-5m-%' AND slug IS NOT NULL"
+            ).fetchall()
+        ]
+        logger.info(
+            "[D71_SLUG_AUDIT] link_map BTC slugs: %s",
+            link_slugs,
+        )
+
+        # Step 2: get_current_t1_window() UTC timestamp
+        t1_window_ts = get_current_t1_window()
+        logger.info(
+            "[D71_SLUG_AUDIT] get_current_t1_window() = %d",
+            t1_window_ts,
+        )
+
+        # Step 3: Expected slug from t1_market_clock
+        expected_slug = f"btc-updown-5m-{t1_window_ts}"
+        slug_in_link = expected_slug in link_slugs
+
+        if slug_in_link:
+            logger.info("[D71_SLUG_OK] expected_slug=%s found in link_map", expected_slug)
+        else:
+            logger.warning(
+                "[D71_SLUG_MISMATCH] expected_slug=%s NOT in link_map; "
+                "link_slugs=%s — escalating to Architect",
+                expected_slug, link_slugs,
+            )
+    except Exception as e:
+        logger.warning("[D71_SLUG_AUDIT] audit failed: %s", e)
 
     # ── Start 5s JSON write loop ───────────────────────────────────────────────
     if mc is not None:

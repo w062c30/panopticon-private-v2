@@ -2296,6 +2296,20 @@ class ShadowDB:
             "fetched_at": row[7],
         }
 
+    def get_canonical_market_id(self, token_id: str) -> str | None:
+        """
+        D71 Q1 Ruling (Option A): Return COALESCE(market_id, condition_id) for a token_id.
+
+        BTC 5m markets have market_id=NULL but condition_id populated.
+        All downstream consumers must use this helper — never read market_id directly.
+        """
+        row = self.conn.execute(
+            "SELECT COALESCE(market_id, condition_id) FROM polymarket_link_map "
+            "WHERE token_id=? LIMIT 1",
+            (token_id,)
+        ).fetchone()
+        return row[0] if row else None
+
     def resolve_slug(self, market_id: str | None) -> str:
         """
         Resolve human-readable slug from polymarket_link_map.

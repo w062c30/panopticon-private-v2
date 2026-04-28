@@ -436,12 +436,27 @@ async def main_async() -> int:
     # Lazily starts detectors when T1 markets become active.
     _insider_detectors: dict = {}  # condition_id -> InsiderDetector
 
-    def _on_insider_alert(alert, db_path=db.path):
-        """Persist alert to wallet_activity + log."""
+    def _on_insider_alert(alert, db_obj=db):
+        """Persist alert to wallet_activity + log.
+
+        D71 Q1: Uses get_canonical_market_id() to resolve COALESCE(market_id, condition_id).
+        If canonical ID is None, logs warning and skips UPDATE.
+        """
         import sqlite3
         layer = 1 if "L1" in (alert.trigger or "") else 2 if "L2" in (alert.trigger or "") else 3
         try:
-            conn = sqlite3.connect(str(db_path))
+            # D71 Q1: Resolve canonical market ID (handles BTC 5m market_id=NULL case)
+            canonical = db_obj.get_canonical_market_id(alert.condition_id)
+            if canonical is None:
+                logger.warning(
+                    "[INSIDER][WARN] canonical_market_id not found for token_id=%s "
+                    "cid=%s — skipping wallet_activity UPDATE",
+                    (alert.condition_id or "None")[:20],
+                    (alert.condition_id or "None")[:20],
+                )
+                return
+
+            conn = sqlite3.connect(str(db_obj.path))
             conn.execute(f"""
                 UPDATE wallet_activity
                 SET insider_l{layer}=1, alert_trigger=?
