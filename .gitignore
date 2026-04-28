@@ -44,6 +44,7 @@ data/backend.lock
 run/*.lock
 run/*.pid
 run/process_manifest.json
+run/monitor_results/*.json
 rvf_live_snapshot.json
 *.sqlite
 
