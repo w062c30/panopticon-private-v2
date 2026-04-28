@@ -14,7 +14,7 @@ $projDir = "d:\Antigravity\Panopticon"
 $dashDir = "$projDir\dashboard"
 $runDir = "$projDir\run"
 $manifestPath = "$runDir\process_manifest.json"
-$restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0 }
+$restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker = 0 }
 
 function Get-ProcessStatus {
     $status = @{}
@@ -23,6 +23,7 @@ function Get-ProcessStatus {
     $status.backend = ($pythonProcs | Where-Object { $_.CommandLine -match "uvicorn" }).Count
     $status.radar = ($pythonProcs | Where-Object { $_.CommandLine -match "run_radar" }).Count
     $status.orchestrator = ($pythonProcs | Where-Object { $_.CommandLine -match "run_hft_orchestrator" }).Count
+    $status.analysis_worker = ($pythonProcs | Where-Object { $_.CommandLine -match "analysis_worker" }).Count
     $status.frontend = (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Measure-Object).Count
     $status.frontendPort = $null -ne (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
         $cmd = $_.CommandLine;
@@ -45,6 +46,10 @@ function Start-Radar {
 function Start-Orchestrator {
     $env:PANOPTICON_WHALE = "1"
     Start-Process python -ArgumentList "run_hft_orchestrator.py" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+}
+
+function Start-AnalysisWorker {
+    Start-Process python -ArgumentList "-m panopticon_py.ingestion.analysis_worker" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
 }
 
 function Start-Frontend {
@@ -90,7 +95,7 @@ function Start-Frontend {
 function Kill-All {
     Write-Host "== KILLING ALL MANAGED PROCESSES ==" -ForegroundColor Yellow
     
-    $pythonTargets = @("run_radar", "run_hft_orchestrator", "uvicorn")
+    $pythonTargets = @("run_radar", "run_hft_orchestrator", "uvicorn", "analysis_worker")
     foreach ($t in $pythonTargets) {
         $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -ne $null -and $_.CommandLine -match $t }
         foreach ($p in $procs) {
@@ -136,6 +141,10 @@ function Full-Restart {
     $orch = Start-Orchestrator
     Write-Host ("  Orchestrator started PID=" + $orch.Id)
     Start-Sleep -Seconds 2
+
+    $analysisWorker = Start-AnalysisWorker
+    Write-Host ("  AnalysisWorker started PID=" + $analysisWorker.Id)
+    Start-Sleep -Seconds 2
     
     $frontendVersion = "v1.1.1-D62"
     # Read from versions_ref.json (single source of truth) — avoids hardcoded drift
@@ -155,7 +164,7 @@ function Full-Restart {
     $ok = $true
     if (Test-Path $manifest) {
         $m = Get-Content $manifest | ConvertFrom-Json -ErrorAction Stop
-        foreach ($svc in @("backend","radar","orchestrator")) {
+        foreach ($svc in @("backend","radar","orchestrator","analysis_worker")) {
             $entry = $m.PSObject.Properties[$svc].Value
             if ($null -ne $entry) {
                 $svcPid = $entry.pid
@@ -258,6 +267,19 @@ function Monitor-Loop {
             }
         } else {
             $restartAttempts.orchestrator = 0
+        }
+
+        if ($status.analysis_worker -eq 0) {
+            if ($restartAttempts.analysis_worker -lt $MaxRestartAttempts) {
+                Write-Host "[$timestamp] AnalysisWorker DOWN, restarting (attempt $($restartAttempts.analysis_worker + 1)/$MaxRestartAttempts)..." -ForegroundColor Yellow
+                Start-AnalysisWorker | Out-Null
+                $restartAttempts.analysis_worker++
+                $changes += "analysis_worker"
+            } else {
+                Write-Host "[$timestamp] AnalysisWorker DOWN, max attempts reached!" -ForegroundColor Red
+            }
+        } else {
+            $restartAttempts.analysis_worker = 0
         }
         
         if (-not $status.frontendPort -and $nodeProc -ne $null) {

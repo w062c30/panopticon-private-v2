@@ -201,6 +201,10 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    from panopticon_py.utils.process_guard import acquire_singleton
+    PROCESS_VERSION = "v1.1.11-D74"
+    acquire_singleton("analysis_worker", PROCESS_VERSION)
+
     db = ShadowDB()
     writer = AsyncDBWriter(db)
     writer.start()  # Must start queue worker before submitting items

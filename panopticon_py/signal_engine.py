@@ -352,10 +352,15 @@ def _collect_insider_sources(
     market_id: str,
     lookback_sec: int,
     db: ShadowDB,
+    series_id: str = "",
 ) -> list[float]:
     """
     Collect insider scores from wallets that have recent observations for the given market,
     filtered by INSIDER_SCORE_THRESHOLD.
+
+    D74: For T1 rolling-window series (e.g. BTC 5m), aggregate across ALL windows
+    in the series by resolving market_id -> series_id -> all series_members.
+    BTC 5m slug changes every 5min but the underlying event/series is the same.
     """
     try:
         from datetime import timedelta
@@ -365,18 +370,84 @@ def _collect_insider_sources(
     except Exception:
         cutoff_ts = _utc()
 
-    rows = db.conn.execute(
-        """
-        SELECT DISTINCT wo.address
-        FROM wallet_observations wo
-        WHERE wo.market_id = ?
-          AND wo.ingest_ts_utc >= ?
-          AND wo.address != '0x0000000000000000000000000000000000000000'
-        ORDER BY wo.ingest_ts_utc DESC
-        LIMIT 100
-        """,
-        (market_id, cutoff_ts),
-    ).fetchall()
+    # D74: Resolve series_id from market_id if not provided.
+    # For T1 BTC 5m markets, market_id is the condition_id (0x... or numeric).
+    # We need to find the series and aggregate across all windows.
+    resolved_series_id = series_id
+    if not resolved_series_id:
+        row = db.conn.execute(
+            "SELECT series_id FROM series_members WHERE token_id=? LIMIT 1",
+            (market_id,),
+        ).fetchone()
+        if row:
+            resolved_series_id = row["series_id"]
+
+    # D74: Check if this is a T1 rolling-window market.
+    # If so, collect wallets from ALL series members, not just the current window.
+    use_series_agg = False
+    if resolved_series_id:
+        series_row = db.conn.execute(
+            "SELECT series_type FROM event_series WHERE series_id=? LIMIT 1",
+            (resolved_series_id,),
+        ).fetchone()
+        if series_row and series_row["series_type"] == "ROLLING_WINDOW":
+            use_series_agg = True
+
+    if use_series_agg:
+        # D74: Aggregate across all series members for rolling-window T1 markets.
+        # BTC 5m generates a new window every 5min; we want consensus across the
+        # entire series, not just the current window.
+        all_token_ids: list[str] = [
+            r[0] for r in db.conn.execute(
+                "SELECT token_id FROM series_members WHERE series_id=?",
+                (resolved_series_id,),
+            ).fetchall()
+        ]
+        if len(all_token_ids) > 1:
+            placeholders = ",".join(["?"] * len(all_token_ids))
+            rows = db.conn.execute(
+                f"""
+                SELECT DISTINCT wo.address
+                FROM wallet_observations wo
+                WHERE wo.market_id IN ({placeholders})
+                  AND wo.ingest_ts_utc >= ?
+                  AND wo.address != '0x0000000000000000000000000000000000000000'
+                ORDER BY wo.ingest_ts_utc DESC
+                LIMIT 100
+                """,
+                (*all_token_ids, cutoff_ts),
+            ).fetchall()
+            logger.info(
+                "[D74][SERIES_AGG] series=%s members=%d collected=%d",
+                resolved_series_id, len(all_token_ids), len(rows),
+            )
+        else:
+            # Fallback to single market if series has only 1 member
+            rows = db.conn.execute(
+                """
+                SELECT DISTINCT wo.address
+                FROM wallet_observations wo
+                WHERE wo.market_id = ?
+                  AND wo.ingest_ts_utc >= ?
+                  AND wo.address != '0x0000000000000000000000000000000000000000'
+                ORDER BY wo.ingest_ts_utc DESC
+                LIMIT 100
+                """,
+                (market_id, cutoff_ts),
+            ).fetchall()
+    else:
+        rows = db.conn.execute(
+            """
+            SELECT DISTINCT wo.address
+            FROM wallet_observations wo
+            WHERE wo.market_id = ?
+              AND wo.ingest_ts_utc >= ?
+              AND wo.address != '0x0000000000000000000000000000000000000000'
+            ORDER BY wo.ingest_ts_utc DESC
+            LIMIT 100
+            """,
+            (market_id, cutoff_ts),
+        ).fetchall()
 
     # D73: Source breakdown — track snapshot hits vs discovered_entities fallback hits
     snapshot_hits = 0
@@ -405,8 +476,9 @@ def _collect_insider_sources(
 
     # D73: Log source breakdown for diagnostic verification
     logger.info(
-        "[D73_SOURCE_BREAKDOWN] market=%s snapshot_hits=%d fallback_hits=%d final=%d",
+        "[D73_SOURCE_BREAKDOWN] market=%s series=%s snapshot_hits=%d fallback_hits=%d final=%d",
         str(market_id)[:20] if market_id else "None",
+        str(resolved_series_id)[:20] if resolved_series_id else "none",
         snapshot_hits,
         fallback_hits,
         len(sources),
@@ -450,7 +522,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         logging.info("[SE][OFI] ofi=%.3f market=%s", event.ofi_shock_value, market_id)
 
     # 3. Collect insider sources
-    sources = _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db)
+    sources = _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
 
     # 4. Consensus check
     if len(sources) < MIN_CONSENSUS_SOURCES:

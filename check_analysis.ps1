@@ -1,0 +1,1 @@
+Get-Process python | Where-Object { $_.CommandLine -like "*analysis_worker*" } | Select-Object Id, StartTime, CommandLine | Format-List

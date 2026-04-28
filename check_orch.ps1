@@ -1,0 +1,1 @@
+Get-Process python | Where-Object { $_.CommandLine -like "*run_hft_orchestrator*" } | Select-Object Id, StartTime | Format-Table

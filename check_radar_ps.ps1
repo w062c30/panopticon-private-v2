@@ -1,0 +1,1 @@
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_radar*' } | Select-Object ProcessId, CommandLine, CreationDate
