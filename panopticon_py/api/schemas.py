@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+
+class TradeItem(BaseModel):
+    tradeId: str
+    marketId: str
+    eventName: str
+    eventUrl: str | None = None
+    linkType: str | None = None
+    linkSource: str | None = None
+    linkReason: str | None = None
+    direction: str
+    confidence: float | None = None
+    openReason: str
+    entryPrice: float | None = None
+    exitPrice: float | None = None
+    positionSizeUsd: float | None = None
+    estimatedEvUsd: float | None = None
+    realizedPnlUsd: float | None = None
+    unrealizedPnlUsd: float = 0.0
+    status: str
+    markPrice: float | None = None
+    updatedAt: str
+    closeCondition: str
+    openedAt: str
+    closedAt: str
+    source: str = "live"
+
+
+class RecommendationsResponse(BaseModel):
+    trades: list[TradeItem]
+
+
+class MaxDrawdownInfo(BaseModel):
+    value: float
+    peakTs: str | None = None
+    troughTs: str | None = None
+    fromTradeId: str | None = None
+    toTradeId: str | None = None
+
+
+class PerformanceResponse(BaseModel):
+    period: str
+    totalPnlUsd: float
+    winRate: float | None = None
+    sharpeRatio: float
+    maxDrawdown: MaxDrawdownInfo
+    profitFactor: float | None = None
+    slippageGap: float | None = None
+    tradeCount: int
+
+
+class PerformanceHistoryPoint(BaseModel):
+    ts: str
+    cumulativePnlUsd: float
+
+
+class PerformanceHistoryResponse(BaseModel):
+    period: str
+    points: list[PerformanceHistoryPoint]
+
+
+class ReadinessResponse(BaseModel):
+    currentPaperTrades: int
+    targetTrades: int
+    runningDays: int
+    targetDays: int
+    currentWinRate: float | None = None
+    isReady: bool
+
+
+class SystemStatusResponse(BaseModel):
+    state: str
+    message: str
+    lastEventTs: str | None = None
+    lastDecisionId: str | None = None
+    lastExecutionReason: str | None = None
+    lastRejectReason: str | None = None
+
+
+class ReportCounts(BaseModel):
+    openTrades: int
+    closedTrades: int
+    uniqueMarkets: int
+    canonicalHitRate: float
+
+
+class ReportPnl(BaseModel):
+    realizedTotalUsd: float
+    unrealizedTotalUsd: float
+    netTotalUsd: float
+
+
+class ReportQuality(BaseModel):
+    fallbackRate: float
+    unresolvedCount: int
+
+
+class ReportCurrentResponse(BaseModel):
+    counts: ReportCounts
+    pnl: ReportPnl
+    quality: ReportQuality
+    findings: list[str]
+    updatedAt: str

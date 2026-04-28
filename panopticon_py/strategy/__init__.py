@@ -1,0 +1,61 @@
+"""Strategy package: legacy decide core + Bayesian engine 3.0 patches."""
+
+from panopticon_py.strategy.bayesian_engine import (
+    BayesianEngine,
+    BayesianEngineConfig,
+    PortfolioPosition,
+    check_cluster_exposure_limit,
+    enforce_cluster_limit_or_raise,
+    largest_cluster_by_abs_net,
+    load_cluster_mapping_for_engine,
+    load_engine_from_env,
+    net_delta_for_cluster,
+    resolve_target_cluster,
+)
+from panopticon_py.strategy.decide_core import (
+    StrategyInput,
+    StrategyOutput,
+    bayesian_update,
+    decide,
+    ev_net,
+    fractional_kelly,
+)
+from panopticon_py.strategy.iron_rules import (
+    REJECTED_CLUSTER_FRICTION_LOG,
+    ClusterCapFrictionRebalanceError,
+    ClusterExposureCapError,
+    IronRuleViolation,
+    NonFilledTradeEvidenceError,
+    StaticPnLBypassError,
+    assert_filled_trade_rows,
+    assert_no_macro_bypass,
+    assert_no_parent_sub_friction_rebalance,
+)
+
+__all__ = [
+    "BayesianEngine",
+    "BayesianEngineConfig",
+    "PortfolioPosition",
+    "StrategyInput",
+    "StrategyOutput",
+    "REJECTED_CLUSTER_FRICTION_LOG",
+    "IronRuleViolation",
+    "StaticPnLBypassError",
+    "ClusterExposureCapError",
+    "NonFilledTradeEvidenceError",
+    "ClusterCapFrictionRebalanceError",
+    "assert_no_macro_bypass",
+    "assert_filled_trade_rows",
+    "assert_no_parent_sub_friction_rebalance",
+    "bayesian_update",
+    "decide",
+    "ev_net",
+    "fractional_kelly",
+    "check_cluster_exposure_limit",
+    "enforce_cluster_limit_or_raise",
+    "largest_cluster_by_abs_net",
+    "net_delta_for_cluster",
+    "resolve_target_cluster",
+    "load_cluster_mapping_for_engine",
+    "load_engine_from_env",
+]

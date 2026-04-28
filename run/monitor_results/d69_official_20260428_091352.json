@@ -1,0 +1,15 @@
+{
+  "collection_start": "D69 official",
+  "duration_s": 600,
+  "condition_id": "0x5835dcb57e1a7b06868ad3ff0accd45216cb2b5580d8051df89ddaa6e4b60597",
+  "token_id": "50797715213023666708564079991878142820407050022921354769046679150439820409591",
+  "clob_trades": 66,
+  "poly_trades": 152,
+  "btc_ticks": 0,
+  "alerts": 22,
+  "unique_wallets": 114,
+  "total_usd": 12242.921500000002,
+  "tx_hash_coverage": 1.0,
+  "amm_verdict": "CLOB",
+  "wallet_activity_db": 152
+}

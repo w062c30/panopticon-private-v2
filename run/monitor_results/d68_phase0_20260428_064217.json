@@ -1,0 +1,324 @@
+{
+  "slug": "btc-updown-5m-1777358400",
+  "condition_id": "0x5159125bb6508db6f3f07711a4a05b5b348f57ef18588d0df702a682093b5b6c",
+  "duration_s": 600,
+  "actual_duration_s": 601,
+  "clob_trade_count": 2228,
+  "poly_trade_count": 258,
+  "btc_price_count": 0,
+  "alert_count": 31,
+  "unique_wallets": 145,
+  "total_volume_usd": 0.0,
+  "amm_confirmed": false,
+  "alerts": [
+    {
+      "trigger": "L2_RAPID x3 Down $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x2c692786f409df9e44bec5cf50663667aced6ad0",
+      "name": "2ez4mee",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x4 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x5 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x4 Up $0",
+      "wallet": "0x2c692786f409df9e44bec5cf50663667aced6ad0",
+      "name": "2ez4mee",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x4 Down $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x6 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x5 Down $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x6 Down $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x7 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x8 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x9 Up $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x2aab221344ff9f3459da458efbd8725b135a2ca3",
+      "name": "0x2AaB221344fF9F3459dA458eFbD8725b135a2ca3-1763189702772",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x4 Up $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x476639d9845d7a0261cb005dae6473f089ff5a03",
+      "name": "slip-me",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x3 Down $0",
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Down $0",
+      "wallet": "0x2c692786f409df9e44bec5cf50663667aced6ad0",
+      "name": "2ez4mee",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Down $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x4 Down $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x5 Down $0",
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Down $0",
+      "wallet": "0xd8d83d7a90aeef514406cc16ec224cb02440bcbe",
+      "name": "a4sucks",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x984840698f9d4cc6fa7d0056a7251bcdb280b0ba",
+      "name": "lyars",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x3 Down $0",
+      "wallet": "0x129b7597d55236654aad74de9a3139253b259274",
+      "name": "geriatric-toad",
+      "usd": 0.0,
+      "outcome": "Down"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x129b7597d55236654aad74de9a3139253b259274",
+      "name": "geriatric-toad",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x4 Up $0",
+      "wallet": "0x129b7597d55236654aad74de9a3139253b259274",
+      "name": "geriatric-toad",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x5 Up $0",
+      "wallet": "0x129b7597d55236654aad74de9a3139253b259274",
+      "name": "geriatric-toad",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x6 Up $0",
+      "wallet": "0x129b7597d55236654aad74de9a3139253b259274",
+      "name": "geriatric-toad",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x3 Up $0",
+      "wallet": "0x24ca37de07bc887c782129b7447cce4794ea5829",
+      "name": "3j2ei23098ui",
+      "usd": 0.0,
+      "outcome": "Up"
+    },
+    {
+      "trigger": "L2_RAPID x4 Up $0",
+      "wallet": "0x24ca37de07bc887c782129b7447cce4794ea5829",
+      "name": "3j2ei23098ui",
+      "usd": 0.0,
+      "outcome": "Up"
+    }
+  ],
+  "sample_trades": [
+    {
+      "wallet": "0x38d2c77129add3947808d5e8d1fa611b7204b851",
+      "name": "0x38D2C77129ADd3947808d5e8D1fA611b7204B851-1776023541041",
+      "side": "SELL",
+      "outcome": "Down",
+      "price": 0.34,
+      "usd": 0.0,
+      "tx": "0xc86d39c789827fa962984f3a45d19cba16da8be3a541a500d42501271d9313c8"
+    },
+    {
+      "wallet": "0x73195e63e1ab38ea12b1f163fd029607aee90b1d",
+      "name": "Yub888",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.65,
+      "usd": 0.0,
+      "tx": "0x6bdc1ee126f7b8e923d1ee829ec7fcc9854145492fdf5dc67d3c33640bb8e4a3"
+    },
+    {
+      "wallet": "0x5c934b61a144c4fe11270c51fc02154b5239874c",
+      "name": "mxtest2",
+      "side": "SELL",
+      "outcome": "Up",
+      "price": 0.648705,
+      "usd": 0.0,
+      "tx": "0x0512daff9157e707632df7d8d8ee717a65ddcdf7c21438505bf9d03e1de517a4"
+    },
+    {
+      "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+      "name": "Bonereaper",
+      "side": "BUY",
+      "outcome": "Down",
+      "price": 0.35,
+      "usd": 0.0,
+      "tx": "0x242f04cbb5a17e3a241fa9ec98b663654d8dece1edfcd5c5f423e126aa2e1900"
+    },
+    {
+      "wallet": "0x7cd2f2e87395e8be53a7a006caf09baad9603079",
+      "name": "dotProduct66",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.65,
+      "usd": 0.0,
+      "tx": "0x5ed3a579ae420b7f875773cb1bbf33f9330bea6b00ea909ccaece07177ba81f8"
+    },
+    {
+      "wallet": "0x60889af507ec3f9da136f38b1c58080bec32f361",
+      "name": "136F38",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.67,
+      "usd": 0.0,
+      "tx": "0x987c1e4666fd75305f757fe6fad5aebc19d09eecd6e0b9a0d6e76e14d2b1b7ef"
+    },
+    {
+      "wallet": "0xe0229e10a858860218b6132f4234602c47bd6603",
+      "name": "JetFadil",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.65,
+      "usd": 0.0,
+      "tx": "0xed4dd96072a7237bb192dccf6542e2f7eec1d00403e3a5f5bd349deff3e075be"
+    },
+    {
+      "wallet": "0x7347d3291b321d2ee8d43d24aff244e7fb8c3d35",
+      "name": "0x7347d3",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.64,
+      "usd": 0.0,
+      "tx": "0x8158ba8356923911e70407dead41f4e1c964616b30b251d9c35e84b12628431c"
+    },
+    {
+      "wallet": "0x7e50fcd133c93c60d1d358721d407bbc6b61c172",
+      "name": "JackMustCalmDown",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.6677297146655062,
+      "usd": 0.0,
+      "tx": "0xe97324a7394888dcf912c94720f72b1a3b8a4066054494e8eea9b6d3bd3a3bad"
+    },
+    {
+      "wallet": "0xf3531b23b504cf0aed4ff21325232b2a2d496685",
+      "name": "Aed4Ff",
+      "side": "BUY",
+      "outcome": "Up",
+      "price": 0.66468,
+      "usd": 0.0,
+      "tx": "0x11360945be691889ea0618fbd4a4be575f139e39b53910fa5a17a9417195826b"
+    }
+  ]
+}

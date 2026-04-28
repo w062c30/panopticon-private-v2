@@ -1,0 +1,30 @@
+﻿python : 2026-04-23 23:31:06,710 [INFO] orchestrator — ============================================================
+At C:\Users\bbcv2\AppData\Local\Temp\ps-script-f4db3857-c855-44e4-9500-fa21a0b07f31.ps1:86 char:58
++ ... env:LIVE_TRADING="false"; python run_hft_orchestrator.py 2>&1 | ForEa ...
++                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (2026-04-23 23:3...===============:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+2026-04-23 23:31:06,710 [INFO] orchestrator — Panopticon HFT Orchestrator starting at 2026-04-23T15:31:06.710892+00:00
+2026-04-23 23:31:06,710 [INFO] orchestrator — PID: 23672  DRY_RUN: 1
+2026-04-23 23:31:06,710 [INFO] orchestrator — DB: data/panopticon.db
+2026-04-23 23:31:06,710 [INFO] orchestrator — ============================================================
+2026-04-23 23:31:06,718 [INFO] orchestrator — [GUARD] Shadow readiness: trades=1 win_rate=66.7% avg_ev=+9.33
+2026-04-23 23:31:06,721 [INFO] orchestrator — [DB] ShadowDB initialized at data\panopticon.db
+2026-04-23 23:31:06,723 [INFO] orchestrator — [FRICTION] GlobalFrictionState worker started
+2026-04-23 23:31:07,051 [INFO] orchestrator — [ORCH] Signal engine running as asyncio task (not subprocess)
+2026-04-23 23:31:07,051 [INFO] orchestrator — [ORCH] All 4 tracks launched — monitoring for shutdown
+2026-04-23 23:31:07,064 [INFO] orchestrator — [RADAR] Starting Polymarket CLOB WebSocket feed → signal_queue
+2026-04-23 23:31:07,695 [INFO] httpx — HTTP Request: GET 
+https://gamma-api.polymarket.com/markets?closed=false&limit=100 "HTTP/1.1 200 OK"
+2026-04-23 23:31:07,701 [INFO] panopticon_py.hunting.run_radar — [RADAR] Refreshed 200 active tokens from Gamma API
+2026-04-23 23:31:07,703 [INFO] panopticon_py.hunting.run_radar — [RADAR] Initial subscription: 200 tokens
+2026-04-23 23:31:07,703 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_pair_resolve
+2026-04-23 23:31:07,703 [INFO] orchestrator — [OFI] Starting Hyperliquid BTC-USD OFI Engine → signal_queue
+2026-04-23 23:31:07,706 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_pair_map
+2026-04-23 23:31:07,724 [INFO] orchestrator — [GRAPH] HiddenLinkGraphEngine ready
+2026-04-23 23:31:07,873 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_subscribed_coin
+2026-04-23 23:31:07,874 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_subscribed_coin
+2026-04-23 23:42:41,399 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_pair_map
+2026-04-23 23:42:42,280 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_subscribed_coin
+2026-04-23 23:42:42,280 [INFO] panopticon_py.hft.hyperliquid_ws_client — hl_ws_subscribed_coin

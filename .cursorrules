@@ -1,0 +1,98 @@
+# Cursor Rules for Panopticon
+
+## Language policy
+
+- When communicating with humans, always use Traditional Chinese.
+- For user-facing UI/CLI content (messages, prompts, errors, logs intended for end users), use Traditional Chinese.
+- Communication among agents must be in English.
+
+## Contract synchronization policy
+
+- If a change affects user-facing text contracts (UI labels, CLI output templates, notification payload text), update related documentation and templates in the same change.
+
+## Completion policy
+
+- Do not mark a task complete with code edits only.
+- Provide runtime evidence for behavior changes whenever executable checks are available.
+
+## Graphify isolation policy
+
+- Graphify is strictly an engineering-assist tool for code navigation, debugging root-cause tracing, and test-gap discovery.
+- Graphify outputs (`graphify-out/*`, `GRAPH_REPORT.md`, `graph.json`, graph HTML/SVG/GraphML exports) are HUMAN_READ_ONLY artifacts and must not be consumed by signal generation, model scoring, risk gates, or order execution code paths.
+- Any attempt to route Graphify-derived data into trading decisions is a policy violation and must fail closed.
+
+## Decision pipeline contract policy
+
+- Any field entering the trading signal pipeline must be contract-governed and carry source metadata, timestamp, and version.
+- Only whitelisted machine-readable sources may enter decision paths; ad-hoc summaries, manual notes, and visualization artifacts are blocked by default.
+
+## Shadow committee isolation policy
+
+- Committee score and disagreement metrics are allowed only as side-channel shadow observations.
+- Shadow committee experiments must run under isolated experiment identifiers and separate reports.
+- Shadow committee metrics must never change live or paper-trade actions, risk-gate outcomes, sizing, or execution behavior.
+- Shadow experiment KPIs must never be merged with baseline paper-trade KPIs.
+
+## MiniMax API concurrency limit
+
+- When using MiniMax model (`minimaxai/minimax-m2` or any MiniMax variant) for inference, **always** limit concurrent calls to **1–2**. Never fire parallel MiniMax requests.
+- Rationale: MiniMax API has strict concurrency/rate limits. Burst calls result in 429 errors, wasted tokens, and service degradation for all users.
+- Implementation: Use an `asyncio.Semaphore(2)` or a plain Python lock around any `post_nvidia_chat_completion` call that uses a MiniMax model. If the codebase already has a shared semaphore, reuse it; do not create a new one per call.
+- This rule applies to **all** code paths: hunting pipeline, cognitive layer, semantic router, and any ad-hoc agent prompting. The limit is global (not per-module).
+
+## Time contract policy
+
+- Internal persisted UTC fields (e.g. `ts_utc`, `*_ts_utc`) must use RFC3339 UTC string with millisecond precision and `Z` suffix. Example: `2026-04-25T11:04:53.506Z`.
+- External API timestamps (Polymarket/Gamma/Data/CLOB WS) must follow source docs; do not blindly normalize external payload semantics.
+- Normalize external timestamps only at persistence boundaries (DB/internal contracts), and keep raw external time in payload/context when needed for audit.
+- Runtime duration/TTL/retry logic must use monotonic clock (`time.monotonic()`), not wall-clock UTC strings.
+- Any timestamp-contract change must update `docs/time_contract.md` and related agent instructions in the same change.
+
+## Price data policy
+
+- **Primary**: Polymarket CLOB `GET /book?token_id=<token_id>` — returns bids, asks, last_trade_price.
+- **Price selection**: spread ≤ 0.10 → mid; spread > 0.10 → last_trade (if ≠ "0.5"); no data → None.
+- **NEVER** return `0.0` to mean "unavailable" — causes silent EV miscalculation.
+- **NEVER** use Gamma API as primary price source (unreliable, mid-only).
+- Cache TTL: 30 seconds. Use `time.monotonic()` for cache timestamps.
+
+## PROCESS RESTART (MANDATORY)
+Python has no hot reload. After ANY code change to `panopticon_py/**/*.py`, `run_hft_orchestrator.py`, or `run_radar.py`, you MUST kill and restart ALL running processes before validating.
+
+⚠️ **CRITICAL**: `-WorkingDirectory` is **MANDATORY** for all `Start-Process python` commands.
+Without it, Python runs from the system temp directory → `ModuleNotFoundError: No module named 'panopticon_py'`.
+Confirmed broken in D46, fix documented in D49.
+
+Restart: **ALWAYS use `scripts/restart_all.ps1`** — it enforces singleton, verifies counts, and writes frontend manifest.
+
+    powershell -ExecutionPolicy Bypass -File scripts/restart_all.ps1
+
+## PROCESS SINGLETON & VERSION RULES
+
+**RULE-PROC-1**: `acquire_singleton(name, PROCESS_VERSION)` MUST be the first call in every Python entry-point (`run_radar.py`, `run_hft_orchestrator.py`, `panopticon_py/api/app.py`). File: `panopticon_py/utils/process_guard.py`.
+
+**RULE-PROC-2**: NEVER start a new process without killing the old one. ALWAYS use `scripts/restart_all.ps1` for all restarts. Manual process starts are PROHIBITED during agent sessions.
+
+**RULE-PROC-3**: After restart, verify singleton counts BEFORE declaring any check passed. Use `scripts/restart_all.ps1` — it does this automatically using `run/process_manifest.json` (not raw process counting). If manifest-based check shows FAIL → STOP IMMEDIATELY, escalate.
+
+**RULE-PROC-4**: When verifying singletons manually (or debugging restart_all.ps1), always read `run/process_manifest.json` via `$m.PSObject.Properties[$svc].Value` and verify each PID with `Get-CimInstance Win32_Process -Filter "ProcessId=$pid"`. Never use `Get-Process python` counting — Cursor IDE and other tools also run python.exe, causing false "DUPLICATE" reports.
+
+**RULE-VER-1**: Every file modification to a managed process (radar, orchestrator, backend, frontend) REQUIRES a `PROCESS_VERSION` bump in its entry point. No exceptions.
+
+**RULE-VER-2**: After ANY version bump, update `run/versions_ref.json` with the new version, timestamp, and sprint number. This is NOT optional. Leaving `versions_ref.json` stale is a bug.
+
+**RULE-VER-3**: In every Architect Handoff, include a version table: `| Process | Old Version | New Version | Files Changed |`. If no process was modified, write: "No version bumps this session."
+
+**RULE-VER-4**: If you see a CRITICAL "VERSION MISMATCH" in the logs, DO NOT ignore it. Report to Architect with both the running version and the `versions_ref.json` expected version.
+
+**RULE-VER-5**: `check_peer_version()` is WARN only — never use it to block signal execution or order submission.
+
+Always confirm restart by checking process PIDs and log file timestamps before checking metrics.
+
+## Test file editing safety rules
+
+After editing any Python test file with StrReplace:
+1. Run: `python3 -c "import ast; ast.parse(open('FILENAME').read())"`
+2. Run: `grep -c "^class Test" FILENAME`
+3. If either check fails → delete the file, rewrite from scratch.
+4. Never apply more than 2 StrReplace operations to the same test file without doing a full integrity check between operations.

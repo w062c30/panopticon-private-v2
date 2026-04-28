@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "description": "Lowercase 0x-prefixed Polygon addresses: CEX hot wallets, large routers, mixers. Extend locally; never commit secrets.",
+  "addresses": [
+    "0x28c6c06298d514db089934071355e5743bf21d60",
+    "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+    "0xdfd5293d8e347dfe59e90efd55b2956a1343963d"
+  ]
+}

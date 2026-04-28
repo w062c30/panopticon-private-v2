@@ -1,0 +1,19 @@
+{
+  "name": "panopticon-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start:sensor": "node dist/sensor.js",
+    "start:execution": "node dist/execution.js",
+    "start:paper": "node dist/paperMain.js",
+    "start:sign-submit": "node dist/signSubmitServer.js",
+    "test:payload": "node dist/orderPayloadTest.js",
+    "test:sign-server": "node dist/signSubmitServerTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "typescript": "^5.9.3"
+  }
+}

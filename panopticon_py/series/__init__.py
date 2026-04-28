@@ -1,0 +1,1 @@
+"""panopticon_py.series — Event Series Detection for D21."""

@@ -1,0 +1,29 @@
+[
+  {
+    "window": 1,
+    "slug": "btc-updown-5m-1777319100",
+    "start_ts": 1777319100,
+    "end_ts": 1777319400,
+    "start_et": "03:45",
+    "end_et": "03:50 PM",
+    "remaining_secs": 205
+  },
+  {
+    "window": 2,
+    "slug": "btc-updown-5m-1777319400",
+    "start_ts": 1777319400,
+    "end_ts": 1777319700,
+    "start_et": "03:50",
+    "end_et": "03:55 PM",
+    "remaining_secs": 300
+  },
+  {
+    "window": 3,
+    "slug": "btc-updown-5m-1777319700",
+    "start_ts": 1777319700,
+    "end_ts": 1777320000,
+    "start_et": "03:55",
+    "end_et": "04:00 PM",
+    "remaining_secs": 300
+  }
+]

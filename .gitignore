@@ -1,0 +1,72 @@
+# ── Sensitive / Private ──────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+secrets/
+credentials/
+keys/
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+config/secrets.yaml
+config/credentials.json
+
+# ── Python runtime ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# ── Node / Dashboard ─────────────────────────────────────────────────────────
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+*.local
+
+# ── Logs & data ──────────────────────────────────────────────────────────────
+logs/
+data/*.log
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/panopticon.db
+data/orchestrator.lock
+data/radar.lock
+data/backend.lock
+run/*.lock
+run/*.pid
+run/process_manifest.json
+rvf_live_snapshot.json
+*.sqlite
+
+# ── Temporary / Scratch ──────────────────────────────────────────────────────
+temp_*.py
+debug_*.py
+*.tmp
+*.swp
+*.swo
+*~
+
+# ── Generated reports ─────────────────────────────────────────────────────────
+reports/*.md
+reports/*.html
+graphify-out/
+GRAPH_REPORT.md
+graph.json
+
+# ── Architecture handoffs (do NOT push to remote) ───────────────────────────
+temp_architect_handoffs/
+FEATURE_INDEX.md
+
+# ── OS noise ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

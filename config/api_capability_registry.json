@@ -1,0 +1,84 @@
+{
+  "version": "2026-04-20",
+  "sources": [
+    "https://docs.polymarket.com/quickstart/introduction/rate-limits",
+    "https://docs.polymarket.com/developers/CLOB/websocket/wss-overview",
+    "https://docs.polymarket.com/developers/CLOB/authentication",
+    "https://docs.polymarket.com/developers/CLOB/orders/create-order",
+    "https://developers.binance.com/docs/binance-spot-api-docs/websocket-api/rate-limits",
+    "https://docs.moralis.io/web3-data-api/evm/reference/rate-limits"
+  ],
+  "apis": {
+    "polymarket": {
+      "base_urls": {
+        "clob": "https://clob.polymarket.com",
+        "market_ws": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        "user_ws": "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+      },
+      "auth": {
+        "l1": "EIP-712 signature with wallet private key",
+        "l2": "POLY_* headers using apiKey/secret/passphrase",
+        "required_for_trading": true
+      },
+      "rate_limits": {
+        "general": "9000 req / 10s",
+        "book": "1500 req / 10s",
+        "price": "1500 req / 10s",
+        "midpoint": "1500 req / 10s",
+        "post_order_burst": "3500 req / 10s",
+        "post_order_sustained": "36000 req / 10min",
+        "delete_order_burst": "3000 req / 10s",
+        "delete_order_sustained": "30000 req / 10min"
+      },
+      "capabilities": {
+        "market_data": ["book", "price", "midpoint", "tick_size", "neg_risk"],
+        "trading": ["limit_order", "gtd_order", "fok_fak", "batch_orders", "heartbeat"],
+        "websocket": ["book", "price_change", "best_bid_ask", "last_trade_price", "trade", "order"]
+      },
+      "degrade_policy": {
+        "on_429": "switch to websocket-only reads and exponential backoff",
+        "on_ws_disconnect": "reconnect with ping/pong heartbeat and fallback polling",
+        "stale_data_threshold_ms": 2000
+      }
+    },
+    "binance": {
+      "base_urls": {
+        "ws_api": "wss://ws-api.binance.com:443/ws-api/v3"
+      },
+      "rate_limits": {
+        "connection_limit": "300 connections per 5 minutes per IP",
+        "request_weight_minute": "6000 weight / minute (typical, check exchangeInfo)",
+        "orders_10s": "50 orders / 10s (example from docs)",
+        "orders_day": "160000 orders / day (example from docs)"
+      },
+      "capabilities": {
+        "market_reference": ["server_time", "ticker", "depth", "trades"],
+        "rate_limit_feedback": ["rateLimits field", "retryAfter on 429", "418 on IP ban"]
+      },
+      "degrade_policy": {
+        "on_429": "pause requests until retryAfter",
+        "on_418": "hard stop connector until ban lifted",
+        "prefer_streams": true
+      }
+    },
+    "moralis": {
+      "base_urls": {
+        "evm_api": "https://deep-index.moralis.io/api/v2.2"
+      },
+      "rate_limits": {
+        "free_throughput": "1000 CU/s rolling 4-second window",
+        "starter_throughput": "1000 CU/s rolling 4-second window",
+        "pro_throughput": "2000 CU/s rolling 4-second window",
+        "business_throughput": "5000 CU/s rolling 4-second window"
+      },
+      "capabilities": {
+        "wallet_transactions": ["address tx history", "chain filter", "cursor pagination", "block/date range"],
+        "wallet_entities": ["fund flow heuristics inputs", "cross-chain lookup"]
+      },
+      "degrade_policy": {
+        "on_429": "reduce chain fanout and widen polling interval",
+        "budget_mode": "prioritize whitelisted wallets only"
+      }
+    }
+  }
+}

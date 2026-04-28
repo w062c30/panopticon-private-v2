@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://panopticon.local/schemas/l4-order-submit.schema.json",
+  "title": "L4OrderSubmitRequest",
+  "type": "object",
+  "required": ["idempotency_key", "decision_id", "protected_payload"],
+  "properties": {
+    "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "decision_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "market_id": { "type": ["string", "null"] },
+    "asset_id": { "type": ["string", "null"] },
+    "protected_payload": {
+      "type": "object",
+      "required": [
+        "side",
+        "price",
+        "size",
+        "time_in_force",
+        "expires_in_seconds",
+        "expected_avg_price",
+        "slippage_tolerance"
+      ],
+      "properties": {
+        "side": { "type": "string", "enum": ["BUY", "SELL"] },
+        "price": { "type": "number" },
+        "size": { "type": "number", "minimum": 0 },
+        "time_in_force": { "type": "string", "enum": ["FOK", "IOC"] },
+        "expires_in_seconds": { "type": "integer", "minimum": 1, "maximum": 600 },
+        "expected_avg_price": { "type": "number" },
+        "slippage_tolerance": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
