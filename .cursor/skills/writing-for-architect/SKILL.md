@@ -750,47 +750,34 @@ Suggested: Option A — smallest change, tests the pagination hypothesis.
 ---
 
 
-## Pre-Handoff Repository Push (REQUIRED)
+## Pre-Handoff Repository Push (MANDATORY — execute BEFORE writing handoff)
 
+**Sequence: CODE → PUSH → HANDOFF. Never reverse this order.**
 
-Before writing the handoff document, the agent MUST push the codebase to the private GitHub repo so the Architect can read the actual source files.
+The Architect reads live source from `https://github.com/w062c30/panopticon-private`. If code is not pushed before the handoff is written, the Architect cannot verify any `file.py:L_start–L_end` reference in the document.
 
+### Mandatory Sequence
 
-### Steps (run in order):
-
-
-**1. Check git status**
-If not a git repo:
 ```
-git init
-git add -A
-git commit -m "Snapshot: {sprint_tag}"
+Step 1: git add -A
+Step 2: git commit -m "D{XX}: {change summary}"
+Step 3: git push
+Step 4: ONLY THEN write the handoff document
 ```
 
+### What to Push
+- All modified `.py` source files
+- `run/versions_ref.json`
+- Schema migration changes (`db.py`)
+- Config files (non-secret)
+- Frontend `package.json` version bumps
 
-**2. Create private repo (one-time)**
-```
-gh repo create panopticon-private --private
-git remote add origin https://github.com/{user}/{repo}.git
-git push -u origin master
-```
-
-
-**3. Push on every handoff**
-```
-git add -A
-git commit -m "Snapshot: {sprint_tag} — handoff {date}"
-git push
-```
-
-
-### Excluded Files (in .gitignore)
+### What to EXCLUDE (never commit)
 - `.env`, `secrets/`, `*.pem`, `*.key`
 - `data/*.db`, `data/*.sqlite`, `run/*.lock`, `run/*.pid`
 - `temp_*.py`, `reports/*.md`, `graphify-out/`
 - `temp_architect_handoffs/`, `FEATURE_INDEX.md`
-- `run/monitor_results/all_clob_trades_*.json` — large JSON blobs; if architect needs trade data, **extract relevant snippets into the handoff doc itself** (do not upload raw files)
-
+- `run/monitor_results/all_clob_trades_*.json` — extract snippets into handoff if needed
 
 ### What the Architect Gets
 The Architect reads `https://github.com/w062c30/panopticon-private` directly —
