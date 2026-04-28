@@ -106,13 +106,17 @@ def test_whale_min_size_t2_accepts_small_trade():
     """D35: T2 floor is $75 (not $5000). T2 markets have retail sizing."""
     from panopticon_py.hunting.whale_scanner import _WHALE_MIN_SIZE_BY_TIER
     assert _WHALE_MIN_SIZE_BY_TIER["t2"] == 75.0
-    assert _WHALE_MIN_SIZE_BY_TIER["t2"] < _WHALE_MIN_SIZE_BY_TIER["t1"]
 
 
-def test_whale_min_size_t1_unchanged():
-    """D35: T1 floor remains $5000 (institutional crypto up/down markets)."""
+def test_whale_min_size_t1_btc5m_calibrated():
+    """D72: T1 floor lowered to $50 (was $5000) to match BTC 5m CLOB trade sizing.
+
+    D68 Phase 0 data showed BTC 5m trades range $0.10–$259 (retail-like).
+    Old $5000 floor blocked all T1 wallets from whale_scanner → wallet_observations
+    stayed empty for T1 → _collect_insider_sources returned 0 sources → INSUFFICIENT_CONSENSUS.
+    """
     from panopticon_py.hunting.whale_scanner import _WHALE_MIN_SIZE_BY_TIER
-    assert _WHALE_MIN_SIZE_BY_TIER["t1"] == 5_000.0
+    assert _WHALE_MIN_SIZE_BY_TIER["t1"] == 50.0
 
 
 def test_whale_score_to_insider_score_at_threshold():

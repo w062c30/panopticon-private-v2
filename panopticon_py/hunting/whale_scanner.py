@@ -33,7 +33,12 @@ WHALE_LARGE_BET_MULTIPLIER = 3.0
 # T3 mixed/fallback: mid-size ($500), for unclassified markets
 # T5 live sports: retail sizing ($25+), sub-48h expiry
 _WHALE_MIN_SIZE_BY_TIER = {
-    "t1": 5_000.0,   # T1: institutional crypto markets (high volume)
+    # D35: T1 crypto up/down — calibrated for BTC 5m hybrid AMM+CLOB market (D68 insight).
+    # BTC 5m trades range $0.10–$259 per trade (D68 report). Old floor $5000 blocked all T1
+    # wallets from entering _collect_trade_wallet → wallet_observations stayed empty for T1.
+    # D72 FIX: Lower T1 floor to $50 to match observed retail-like sizing on BTC 5m CLOB.
+    # Do NOT lower below $25 — Invariant 2.4 (minimum viable trade).
+    "t1": 50.0,      # T1: BTC/ETH/SOL 5m — was 5000.0 (D72 fix)
     "t2": 75.0,      # T2: geopolitical/event short-duration
     "t3": 500.0,     # T3: mixed fallback
     "t5": 25.0,      # T5: live sports retail
@@ -768,6 +773,17 @@ async def run_whale_scanner_loop(db, t2_market_getter) -> None:
         return
 
     logger.info("[WHALE] Scanner started — cadence=%ds", WHALE_SCAN_INTERVAL_SEC)
+    # D72: Log T1 market scope at startup for diagnostic verification
+    t1_count = sum(1 for v in _active_market_registry.values() if v == "t1")
+    t2_count = sum(1 for v in _active_market_registry.values() if v == "t2")
+    t3_count = sum(1 for v in _active_market_registry.values() if v == "t3")
+    t5_count = sum(1 for v in _active_market_registry.values() if v == "t5")
+    logger.info(
+        "[D72_ANALYSIS_SCOPE] whale_scanner startup — "
+        "total_markets=%d t1=%d t2=%d t3=%d t5=%d min_size_t1=$%.0f",
+        len(_active_market_registry), t1_count, t2_count, t3_count, t5_count,
+        _WHALE_MIN_SIZE_BY_TIER.get("t1", 0),
+    )
     while True:
         try:
             t2_markets = t2_market_getter()

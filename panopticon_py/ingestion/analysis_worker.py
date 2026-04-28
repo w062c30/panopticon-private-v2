@@ -60,8 +60,20 @@ class InsiderAnalysisWorker:
     def _tick(self) -> None:
         emit_raw = os.getenv("EMIT_INSIDER_RAW_EVENTS", "0").lower() in ("1", "true", "yes")
         min_score = float(os.getenv("INSIDER_EMIT_MIN_SCORE", "0.65"))
+
+        # D72: Log token scope at tick start for diagnostic verification
+        t1_count = self.db.conn.execute(
+            "SELECT COUNT(DISTINCT token_id) FROM polymarket_link_map WHERE market_tier='t1' AND token_id IS NOT NULL"
+        ).fetchone()[0] or 0
+        total_obs = self.db.conn.execute(
+            "SELECT COUNT(*) FROM wallet_observations WHERE obs_type='clob_trade'"
+        ).fetchone()[0] or 0
+
         addrs = self.db.fetch_distinct_trade_wallets(30)
-        logger.info("[ANALYSIS_WORKER] tick: %d wallets to analyze", len(addrs))
+        logger.info(
+            "[D72_ANALYSIS_SCOPE] tick wallets=%d total_obs=%d t1_linkmap_tokens=%d",
+            len(addrs), total_obs, t1_count,
+        )
         emitted = 0
         for addr in addrs:
             obs = self.db.fetch_recent_wallet_observations(addr, 160)
