@@ -64,7 +64,7 @@ logging.basicConfig(
 )
 # D51: Singleton enforcement — logging must be configured FIRST so guard logs appear
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.9-D72"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.10-D73"   # ← AGENT: bump on every change
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 # D30: whale scanner enabled by default (can still be explicitly set to 0 by operator env)

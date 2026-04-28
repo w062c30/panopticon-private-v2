@@ -378,11 +378,39 @@ def _collect_insider_sources(
         (market_id, cutoff_ts),
     ).fetchall()
 
+    # D73: Source breakdown — track snapshot hits vs discovered_entities fallback hits
+    snapshot_hits = 0
+    fallback_hits = 0
+    wallet_lower = None
+
     sources: list[float] = []
     for (wallet,) in rows:
-        score = _get_insider_score(wallet, db)
-        if score is not None and score >= INSIDER_SCORE_THRESHOLD:
+        wallet_lower = wallet.lower()
+        score = _get_insider_score(wallet_lower, db)
+
+        # D73: Determine which path returned the score
+        # Query snapshot table to check if score came from insider_score_snapshots
+        snapshot_row = db.conn.execute(
+            "SELECT 1 FROM insider_score_snapshots WHERE address=? AND score>=? LIMIT 1",
+            (wallet_lower, INSIDER_SCORE_THRESHOLD),
+        ).fetchone()
+
+        if snapshot_row is not None and score is not None and score >= INSIDER_SCORE_THRESHOLD:
+            snapshot_hits += 1
             sources.append(score)
+        elif score is not None and score >= INSIDER_SCORE_THRESHOLD:
+            # Score came from discovered_entities fallback (whale scanner)
+            fallback_hits += 1
+            sources.append(score)
+
+    # D73: Log source breakdown for diagnostic verification
+    logger.info(
+        "[D73_SOURCE_BREAKDOWN] market=%s snapshot_hits=%d fallback_hits=%d final=%d",
+        str(market_id)[:20] if market_id else "None",
+        snapshot_hits,
+        fallback_hits,
+        len(sources),
+    )
 
     return sources
 
