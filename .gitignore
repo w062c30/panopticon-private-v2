@@ -42,6 +42,10 @@ data/*.sqlite
 data/panopticon.db
 data/panopticon_copy.db
 data/panopticon_shadow.db
+panopticon_py/data/
+panopticon_py/data/*.db
+panopticon_py/data/*.db-shm
+panopticon_py/data/*.db-wal
 data/orchestrator.lock
 data/radar.lock
 data/backend.lock
@@ -57,8 +61,11 @@ rvf_live_snapshot.json
 # ── Temporary / Scratch ──────────────────────────────────────────────────────
 temp_*.py
 debug_*.py
+check_*.ps1
 check_*.py
+test_*.ps1
 test_*.py
+diag_*.ps1
 diag_*.py
 d[0-9][0-9]_*.py
 deep_dive.py
@@ -66,12 +73,17 @@ investigate_bottleneck.py
 quick_iss.py
 verify_join.py
 run_d[0-9][0-9]_*.py
+_test_*.ps1
+_find_large.ps1
 run/radar.log
 run/radar.err.log
+run/orch_direct.log
+run/orch_direct.err.log
 *.tmp
 *.swp
 *.swo
 *~
+_find_large.ps1
 
 # ── Generated reports ─────────────────────────────────────────────────────────
 reports/*.md

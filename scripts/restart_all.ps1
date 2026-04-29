@@ -18,12 +18,19 @@ $restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker 
 
 function Get-ProcessStatus {
     $status = @{}
-    $pythonProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -ne $null -and $_.CommandLine -match [regex]::Escape($projDir) }
+    $pythonProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
+        $_.CommandLine -ne $null -and
+        ($_.CommandLine -match "panopticon_py\.hunting\.run_radar" -or
+         $_.CommandLine -match "panopticon_py\.hunting\.run_radar" -or
+         $_.CommandLine -match "run_hft_orchestrator" -or
+         $_.CommandLine -match "uvicorn.*--port 8001" -or
+         $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker")
+    }
 
-    $status.backend = ($pythonProcs | Where-Object { $_.CommandLine -match "uvicorn.*8001" }).Count
-    $status.radar = ($pythonProcs | Where-Object { $_.CommandLine -match "run_radar" }).Count
+    $status.backend = ($pythonProcs | Where-Object { $_.CommandLine -match "uvicorn.*--port 8001" }).Count
+    $status.radar = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.hunting\.run_radar" }).Count
     $status.orchestrator = ($pythonProcs | Where-Object { $_.CommandLine -match "run_hft_orchestrator" }).Count
-    $status.analysis_worker = ($pythonProcs | Where-Object { $_.CommandLine -match "analysis_worker" }).Count
+    $status.analysis_worker = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker" }).Count
     $status.frontend = (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Measure-Object).Count
     $status.frontendPort = $null -ne (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
         $cmd = $_.CommandLine;
@@ -103,12 +110,19 @@ function Start-Frontend {
 function Kill-All {
     Write-Host "== KILLING ALL MANAGED PROCESSES ==" -ForegroundColor Yellow
 
-    $pythonTargets = @("run_radar", "run_hft_orchestrator", "uvicorn.*8001", "analysis_worker")
+    # D79: CommandLine does NOT include WorkingDirectory on Windows.
+    # Python modules use "-m <package>" with NO path in CommandLine.
+    # Use module-name patterns only (reliable across all sessions).
+    $pythonTargets = @(
+        "panopticon_py\.hunting\.run_radar",       # radar
+        "run_hft_orchestrator",                     # orchestrator (script file)
+        "uvicorn.*--port 8001",                     # backend uvicorn (port-specific)
+        "panopticon_py\.ingestion\.analysis_worker" # analysis_worker
+    )
     foreach ($t in $pythonTargets) {
         $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
             $_.CommandLine -ne $null -and
-            $_.CommandLine -match $t -and
-            $_.CommandLine -match [regex]::Escape($projDir)
+            $_.CommandLine -match $t
         }
         foreach ($p in $procs) {
             Write-Host ("  Killing [$t] PID=" + $p.ProcessId)
@@ -151,8 +165,11 @@ function Full-Restart {
     
     Write-Host "== STEP 2: VERIFY ALL DEAD ==" -ForegroundColor Yellow
     $stillAlive = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-        $_.CommandLine -ne $null -and $_.CommandLine -match [regex]::Escape($projDir) -and
-        ($_.CommandLine -match "run_radar" -or $_.CommandLine -match "run_hft_orchestrator" -or $_.CommandLine -match "uvicorn.*8001")
+        $_.CommandLine -ne $null -and
+        ($_.CommandLine -match "panopticon_py\.hunting\.run_radar" -or
+         $_.CommandLine -match "run_hft_orchestrator" -or
+         $_.CommandLine -match "uvicorn.*--port 8001" -or
+         $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker")
     }
     if ($stillAlive.Count -gt 0) {
         Write-Host "STILL ALIVE after kill attempt:"
