@@ -5,7 +5,7 @@ description: >-
   the end of every coding session. Also triggers when user asks "write to 架構師", "handoff to
   architect", "send to architect", "ask architect", or "need architect review".
   **IMPORTANT**: Every handoff document must begin with a prominent note directing the architect
-  to read live source at `https://github.com/w062c30/panopticon-private`. Use exact
+  to read live source at   `https://github.com/w062c30/panopticon-private-v2`. Use exact
   `file:line` references (e.g. `panopticon_py/hunting/run_radar.py:L123`) — do not embed
   large snippets unless the architect cannot resolve the question without them.
   **Unlike `handoff-context` (which requires explicit user request), this skill runs as the
@@ -23,7 +23,7 @@ The architect needs to make decisions. Your job is to give them **exactly enough
 
 
 > **Note on code references**: The Architect has direct read access to
-> `https://github.com/w062c30/panopticon-private`. You do NOT need to embed
+> `https://github.com/w062c30/panopticon-private-v2`. You do NOT need to embed
 > code snippets in the handoff. Reference `file.py:L42–L58` and the Architect
 > will read the live source. Only embed a snippet when the relevant lines are
 > fewer than 8 and quoting them makes the question unambiguous in one reading.
@@ -758,7 +758,7 @@ Suggested: Option A — smallest change, tests the pagination hypothesis.
 
 **Sequence: CODE → PUSH → HANDOFF. Never reverse this order.**
 
-The Architect reads live source from `https://github.com/w062c30/panopticon-private`. If code is not pushed before the handoff is written, the Architect cannot verify any `file.py:L_start–L_end` reference in the document.
+The Architect reads live source from `https://github.com/w062c30/panopticon-private-v2`. If code is not pushed before the handoff is written, the Architect cannot verify any `file.py:L_start–L_end` reference in the document.
 
 ### Mandatory Sequence
 
@@ -784,7 +784,7 @@ Step 4: ONLY THEN write the handoff document
 - `run/monitor_results/all_clob_trades_*.json` — extract snippets into handoff if needed
 
 ### What the Architect Gets
-The Architect reads `https://github.com/w062c30/panopticon-private` directly —
+The Architect reads `https://github.com/w062c30/panopticon-private-v2` directly —
 live source with line numbers. Reference `file.py:L_start–L_end` in the handoff
 and the Architect can verify without any code being embedded in the document.
 
