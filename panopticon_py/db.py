@@ -488,6 +488,16 @@ class ShadowDB:
                     else:
                         raise
 
+    @staticmethod
+    def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, col_def: str) -> None:
+        """
+        Idempotent ALTER TABLE ADD COLUMN — no-op if column already exists.
+        Use this instead of raw ALTER TABLE in all _ensure_* migration functions.
+        """
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+
     def _ensure_collateral_and_correlation_tables(self) -> None:
         """CREATE TABLE IF NOT EXISTS for upgrades from older DB files."""
         self.conn.executescript(
@@ -1012,16 +1022,10 @@ class ShadowDB:
         if "discovery_source" not in existing:
             self.conn.execute("ALTER TABLE tracked_wallets ADD COLUMN discovery_source TEXT NOT NULL DEFAULT 'unknown'")
 
-    if "discovery_source" not in existing:
-            self.conn.execute("ALTER TABLE discovered_entities ADD COLUMN discovery_source TEXT NOT NULL DEFAULT 'unknown'")
-
-        # D82: Add insider_score column (used by metrics_collector.py CONSENSUS_SYNC queries)
-        # The column is added unconditionally; SQLite ignores duplicate ADD COLUMN so the
-        # try/except pattern is redundant but kept for consistency with existing migration style.
-        try:
-            self.conn.execute("ALTER TABLE discovered_entities ADD COLUMN insider_score REAL DEFAULT 0.0")
-        except Exception:
-            pass  # already exists
+        # discovered_entities column migrations — use helper (idempotent)
+        self._add_column_if_missing(self.conn, "discovered_entities", "discovery_source", "TEXT NOT NULL DEFAULT 'unknown'")
+        # D82: insider_score for CONSENSUS_SYNC metrics
+        self._add_column_if_missing(self.conn, "discovered_entities", "insider_score", "REAL DEFAULT 0.0")
 
     def _ensure_funding_roots_table(self) -> None:
         self.conn.executescript(

@@ -728,4 +728,12 @@ Even if `fetch_best_ask` returns a price for AMM (e.g., 0.99), the AMM guard mus
 **規則**: 新增 ShadowDB 呼叫方時，先確認 ShadowDB 是否已暴露對應方法
 **D80 修復日期**: 2026-04-29
 
+## EXP-D83-001: SQLite live DB 欄位新增陷阱 — _ensure_tables 不觸發 ALTER
+**症狀**: `ALTER TABLE ... ADD COLUMN` 寫在 `_ensure_discovery_tables()` 但 live DB 啟動後欄位不存在
+**根本原因**: `CREATE TABLE IF NOT EXISTS` 在 table 已存在時整段跳過，包括其後的 ALTER TABLE 語句
+**修復**: 使用 `_add_column_if_missing(conn, table, column, definition)` helper — 每次都執行 PRAGMA table_info 檢查，idempotent
+**反模式**: 直接在 _ensure_tables 函式末尾加裸 ALTER TABLE — live DB 不觸發，新建 DB 可能重複執行報錯
+**規則**: 未來所有欄位新增都必須使用 `_add_column_if_missing` helper，不得使用裸 ALTER TABLE
+**D83 修復日期**: 2026-04-29
+
 
