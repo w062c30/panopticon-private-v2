@@ -2397,73 +2397,37 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             # P2 DIAG: periodic L1 WebSocket counters (every 60s)
             now = time.monotonic()
             if now - _last_ws_diag_log_ts >= _WS_DIAG_LOG_INTERVAL_SEC:
+                # D78: confirm 60s block is reached
+                print(f"[D78_60S_BLOCK] entering now={now:.1f} last_diag={_last_ws_diag_log_ts:.1f}", flush=True)
                 # ── BATCH: flush accumulated wallet_obs and kyle samples ──────────
                 db.flush_wallet_obs_buffer()
                 db.flush_kyle_buffer()
                 # P3 DIAG: log actual z-score even when no entropy fire
-                d, z = ew.zscore_of_latest_delta()
-                logger.info(
-                    "[L1_WS_DIAG] raw_msgs=%d trade_ticks=%d entropy_fires=%d kyle_samples=%d "
-                    "pending_trade=%d z=%.3f h_hist=%d",
-                    _ws_raw_msg_count,
-                    _ws_trade_count,
-                    _ws_entropy_fire_count,
-                    _ws_kyle_sample_count,
-                    len(_pending_trade),
-                    z if z is not None else 999.0,
-                    state.get("h_hist", 0),
-                )
-                # D75: minute-level event type + entropy gate breakdown.
+                # D75: minute-level z-score distribution stats
                 z_min = min(_entropy_z_samples) if _entropy_z_samples else None
                 z_p50 = _pctl(_entropy_z_samples, 0.50)
                 z_p90 = _pctl(_entropy_z_samples, 0.90)
                 z_max = max(_entropy_z_samples) if _entropy_z_samples else None
-                logger.info(
-                    "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} "
-                    "gate_60s={eval:%d,locked:%d,history_not_ready:%d,z_ready:%d,z_below_threshold:%d,fired:%d} "
-                    "z_dist_60s={min:%s,p50:%s,p90:%s,max:%s,threshold:%s}",
-                    _evt_count["last_trade_price"],
-                    _evt_count["book"],
-                    _evt_count["price_change"],
-                    _evt_count["other"],
-                    _entropy_eval_total,
-                    _entropy_locked_count,
-                    _entropy_history_not_ready_count,
-                    _entropy_z_ready_count,
-                    _entropy_z_below_threshold_count,
-                    _ws_entropy_fire_count,
-                    f"{z_min:.3f}" if z_min is not None else "None",
-                    f"{z_p50:.3f}" if z_p50 is not None else "None",
-                    f"{z_p90:.3f}" if z_p90 is not None else "None",
-                    f"{z_max:.3f}" if z_max is not None else "None",
-                    f"{get_z_threshold():.3f}",
-                )
+                # D78: D75_HEARTBEAT now uses print+stdout for reliable visibility
                 print(
-                    (
-                        "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} "
-                        "gate_60s={eval:%d,locked:%d,history_not_ready:%d,z_ready:%d,z_below_threshold:%d,fired:%d} "
-                        "z_dist_60s={min:%s,p50:%s,p90:%s,max:%s,threshold:%s}"
-                    )
-                    % (
-                        _evt_count["last_trade_price"],
-                        _evt_count["book"],
-                        _evt_count["price_change"],
-                        _evt_count["other"],
-                        _entropy_eval_total,
-                        _entropy_locked_count,
-                        _entropy_history_not_ready_count,
-                        _entropy_z_ready_count,
-                        _entropy_z_below_threshold_count,
-                        _ws_entropy_fire_count,
-                        f"{z_min:.3f}" if z_min is not None else "None",
-                        f"{z_p50:.3f}" if z_p50 is not None else "None",
-                        f"{z_p90:.3f}" if z_p90 is not None else "None",
-                        f"{z_max:.3f}" if z_max is not None else "None",
-                        f"{get_z_threshold():.3f}",
-                    ),
+                    f"[D75_HEARTBEAT] uptime_s={now_loop - _live_loop_started:.0f} "
+                    f"trade_ticks_60s={trade_ticks_60s} entropy_fires_60s={entropy_fires_60s}",
                     flush=True,
                 )
-                # reset minute buckets
+                # D78: D75_ENTROPY_GATE now uses print+stdout for reliable visibility
+                print(
+                    f"[D75_ENTROPY_GATE] event_type_60s={{last_trade_price:{_evt_count['last_trade_price']},"
+                    f"book:{_evt_count['book']},price_change:{_evt_count['price_change']},other:{_evt_count['other']}} "
+                    f"gate_60s={{eval:{_entropy_eval_total},locked:{_entropy_locked_count},"
+                    f"history_not_ready:{_entropy_history_not_ready_count},z_ready:{_entropy_z_ready_count},"
+                    f"z_below_threshold:{_entropy_z_below_threshold_count},fired:{_ws_entropy_fire_count}}} "
+                    f"z_dist_60s={{min:{f'{z_min:.3f}' if z_min is not None else 'None'},"
+                    f"p50:{f'{z_p50:.3f}' if z_p50 is not None else 'None'},"
+                    f"p90:{f'{z_p90:.3f}' if z_p90 is not None else 'None'},"
+                    f"max:{f'{z_max:.3f}' if z_max is not None else 'None'},"
+                    f"threshold:{f'{get_z_threshold():.3f}'}}",
+                    flush=True,
+                )
                 _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
                 _entropy_eval_total = 0
                 _entropy_locked_count = 0
@@ -2604,7 +2568,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.15-D77"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.16-D78"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

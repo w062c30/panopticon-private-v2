@@ -36,15 +36,21 @@ logs/
 data/*.log
 data/*.db
 data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 data/*.sqlite
 data/panopticon.db
+data/panopticon_copy.db
+data/panopticon_shadow.db
 data/orchestrator.lock
 data/radar.lock
 data/backend.lock
 run/*.lock
 run/*.pid
 run/process_manifest.json
+run/monitor_results/
 run/monitor_results/*.json
+run/monitor_results/*.md
 rvf_live_snapshot.json
 *.sqlite
 
@@ -52,6 +58,8 @@ rvf_live_snapshot.json
 temp_*.py
 debug_*.py
 check_*.py
+test_*.py
+diag_*.py
 d[0-9][0-9]_*.py
 deep_dive.py
 investigate_bottleneck.py

@@ -1,5 +1,5 @@
 # Panopticon - Singleton-Enforced Process Restart with Auto-Recovery
-# Version: v1.0.7-D62
+# Version: v1.0.9-D78
 # Run from: d:\Antigravity\Panopticon
 # MANDATORY: Use this script for ALL restarts.
 # OPTIONAL: Pass "-Continuous" for continuous monitoring with auto-recovery.
@@ -18,9 +18,9 @@ $restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker 
 
 function Get-ProcessStatus {
     $status = @{}
-    $pythonProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -ne $null }
+    $pythonProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -ne $null -and $_.CommandLine -match [regex]::Escape($projDir) }
 
-    $status.backend = ($pythonProcs | Where-Object { $_.CommandLine -match "uvicorn" }).Count
+    $status.backend = ($pythonProcs | Where-Object { $_.CommandLine -match "uvicorn.*8001" }).Count
     $status.radar = ($pythonProcs | Where-Object { $_.CommandLine -match "run_radar" }).Count
     $status.orchestrator = ($pythonProcs | Where-Object { $_.CommandLine -match "run_hft_orchestrator" }).Count
     $status.analysis_worker = ($pythonProcs | Where-Object { $_.CommandLine -match "analysis_worker" }).Count
@@ -36,6 +36,12 @@ function Get-ProcessStatus {
 }
 
 function Start-Backend {
+    # D78: pre-flight check — abort if port 8001 already in use
+    $inUse = Get-NetTCPConnection -LocalPort 8001 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq "Listen" }
+    if ($inUse) {
+        Write-Warning "  [START_BACKEND] port 8001 still occupied — aborting backend start"
+        return $null
+    }
     Start-Process python -ArgumentList "-m uvicorn panopticon_py.api.app:app --host 0.0.0.0 --port 8001" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
 }
 
@@ -47,7 +53,7 @@ function Start-Radar {
 
 function Start-Orchestrator {
     $env:PANOPTICON_WHALE = "1"
-    Start-Process python -ArgumentList "run_hft_orchestrator.py" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+    Start-Process python -ArgumentList "$projDir\run_hft_orchestrator.py" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
 }
 
 function Start-AnalysisWorker {
@@ -96,22 +102,43 @@ function Start-Frontend {
 
 function Kill-All {
     Write-Host "== KILLING ALL MANAGED PROCESSES ==" -ForegroundColor Yellow
-    
-    $pythonTargets = @("run_radar", "run_hft_orchestrator", "uvicorn", "analysis_worker")
+
+    $pythonTargets = @("run_radar", "run_hft_orchestrator", "uvicorn.*8001", "analysis_worker")
     foreach ($t in $pythonTargets) {
-        $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -ne $null -and $_.CommandLine -match $t }
+        $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
+            $_.CommandLine -ne $null -and
+            $_.CommandLine -match $t -and
+            $_.CommandLine -match [regex]::Escape($projDir)
+        }
         foreach ($p in $procs) {
             Write-Host ("  Killing [$t] PID=" + $p.ProcessId)
             Invoke-CimMethod -InputObject $p -Name Terminate -ErrorAction SilentlyContinue
         }
     }
-    
+
     $nodeProcs = Get-Process node -ErrorAction SilentlyContinue
     foreach ($n in $nodeProcs) {
         Write-Host ("  Killing node PID=" + $n.Id)
         Stop-Process -Id $n.Id -Force -ErrorAction SilentlyContinue
     }
-    
+
+    # D78: Port-level zombie cleanup — kills any process holding 8001/8002 across ALL sessions
+    foreach ($port in @(8001, 8002)) {
+        $portOwners = netstat -ano | Select-String ":$port\s" | ForEach-Object {
+            ($_ -split '\s+')[-1]
+        } | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique
+        foreach ($procId in $portOwners) {
+            Write-Host "  [PORT_KILL] port=$port PID=$procId"
+            $result = & taskkill /F /PID $procId 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "  [PORT_KILL] taskkill failed (pid=$procId): $result"
+                Write-Warning "  [PORT_KILL] Try running restart_all.ps1 as Administrator to kill cross-session zombies"
+            } else {
+                Write-Host "  [PORT_KILL] Killed PID=$procId holding port $port" -ForegroundColor Green
+            }
+        }
+    }
+
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
     Remove-Item "$runDir\*.pid" -Force -ErrorAction SilentlyContinue
     Remove-Item "$runDir\radar.log","$runDir\radar.err.log" -Force -ErrorAction SilentlyContinue
@@ -123,14 +150,28 @@ function Full-Restart {
     Kill-All
     
     Write-Host "== STEP 2: VERIFY ALL DEAD ==" -ForegroundColor Yellow
-    $stillAlive = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object { $_.CommandLine -ne $null -and ($_.CommandLine -match "run_radar" -or $_.CommandLine -match "run_hft_orchestrator" -or $_.CommandLine -match "uvicorn") }
+    $stillAlive = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
+        $_.CommandLine -ne $null -and $_.CommandLine -match [regex]::Escape($projDir) -and
+        ($_.CommandLine -match "run_radar" -or $_.CommandLine -match "run_hft_orchestrator" -or $_.CommandLine -match "uvicorn.*8001")
+    }
     if ($stillAlive.Count -gt 0) {
         Write-Host "STILL ALIVE after kill attempt:"
         $stillAlive | ForEach-Object { Write-Host ("  PID=" + $_.ProcessId + " CMD=" + $_.CommandLine) }
         Start-Sleep -Seconds 5
     }
     Write-Host "  All processes stopped."
-    
+
+    # D78: STEP 2.5 — verify port 8001 is free before starting backend
+    Write-Host "== STEP 2.5: PORT FREE CHECK ==" -ForegroundColor Cyan
+    $portInUse = Get-NetTCPConnection -LocalPort 8001 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq "Listen" }
+    if ($portInUse) {
+        $occupyingPid = $portInUse[0].OwningProcess
+        Write-Warning "  [PORT_CHECK] port 8001 still in LISTEN state — PID=$occupyingPid — backend start may fail"
+        Write-Warning "  [PORT_CHECK] Run as Administrator to kill cross-session zombie, or reboot"
+    } else {
+        Write-Host "  [PORT_CHECK] port 8001 is free" -ForegroundColor Green
+    }
+
     Write-Host "== STEP 3: START ALL 4 PROCESSES ==" -ForegroundColor Green
     
     $backend = Start-Backend

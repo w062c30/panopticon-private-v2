@@ -62,17 +62,18 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
-# D51: Singleton enforcement — logging must be configured FIRST so guard logs appear
+# D78: Singleton enforcement FIRST — kills stale instance before lock-file check
+# This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.14-D76"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.16-D78"   # ← AGENT: bump on every change
 acquire_singleton("orchestrator", PROCESS_VERSION)
+
+_LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
 
 # D30: whale scanner enabled by default (can still be explicitly set to 0 by operator env)
 os.environ.setdefault("PANOPTICON_WHALE", "1")
 
 logger = logging.getLogger("orchestrator")
-
-_LOCK_FILE = os.path.join("data", "orchestrator.lock")
 
 
 def _utc() -> str:

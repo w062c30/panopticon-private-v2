@@ -1,0 +1,4 @@
+*.db filter=lfs diff=lfs merge=lfs -text
+*.db-* filter=lfs diff=lfs merge=lfs -text
+*.wal filter=lfs diff=lfs merge=lfs -text
+*.shm filter=lfs diff=lfs merge=lfs -text
