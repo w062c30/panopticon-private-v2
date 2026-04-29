@@ -128,19 +128,16 @@ def _upsert_whale_wallet_as_entity(
     try:
         conn.execute("""
             INSERT INTO discovered_entities
-                (entity_id, insider_score, source, last_seen_market, updated_ts_utc,
-                 trust_score, primary_tag, sample_size, last_updated_at)
+                (entity_id, insider_score, discovery_source, trust_score, primary_tag, sample_size, last_updated_at)
             VALUES
-                (?, ?, 'whale_scanner', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                 ?, 'whale_scanner', 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                (?, ?, 'whale_scanner', ?, 'whale_scanner', 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
             ON CONFLICT(entity_id) DO UPDATE SET
                 insider_score = MAX(excluded.insider_score, insider_score),
-                last_seen_market = excluded.last_seen_market,
-                updated_ts_utc = excluded.updated_ts_utc,
+                discovery_source = excluded.discovery_source,
                 trust_score = MAX(excluded.trust_score, trust_score),
                 sample_size = sample_size + 1,
                 last_updated_at = excluded.last_updated_at
-        """, (wallet, insider_score, market_slug, insider_score * 100))
+        """, (wallet, insider_score, insider_score * 100))
         conn.commit()
         logger.debug(
             "[WHALE][ENTITY_INJECT] wallet=%s...%s insider_score=%.2f market=%s",
@@ -245,19 +242,19 @@ def _promote_frequent_path_b_wallets(db) -> int:
             try:
                 conn.execute("""
                     INSERT INTO discovered_entities
-                        (entity_id, insider_score, source, last_seen_market,
-                         updated_ts_utc, trust_score, primary_tag,
-                         sample_size, last_updated_at)
+                        (entity_id, insider_score, discovery_source, trust_score,
+                         primary_tag, sample_size, last_updated_at)
                     VALUES
-                        (?, ?, 'whale_scanner', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                         ?, 'path_b_promoted', 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                        (?, ?, 'whale_scanner', ?, 'path_b_promoted', 1,
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                     ON CONFLICT(entity_id) DO UPDATE SET
                         insider_score = MAX(excluded.insider_score, insider_score),
-                        last_seen_market = excluded.last_seen_market,
-                        updated_ts_utc = excluded.updated_ts_utc,
+                        discovery_source = excluded.discovery_source,
+                        trust_score = MAX(excluded.trust_score, trust_score),
+                        primary_tag = excluded.primary_tag,
                         sample_size = sample_size + 1,
                         last_updated_at = excluded.last_updated_at
-                """, (address, threshold, market_id, threshold * 100))
+                """, (address, threshold, threshold * 100))
                 conn.commit()
                 promoted += 1
             except Exception as exc:

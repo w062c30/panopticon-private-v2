@@ -757,4 +757,19 @@ Even if `fetch_best_ask` returns a price for AMM (e.g., 0.99), the AMM guard mus
   class-level lock 會造成跨實例競爭，性能下降但不會造成數據錯誤
 **修復時機**: 僅在採用 Option A 重構時，同步改為 instance-level（`__init__` 中初始化：`self._snapshot_lock = threading.Lock()`）
 
+## EXP-D92-001: whale_scanner INSERT 欄位名稱與 schema 不匹配（`source` vs `discovery_source`）
+**症狀**: `[WHALE][PROMOTE_ERR] 0xffc10764bd: table discovered_entities has no column named source` 重複出現，
+  discovered_entities 全部 113 筆 insider_score=0，whale_scanner 產生的 wallets 完全沒寫入
+**根本原因**: whale_scanner 兩處 INSERT 語法使用了 `source` / `last_seen_market` / `updated_ts_utc` 等已废弃的欄位名，
+  但 discovered_entities schema 只有：`entity_id, trust_score, primary_tag, sample_size, last_updated_at, insider_score, discovery_source`
+  差異：`source`→`discovery_source`，`last_seen_market`→不存在，`updated_ts_utc`→不存在
+**觸發路徑**:
+  1. `_upsert_whale_wallet_as_entity` (whale_scanner.py:L129–143): whale alert 寫入
+  2. `_promote_qualified_wallets` (whale_scanner.py:L243–257): path_b_promoted 寫入
+**修復**: 兩處均改為正確欄位列表：
+  - INSERT: `(entity_id, insider_score, discovery_source, trust_score, primary_tag, sample_size, last_updated_at)`
+  - UPDATE (ON CONFLICT): `discovery_source = excluded.discovery_source` 等
+**預防規則**: 未來修改 discovered_entities schema 時，必須同步搜尋 whale_scanner 的 INSERT 語法是否需要更新
+**D92 修復日期**: 2026-04-30
+
 
