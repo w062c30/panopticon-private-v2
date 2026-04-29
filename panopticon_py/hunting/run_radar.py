@@ -2328,9 +2328,9 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
 
     while True:
         now_loop = time.monotonic()
-        print(f"[D77_LOOP_ALIVE] t={now_loop:.1f}", flush=True)
+        # D77_LOOP_ALIVE removed D83 — stable
         if now_loop - _d77_tick_last >= 10.0:
-            print(f"[D77_LOOP_TICK] iter={_d77_tick_n}", flush=True)
+            # D77_LOOP_TICK removed D83 — stable
             _d77_tick_last = now_loop
             _d77_tick_n += 1
         if now_loop - _d75_hb_last >= 60.0:
@@ -2405,8 +2405,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             # P2 DIAG: periodic L1 WebSocket counters (every 60s)
             now = time.monotonic()
             if now - _last_ws_diag_log_ts >= _WS_DIAG_LOG_INTERVAL_SEC:
-                # D78: confirm 60s block is reached
-                print(f"[D78_60S_BLOCK] entering now={now:.1f} last_diag={_last_ws_diag_log_ts:.1f}", flush=True)
+                # D78_60S_BLOCK removed D83 — stable
                 # ── BATCH: flush accumulated wallet_obs and kyle samples ──────────
                 db.flush_wallet_obs_buffer()
                 db.flush_kyle_buffer()
@@ -2416,28 +2415,27 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 z_p50 = _pctl(_entropy_z_samples, 0.50)
                 z_p90 = _pctl(_entropy_z_samples, 0.90)
                 z_max = max(_entropy_z_samples) if _entropy_z_samples else None
-                # D78: D75_HEARTBEAT now uses print+stdout for reliable visibility
-                print(
-                    f"[D75_HEARTBEAT] uptime_s={now_loop - _live_loop_started:.0f} "
-                    f"trade_ticks_60s={trade_ticks_60s} entropy_fires_60s={entropy_fires_60s}",
-                    flush=True,
+                # D83: D75_HEARTBEAT reverted to logger.info (log handler confirmed working)
+                logger.info(
+                    "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d entropy_fires_60s=%d",
+                    now_loop - _live_loop_started,
+                    trade_ticks_60s,
+                    entropy_fires_60s,
                 )
-                # D78: D75_ENTROPY_GATE now uses print+stdout for reliable visibility
                 z_min_str = f"{z_min:.3f}" if z_min is not None else "None"
                 z_p50_str = f"{z_p50:.3f}" if z_p50 is not None else "None"
                 z_p90_str = f"{z_p90:.3f}" if z_p90 is not None else "None"
                 z_max_str = f"{z_max:.3f}" if z_max is not None else "None"
                 threshold_str = f"{get_z_threshold():.3f}"
-                inner = "min:" + z_min_str + ",p50:" + z_p50_str + ",p90:" + z_p90_str + ",max:" + z_max_str + ",threshold:" + threshold_str
-                print(
-                    "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:"
-                    + str(_evt_count["last_trade_price"]) + ",book:" + str(_evt_count["book"])
-                    + ",price_change:" + str(_evt_count["price_change"]) + ",other:" + str(_evt_count["other"]) + "} "
-                    + "gate_60s={eval:" + str(_entropy_eval_total) + ",locked:" + str(_entropy_locked_count)
-                    + ",history_not_ready:" + str(_entropy_history_not_ready_count) + ",z_ready:" + str(_entropy_z_ready_count)
-                    + ",z_below_threshold:" + str(_entropy_z_below_threshold_count) + ",fired:" + str(_ws_entropy_fire_count) + "} "
-                    + "z_dist_60s={" + inner + "}",
-                    flush=True,
+                # D83: D75_ENTROPY_GATE reverted to logger.info (log handler confirmed working)
+                logger.info(
+                    "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} "
+                    "gate_60s={eval:%d,locked:%d,history_not_ready:%d,z_ready:%d,z_below_threshold:%d,fired:%d} "
+                    "z_dist_60s={min:%s,p50:%s,p90:%s,max:%s,threshold:%s}",
+                    _evt_count["last_trade_price"], _evt_count["book"], _evt_count["price_change"], _evt_count["other"],
+                    _entropy_eval_total, _entropy_locked_count, _entropy_history_not_ready_count,
+                    _entropy_z_ready_count, _entropy_z_below_threshold_count, _ws_entropy_fire_count,
+                    z_min_str, z_p50_str, z_p90_str, z_max_str, threshold_str,
                 )
                 _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
                 _entropy_eval_total = 0
@@ -2580,7 +2578,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.18-D81"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.19-D83"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

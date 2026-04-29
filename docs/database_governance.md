@@ -42,3 +42,11 @@
 ## 7. 災難恢復
 - 每日快照、每小時增量備份（依實際部署調整）。
 - 每週最少一次 restore drill，驗證 RTO/RPO。
+
+## 8. Schema 變更加記錄（D82+）
+
+新增欄位需同時更新本文件與 `EXPERIENCE_PLAYBOOK.md`。
+
+| 日期 | Sprint | 表格 | 欄位 | 說明 |
+|------|--------|------|------|------|
+| 2026-04-29 | D82 | discovered_entities | insider_score REAL DEFAULT 0.0 | 由 analysis_worker 寫入；D82 補加以支援 CONSENSUS_SYNC metrics |
