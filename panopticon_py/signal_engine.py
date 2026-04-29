@@ -380,7 +380,7 @@ def _collect_insider_sources(
             (market_id,),
         ).fetchone()
         if row:
-            resolved_series_id = row["series_id"]
+            resolved_series_id = row[0]  # tuple index, not dict key
 
     # D74: Check if this is a T1 rolling-window market.
     # If so, collect wallets from ALL series members, not just the current window.
@@ -390,7 +390,7 @@ def _collect_insider_sources(
             "SELECT series_type FROM event_series WHERE series_id=? LIMIT 1",
             (resolved_series_id,),
         ).fetchone()
-        if series_row and series_row["series_type"] == "ROLLING_WINDOW":
+        if series_row and series_row[0] == "ROLLING_WINDOW":
             use_series_agg = True
 
     if use_series_agg:
