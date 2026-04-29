@@ -700,3 +700,32 @@ Even if `fetch_best_ask` returns a price for AMM (e.g., 0.99), the AMM guard mus
 - [ ] BTC 5m `GET /trades` returns `[]` (zero trades confirmed)
 
 
+## EXP-D81-001: Python 三層 scope 模型（_live_ticks 模式）
+**症狀**: UnboundLocalError 或 "can't be global" / "no binding for nonlocal" — 且每次 attempt 報錯的變數名稱不同（「游走」現象）
+**根本原因**: Python 在編譯時期靜態決定 scope。只要函式體內有任何一個對變數 X 的賦值（`X = ...`），Python 就把 X 標記為整個函式的 local，包括賦值行之前的所有引用。四種常見破壞模式：
+1. 把 local 初始化移到模組層級 → nonlocal 找不到 enclosing binding
+2. 加上型別標注的模組層級宣告（`x: int = 0`）再用 `global x` → "annotated name can't be global"
+3. 同一變數同時出現在 nonlocal 和 global 宣告 → 衝突
+4. 刪除 _live_ticks 內的 local 初始化，只保留模組層級 → _on_message 的 nonlocal 失效
+**正確的三層結構**（以 run_radar.py 為例）：
+- 層 1（模組層級）：heartbeat 相關純模組變數（`_last_ws_diag_log_ts` 等），用 `global` 宣告存取
+- 層 2（`_live_ticks` local）：所有 accumulator（`_evt_count`, `_entropy_eval_total` 等），在函式開頭初始化
+- 層 3（`_on_message` nonlocal）：透過 `nonlocal` 讀寫層 2 的變數
+**規則**：不得把層 2 的變數移到模組層級。不得同時使用 global + nonlocal 指向同一變數。
+**驗證**：`python -c "import py_compile; py_compile.compile('run_radar.py')"` — 應無輸出
+**D81 修復日期**: 2026-04-29
+
+## EXP-D80-001: f-string 嵌套 {} 語法錯誤
+**症狀**: `SyntaxError: f-string: single '}' is not allowed`
+**根本原因**: Python f-string 不允許在佔位符 `{}` 內直接嵌套含 `{}` 的條件表達式或 dict literal
+**修復**: 預先把所有格式化值存入變數，再用字串拼接（`"prefix:" + var + ","` 模式）
+**D80 修復日期**: 2026-04-29
+
+## EXP-D80-002: ShadowDB 缺少 execute() delegation
+**症狀**: `'ShadowDB' object has no attribute 'execute'`
+**根本原因**: 呼叫方 (`run_insider_monitor`) 使用 `db.execute(sql, params)` 但 `ShadowDB` 只暴露 `self.conn`
+**修復**: 在 `ShadowDB` 加 `def execute(self, sql, parameters=()): return self.conn.execute(sql, parameters)`
+**規則**: 新增 ShadowDB 呼叫方時，先確認 ShadowDB 是否已暴露對應方法
+**D80 修復日期**: 2026-04-29
+
+

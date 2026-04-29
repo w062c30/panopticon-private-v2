@@ -1012,6 +1012,17 @@ class ShadowDB:
         if "discovery_source" not in existing:
             self.conn.execute("ALTER TABLE tracked_wallets ADD COLUMN discovery_source TEXT NOT NULL DEFAULT 'unknown'")
 
+    if "discovery_source" not in existing:
+            self.conn.execute("ALTER TABLE discovered_entities ADD COLUMN discovery_source TEXT NOT NULL DEFAULT 'unknown'")
+
+        # D82: Add insider_score column (used by metrics_collector.py CONSENSUS_SYNC queries)
+        # The column is added unconditionally; SQLite ignores duplicate ADD COLUMN so the
+        # try/except pattern is redundant but kept for consistency with existing migration style.
+        try:
+            self.conn.execute("ALTER TABLE discovered_entities ADD COLUMN insider_score REAL DEFAULT 0.0")
+        except Exception:
+            pass  # already exists
+
     def _ensure_funding_roots_table(self) -> None:
         self.conn.executescript(
             """

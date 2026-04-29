@@ -287,11 +287,12 @@ OBSERVER: analysis_worker (T5, threading.Thread)
 
 | 腳本 | 功能 |
 |------|------|
-| `scripts/start_all.bat` | Windows Batch 一鍵啟動所有服務 |
-| `scripts/start_all.ps1` | PowerShell 一鍵啟動所有服務 |
+| `scripts/restart_all.ps1` | PowerShell 一鍵重啟所有服務（single source of truth，D79+ 標準入口） |
 | `scripts/start_shadow_hydration.py` | 單獨啟動 Shadow Hydration Pipeline |
 | `scripts/schedule_insight_report.ps1` | 排程每2小時生成 Insight 報告 |
 | `scripts/report_insights.py` | 手動生成 Insight 報告 |
+
+> `restart_all.ps1` 管理所有程序：Backend (uvicorn)、Orchestrator、Radar（asyncio task 內嵌於 Orchestrator）。
 
 ---
 
@@ -301,3 +302,30 @@ OBSERVER: analysis_worker (T5, threading.Thread)
 |------|----------|
 | 2026-04-22 | 初始版本，新增 dual_track 發現模式與雷達自動刷新 |
 | 2026-04-23 | v4-FINAL 重構：刪除 hft_execution_gate.py；新增 asyncio.Queue signal bus；SE 改 asyncio task；新增 DB lock 防止雙進程衝突；更新啟動 SOP |
+| 2026-04-25 | D55 後：雷達模組重構，`run_radar.py` 獨立程序 + entropy gate；Graphify 隔離；BTC 5m resolver loop |
+| 2026-04-26 | D68：usdcSize bug 修復（POST trades 回應無 usdcSize 欄位）；`discovered_entities.insider_score` 欄位新增 |
+| 2026-04-27 | D70：Polymarket CLOB 直接串接；移除 `main_loop.py`；`run_hft_orchestrator.py` 成單一入口 |
+| 2026-04-28 | D79：雷達改為 orchestrator 內部 asyncio task（移除 `Start-Radar`）；stderr redirect；D80：f-string 修復、ShadowDB.execute() 新增 |
+| 2026-04-29 | D81：Python scope chain 修復（`_live_ticks` 三層模型）；`insider_score` 欄位遷移；D82：知識管理基礎設施（EXPERIENCE_PLAYBOOK 更新、.cursorrules新規則） |
+
+---
+
+## 已知 P1 問題（D82 修復中）
+
+| 問題 | 說明 | 修復計劃 |
+|------|------|----------|
+| `insider_score` 欄位缺失 | `metrics_collector.py` 查詢 `discovered_entities.insider_score` 但欄位不存在 | D82 在 `_ensure_discovery_tables()` 加入 `ALTER TABLE` migration |
+
+---
+
+## 診斷日誌說明
+
+| 日誌標籤 | 頻率 | 說明 |
+|----------|------|------|
+| `D77_LOOP_ALIVE` | 每 0.1s | 確認雷達 WS loop 存活，穩定後可移除 |
+| `D77_LOOP_TICK` | 每 10s | 雷達 tick 計數，穩定後可移除 |
+| `D78_60S_BLOCK` | 每 60s | 60 秒診斷區塊（Z-score、entropy gate 狀態） |
+| `D75_HEARTBEAT` | 每 60s | WS 心跳，確認資料流健康 |
+| `D75_ENTROPY_GATE` | 每 60s | Entropy gate 觸發統計 |
+
+> 出現 `D78_60S_BLOCK` 即表示系統正常運行。若持續無輸出超過 3 分鐘，檢查 `orchestrator.err.log`。

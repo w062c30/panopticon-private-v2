@@ -548,6 +548,7 @@ approaches. After much deliberation..."
 
 
 - Title: `temp_architect_handoff_YYYY-MM-DD_HHMM.md` or `temp_architect_YYYY-MM-DD_HHMM.md`
+- **First line** (MANDATORY): `Use the "architect-response-when-receiving-handoff" skill.` — this line MUST be the very first line of every handoff document
 - Language: Match the project (this project uses Traditional Chinese for headers)
 - Code references: Always `file.py:L_start–L_end` format pointing to GitHub repo
 - Inline snippet: only if ≤ 8 lines AND makes Q self-contained; include file:line header comment

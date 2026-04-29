@@ -96,3 +96,23 @@ After editing any Python test file with StrReplace:
 2. Run: `grep -c "^class Test" FILENAME`
 3. If either check fails → delete the file, rewrite from scratch.
 4. Never apply more than 2 StrReplace operations to the same test file without doing a full integrity check between operations.
+
+## BUG FIXING DISCIPLINE
+
+### RULE: Consult EXPERIENCE_PLAYBOOK before attempting fixes
+Before making any bug fix attempt, search EXPERIENCE_PLAYBOOK.md for matching symptoms.
+If a matching EXP entry exists, follow the documented fix pattern exactly.
+Do NOT attempt a different approach first.
+
+### RULE: Escalate after 2 failed attempts (hard stop)
+If the same bug has been attempted 2 or more times without success:
+1. STOP all further fix attempts immediately
+2. Do NOT try a third variation
+3. Write an escalation handoff documenting: symptom, root cause hypothesis, all attempts made and why each failed, specific questions for architect
+4. Wait for architect ruling before proceeding
+Rationale: The 4-attempt cascade in D81 wasted multiple sprints. 2 attempts is the maximum before the problem requires architectural-level analysis.
+
+### RULE: Add to EXPERIENCE_PLAYBOOK after every non-trivial fix
+After any bug fix that required more than 1 attempt OR involved a non-obvious root cause:
+Add an EXP entry to EXPERIENCE_PLAYBOOK.md covering: symptoms, root cause, fix pattern, anti-patterns to avoid.
+This is mandatory, not optional. Do it in the same sprint as the fix.

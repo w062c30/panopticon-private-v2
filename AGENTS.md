@@ -171,6 +171,29 @@ https://github.com/Polymarket/py-clob-client-v2
 
 ---
 
+### Pre-fix Protocol
+1. **Search EXPERIENCE_PLAYBOOK.md first** — grep for the error message, module name, or symptom keywords
+2. If matching EXP entry found → follow documented fix exactly
+3. If no match → proceed with analysis, but document findings in EXPERIENCE_PLAYBOOK after fix
+4. **Hard stop at 2 failed attempts** → write escalation handoff, await architect ruling
+
+---
+
+## Current System Status (as of D82)
+
+| Process | Version | Notes |
+|---------|--------|-------|
+| Orchestrator | v1.1.18-D81 | Stable; Radar as asyncio task inside |
+| Radar | v1.1.18-D81 | Stable; entropy gate / 60s diagnostic block operational |
+| Backend | v1.1.7-D69 | Stable |
+| Frontend | v1.1.7-D69 | Stable |
+
+**Known P1 issue**: `insider_score` column added to `discovered_entities` via D82 migration. P3 cleanup pending: D77_LOOP_ALIVE, D77_LOOP_TICK, D78_60S_BLOCK print diagnostics (can be removed after stable operation confirmed).
+
+**Active EXP entries**: EXP-D81-001 (Python scope), EXP-D80-001 (f-string), EXP-D80-002 (ShadowDB.execute)
+
+---
+
 ## PROCESS RESTART (MANDATORY)
 Python has no hot reload. After ANY code change to `panopticon_py/**/*.py`, `run_hft_orchestrator.py`, or `run_radar.py`, you MUST kill and restart ALL running processes before validating.
 
