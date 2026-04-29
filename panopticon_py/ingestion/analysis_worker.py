@@ -202,7 +202,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.12-D89"
+    PROCESS_VERSION = "v1.1.13-D90"
     acquire_singleton("analysis_worker", PROCESS_VERSION)
 
     db = ShadowDB()

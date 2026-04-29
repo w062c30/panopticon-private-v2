@@ -3130,13 +3130,13 @@ class ShadowDB:
         ).fetchone()
         if not row:
             return None
-            return {
-                "wallet_address": row[0],
-                "market_id": row[1],
-                "current_position_notional": float(row[2]),
-                "avg_entry_price": float(row[3]),
-                "last_updated_ts_utc": row[4],
-            }
+        return {
+            "wallet_address": row[0],
+            "market_id": row[1],
+            "current_position_notional": float(row[2]),
+            "avg_entry_price": float(row[3]),
+            "last_updated_ts_utc": row[4],
+        }
 
     # -------------------------------------------------------------------------
     # Insider pattern flags (FORENSIC ONLY — Invariant 6.2)

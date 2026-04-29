@@ -750,4 +750,11 @@ Even if `fetch_best_ask` returns a price for AMM (e.g., 0.99), the AMM guard mus
 **修復**: 在 append_insider_score_snapshot 加 `_snapshot_lock`；WAL mode 允許多個 Connection 並發讀寫，不需要額外 lock
 **D89 修復日期**: 2026-04-29
 
+## TECH-DEBT-D89-001: _snapshot_lock 為 class-level，多實例場景有誤用風險
+**位置**: panopticon_py/db.py — ShadowDB._snapshot_lock
+**現狀**: class variable，所有實例共用同一個 Lock；目前系統單實例運行，行為正確
+**風險**: 若未來引入多個 ShadowDB 實例（如 Option A 重構：analysis_worker 獨立實例），
+  class-level lock 會造成跨實例競爭，性能下降但不會造成數據錯誤
+**修復時機**: 僅在採用 Option A 重構時，同步改為 instance-level（`__init__` 中初始化：`self._snapshot_lock = threading.Lock()`）
+
 

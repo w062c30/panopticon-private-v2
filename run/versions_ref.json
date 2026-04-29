@@ -5,8 +5,8 @@
   "orchestrator": "v1.1.19-D84",
   "backend": "v1.1.7-D69",
   "frontend": "v1.1.7-D69",
-  "analysis_worker": "v1.1.12-D89",
-  "last_updated": "2026-04-29T14:49:00Z",
-  "updated_by_sprint": "D89",
-  "updated_by_agent": "D89-coding-agent"
+  "analysis_worker": "v1.1.13-D90",
+  "last_updated": "2026-04-29T15:30:00Z",
+  "updated_by_sprint": "D90",
+  "updated_by_agent": "D90-coding-agent"
 }
