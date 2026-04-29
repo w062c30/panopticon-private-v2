@@ -438,6 +438,12 @@ class ShadowDB:
         self._ensure_series_tables()
         self.conn.commit()
 
+    # D80: Expose sqlite3.Connection.execute for callers that expect a raw cursor.
+    # Fixes: AttributeError "'ShadowDB' object has no attribute 'execute'" in
+    # run_insider_monitor at run_hft_orchestrator.py:L491.
+    def execute(self, sql: str, parameters: tuple = ()) -> sqlite3.Cursor:
+        return self.conn.execute(sql, parameters)
+
     def _ensure_execution_columns(self) -> None:
         existing = {
             row[1]
