@@ -2277,6 +2277,8 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     _d75_hb_last = _live_loop_started
     _d75_hb_trade_base = 0
     _d75_hb_entropy_base = 0
+    _d77_tick_last = _live_loop_started
+    _d77_tick_n = 0
 
     # ── Run WS persistently (restarts when reconnect_now is set) ──────────
     async def _ws_runner() -> None:
@@ -2318,6 +2320,11 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
 
     while True:
         now_loop = time.monotonic()
+        print(f"[D77_LOOP_ALIVE] t={now_loop:.1f}", flush=True)
+        if now_loop - _d77_tick_last >= 10.0:
+            print(f"[D77_LOOP_TICK] iter={_d77_tick_n}", flush=True)
+            _d77_tick_last = now_loop
+            _d77_tick_n += 1
         if now_loop - _d75_hb_last >= 60.0:
             trade_ticks_60s = max(0, _ws_trade_count - _d75_hb_trade_base)
             entropy_fires_60s = max(0, _ws_entropy_fire_count - _d75_hb_entropy_base)
@@ -2360,7 +2367,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 )
                 # Reset the 60s rate limit by resetting _last_tier1_refresh
                 _last_tier1_refresh = 0.0
-                tier1_extra, _ = await _refresh_tier1_tokens(db)
+                tier1_extra = _refresh_tier1_tokens(db)
                 for t in tier1_extra:
                     if t not in existing:
                         _current_tokens.append(t)
@@ -2597,7 +2604,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.14-D76"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.15-D77"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

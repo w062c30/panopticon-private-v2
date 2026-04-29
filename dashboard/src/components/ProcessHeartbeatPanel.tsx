@@ -1,5 +1,15 @@
 import { useProcessHeartbeat } from "../hooks/useProcessHeartbeat";
 
+type ProcessInfoLike = {
+  pid: number;
+  version: string;
+  expected: string;
+  version_match: boolean;
+  start_time: string;
+  last_heartbeat_ts?: string;
+  status: string;
+};
+
 function formatTime(iso: string | null | undefined): string {
   if (!iso) return "-";
   try {
@@ -9,12 +19,32 @@ function formatTime(iso: string | null | undefined): string {
   }
 }
 
+function formatProcessName(name: string): string {
+  return name
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function isProcessInfoLike(value: unknown): value is ProcessInfoLike {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.pid === "number" &&
+    typeof candidate.version === "string" &&
+    typeof candidate.expected === "string" &&
+    typeof candidate.version_match === "boolean" &&
+    typeof candidate.start_time === "string" &&
+    typeof candidate.status === "string"
+  );
+}
+
 function ProcessRow({
   name,
   info,
 }: {
   name: string;
-  info: { pid: number; version: string; expected: string; version_match: boolean; start_time: string; last_heartbeat_ts?: string; status: string } | undefined;
+  info: ProcessInfoLike | undefined;
 }) {
   if (!info) {
     return (
@@ -62,6 +92,9 @@ function ProcessRow({
 
 export function ProcessHeartbeatPanel() {
   const { heartbeat, error, lastUpdate } = useProcessHeartbeat();
+  const processEntries = Object.entries(heartbeat ?? {})
+    .filter(([key]) => key !== "timestamp")
+    .sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div className="rounded-xl border border-slate-700 bg-panPanel p-4">
@@ -101,27 +134,35 @@ export function ProcessHeartbeatPanel() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-700/50 bg-slate-900/30">
-            <ProcessRow name="Backend" info={heartbeat?.backend} />
-            <ProcessRow name="Radar" info={heartbeat?.radar} />
-            <ProcessRow name="Orchestrator" info={heartbeat?.orchestrator} />
-            <tr className="border-b border-slate-700/50">
-              <td className="px-3 py-2 font-medium text-slate-200">Frontend</td>
-              <td className="px-3 py-2 text-slate-500" colSpan={3}>
-                -
-              </td>
-              <td className="px-3 py-2">
-                <span className="inline-flex items-center rounded bg-emerald-900/50 px-1.5 py-0.5 text-xs font-medium text-emerald-300">
-                  Vite
-                </span>
-              </td>
-              <td className="px-3 py-2">
-                <span className="inline-flex items-center rounded bg-emerald-900/50 px-1.5 py-0.5 text-xs font-medium text-emerald-300">
-                  running
-                </span>
-              </td>
-              <td className="px-3 py-2 text-slate-500">-</td>
-              <td className="px-3 py-2 text-slate-500">-</td>
-            </tr>
+            {processEntries.length === 0 ? (
+              <tr className="border-b border-slate-700/50">
+                <td className="px-3 py-2 text-slate-500" colSpan={7}>
+                  尚未收到程序資料
+                </td>
+              </tr>
+            ) : (
+              processEntries.map(([name, info]) =>
+                isProcessInfoLike(info) ? (
+                  <ProcessRow key={name} name={formatProcessName(name)} info={info} />
+                ) : (
+                  <tr key={name} className="border-b border-slate-700/50 hover:bg-slate-800/40">
+                    <td className="px-3 py-2 font-medium text-slate-200">{formatProcessName(name)}</td>
+                    <td className="px-3 py-2 text-slate-500">-</td>
+                    <td className="px-3 py-2 text-slate-500">-</td>
+                    <td className="px-3 py-2 text-slate-500">-</td>
+                    <td className="px-3 py-2">
+                      <span className="inline-flex items-center rounded bg-slate-700/60 px-1.5 py-0.5 text-xs font-medium text-slate-200">
+                        {typeof info === "object" && info && "status" in info
+                          ? String((info as { status?: unknown }).status ?? "unknown")
+                          : "unknown"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-slate-500">-</td>
+                    <td className="px-3 py-2 text-slate-500">-</td>
+                  </tr>
+                ),
+              )
+            )}
           </tbody>
         </table>
       </div>

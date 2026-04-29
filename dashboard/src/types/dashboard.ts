@@ -184,9 +184,5 @@ export type ProcessInfo = {
 };
 
 export type ProcessHeartbeat = {
-  backend?: ProcessInfo;
-  radar?: ProcessInfo;
-  orchestrator?: ProcessInfo;
-  frontend?: { status: string };
   timestamp: number;
-};
+} & Record<string, ProcessInfo | { status: string } | number>;

@@ -51,6 +51,15 @@ rvf_live_snapshot.json
 # ── Temporary / Scratch ──────────────────────────────────────────────────────
 temp_*.py
 debug_*.py
+check_*.py
+d[0-9][0-9]_*.py
+deep_dive.py
+investigate_bottleneck.py
+quick_iss.py
+verify_join.py
+run_d[0-9][0-9]_*.py
+run/radar.log
+run/radar.err.log
 *.tmp
 *.swp
 *.swo
