@@ -50,3 +50,15 @@
 | 日期 | Sprint | 表格 | 欄位 | 說明 |
 |------|--------|------|------|------|
 | 2026-04-29 | D82 | discovered_entities | insider_score REAL DEFAULT 0.0 | 由 analysis_worker 寫入；D82 補加以支援 CONSENSUS_SYNC metrics |
+
+## 9. DB Migration Pattern（D84+）
+
+所有欄位新增**必須**使用 `_add_column_if_missing` helper（`panopticon_py/db.py`）：
+
+```python
+self._add_column_if_missing(conn, "table_name", "column_name", "REAL DEFAULT 0.0")
+```
+
+**禁止**直接在 `_ensure_*_tables()` 內寫裸 `ALTER TABLE` 語句。
+原因：`CREATE TABLE IF NOT EXISTS` 在 table 已存在時整段跳過，包括其後的 ALTER TABLE。Live DB 不會觸發，新建 DB 可能重複執行報錯。
+參見：EXP-D83-001（EXPERIENCE_PLAYBOOK.md）

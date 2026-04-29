@@ -179,18 +179,20 @@ https://github.com/Polymarket/py-clob-client-v2
 
 ---
 
-## Current System Status (as of D82)
+## Current System Status (as of D84)
 
 | Process | Version | Notes |
 |---------|--------|-------|
-| Orchestrator | v1.1.18-D81 | Stable; Radar as asyncio task inside |
-| Radar | v1.1.18-D81 | Stable; entropy gate / 60s diagnostic block operational |
+| Orchestrator | v1.1.19-D84 | Stable; DB migration helper `_add_column_if_missing` established |
+| Radar | v1.1.19-D83 | Stable; entropy gate operational; diagnostic prints cleared D83 |
 | Backend | v1.1.7-D69 | Stable |
 | Frontend | v1.1.7-D69 | Stable |
 
-**Known P1 issue**: `insider_score` column added to `discovered_entities` via D82 migration. P3 cleanup pending: D77_LOOP_ALIVE, D77_LOOP_TICK, D78_60S_BLOCK print diagnostics (can be removed after stable operation confirmed).
+**Cleared issues**: insider_score column ✅, ShadowDB.execute ✅, f-string crash ✅, CONSENSUS_SYNC error ✅, D77/D78 diagnostic prints ✅
 
-**Active EXP entries**: EXP-D81-001 (Python scope), EXP-D80-001 (f-string), EXP-D80-002 (ShadowDB.execute)
+**Known low-priority**: `restart_all.ps1` interactive terminal timeout — process works correctly, output visibility issue in interactive shells (D85 tracked, non-blocking)
+
+**Active EXP entries**: EXP-D83-001 (live DB ALTER trap), EXP-D81-001 (Python scope), EXP-D80-001 (f-string), EXP-D80-002 (ShadowDB.execute)
 
 ---
 
