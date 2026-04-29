@@ -4,6 +4,10 @@ description: >-
   Write effective handoff documents for the architect. This is the **DEFAULT handoff format** at
   the end of every coding session. Also triggers when user asks "write to 架構師", "handoff to
   architect", "send to architect", "ask architect", or "need architect review".
+  **IMPORTANT**: Every handoff document must begin with a prominent note directing the architect
+  to read live source at `https://github.com/w062c30/panopticon-private`. Use exact
+  `file:line` references (e.g. `panopticon_py/hunting/run_radar.py:L123`) — do not embed
+  large snippets unless the architect cannot resolve the question without them.
   **Unlike `handoff-context` (which requires explicit user request), this skill runs as the
   standard session-end handoff.**
 ---
