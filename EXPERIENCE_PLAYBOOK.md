@@ -736,4 +736,18 @@ Even if `fetch_best_ask` returns a price for AMM (e.g., 0.99), the AMM guard mus
 **規則**: 未來所有欄位新增都必須使用 `_add_column_if_missing` helper，不得使用裸 ALTER TABLE
 **D83 修復日期**: 2026-04-29
 
+## EXP-D88-001: discovery tier1=0 冷啟動正常現象
+**症狀**: hydration 第一個 cycle 顯示 tier1_added_this_round=0，discovery_wallet_dropped 80+次
+**根本原因**: 冷啟動時 wallet_observations 積累量不足，scrubber 丟棄無歷史錢包；
+  倖存錢包 win_rate 偏低，primary_tag=LONG_TERM_HOLDER，不符合 tier-1 門檻（trust_score >= 70 AND tag IN ALGO_SLICING/SMART_MONEY_QUANT）
+**判斷依據**: Passed Scrubber 119 個但零 tier-1，是數學上正確的結果，非 bug
+**預期改善時間**: wallet_observations 積累 > 50k rows 後，per-wallet 歷史足夠，scrubber drop rate 下降
+
+## EXP-D88-002: ShadowDB 跨執行緒 cursor 衝突 — no more rows available
+**症狀**: append_insider_score_snapshot 的 commit() 拋出 sqlite3.OperationalError: no more rows available
+**根本原因**: ShadowDB 使用 check_same_thread=False 允許跨執行緒共用同一個 Connection，
+  但 analysis_worker（threading.Thread）和 discovery asyncio 主循環同時操作同一個 cursor 狀態
+**修復**: 在 append_insider_score_snapshot 加 `_snapshot_lock`；WAL mode 允許多個 Connection 並發讀寫，不需要額外 lock
+**D89 修復日期**: 2026-04-29
+
 

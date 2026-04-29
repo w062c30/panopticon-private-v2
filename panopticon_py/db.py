@@ -391,6 +391,7 @@ class ShadowDB:
     _wallet_obs_buffer: list[dict[str, Any]] = []   # append_wallet_observation
     _kyle_buffer: list[dict[str, Any]] = []          # append_kyle_lambda_sample
     _flush_lock: threading.Lock = threading.Lock()    # guard concurrent flush
+    _snapshot_lock: threading.Lock = threading.Lock()   # D89: guard insider_score snapshot writes
     _BATCH_SIZE = 50                                  # flush every N rows
 
     def __init__(self, db_path: str = "data/panopticon.db") -> None:
@@ -2725,21 +2726,22 @@ class ShadowDB:
         self._kyle_buffer.clear()
 
     def append_insider_score_snapshot(self, row: dict[str, Any]) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO insider_score_snapshots (score_id, address, market_id, score, reasons_json, ingest_ts_utc)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                row["score_id"],
-                row["address"].lower(),
-                row.get("market_id"),
-                float(row["score"]),
-                row["reasons_json"] if isinstance(row["reasons_json"], str) else json.dumps(row["reasons_json"], ensure_ascii=False),
-                row["ingest_ts_utc"],
-            ),
-        )
-        self.conn.commit()
+        with self._snapshot_lock:
+            self.conn.execute(
+                """
+                INSERT INTO insider_score_snapshots (score_id, address, market_id, score, reasons_json, ingest_ts_utc)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["score_id"],
+                    row["address"].lower(),
+                    row.get("market_id"),
+                    float(row["score"]),
+                    row["reasons_json"] if isinstance(row["reasons_json"], str) else json.dumps(row["reasons_json"], ensure_ascii=False),
+                    row["ingest_ts_utc"],
+                ),
+            )
+            self.conn.commit()
 
     def count_raw_events_by_layer(self) -> dict[str, int]:
         rows = self.conn.execute(
