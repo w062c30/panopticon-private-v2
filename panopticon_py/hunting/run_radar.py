@@ -1610,6 +1610,13 @@ _ws_kyle_sample_count = 0  # D9: Kyle λ samples from book_embedded + standalone
 _last_ws_diag_log_ts = 0.0
 _WS_DIAG_LOG_INTERVAL_SEC = 60.0
 _FIRST_TRADE_TICK_LOGGED = False  # Task C: one-time TRADE_TICK diagnostic
+# D81: Heartbeat loop accumulators (initialized at module level, written by while loop)
+_live_loop_started = 0.0
+_d75_hb_last = 0.0
+_d75_hb_trade_base = 0
+_d75_hb_entropy_base = 0
+_d77_tick_last = 0.0
+_d77_tick_n = 0
 
 
 def _pctl(values: list[float], pct: float) -> float | None:
@@ -1636,6 +1643,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     avoids CancelledError propagation bugs from nested awaits.
     """
     from panopticon_py.hunting.clob_ws_client import run_ws_loop
+
+    global _last_ws_diag_log_ts, _live_loop_started
+    global _d75_hb_last, _d77_tick_last, _d77_tick_n
+    global _d75_hb_trade_base, _d75_hb_entropy_base
 
     # ── MetricsCollector: get singleton + baseline sync ──────────────────────────
     mc = _mc()
@@ -1676,25 +1687,22 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     _book_snapshot: dict[str, dict] = {}  # asset_id -> {"mid": float, "ts": str}
     _pending_trade: dict[str, dict] = {}  # asset_id -> {"size", "price", "ts", "mid_before", "expire_ts"}
     _PENDING_TRADE_TTL_SEC = 30.0  # stale entry TTL
-    # D75 short-term diagnostics: event-type counters + entropy gate stage breakdown.
-    _evt_count: dict[str, int] = {
-        "last_trade_price": 0,
-        "book": 0,
-        "price_change": 0,
-        "other": 0,
-    }
+    # D75/D81: _evt_count and _entropy_* are now module-level (initialized above _live_ticks)
+    # Only reset them here on function entry (they were local vars before this fix).
+    _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
     _entropy_eval_total = 0
     _entropy_locked_count = 0
     _entropy_history_not_ready_count = 0
     _entropy_z_ready_count = 0
     _entropy_z_below_threshold_count = 0
-    _entropy_z_samples: list[float] = []
+    _entropy_z_samples = []
 
     # ── Message handler ────────────────────────────────────────────────────────
     async def _on_message(msg: dict | list) -> None:
         nonlocal _msg_count
-        nonlocal _entropy_eval_total, _entropy_locked_count, _entropy_history_not_ready_count
-        nonlocal _entropy_z_ready_count, _entropy_z_below_threshold_count, _entropy_z_samples
+        nonlocal _evt_count, _entropy_eval_total, _entropy_locked_count
+        nonlocal _entropy_history_not_ready_count, _entropy_z_ready_count
+        nonlocal _entropy_z_below_threshold_count, _entropy_z_samples
 
         # P2 DIAG: WebSocket L1 counters — do NOT modify business logic
         global _ws_raw_msg_count, _ws_trade_count, _ws_entropy_fire_count, _ws_kyle_sample_count
@@ -2572,7 +2580,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.17-D80"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.18-D81"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
