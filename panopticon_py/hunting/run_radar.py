@@ -22,6 +22,7 @@ from panopticon_py.load_env import load_repo_env
 from panopticon_py.analysis.insider_pattern import compute_pattern_score
 from panopticon_py.series.event_series import classify_oracle_risk, ORACLE_RISK_HIGH
 from panopticon_py.time_utils import normalize_external_ts_to_utc, utc_now_rfc3339_ms
+from panopticon_py.utils.process_guard import update_heartbeat
 from config import get_z_threshold, get_min_history_for_z
 
 # Lazy MetricsCollector getter (avoids circular import)
@@ -193,11 +194,15 @@ async def _metrics_json_loop(
 
     last_event_fetch = 0.0
     fetch_interval = 3600  # 1 hour between batch fetches
+    heartbeat_fixed_logged = False
 
     while True:
         try:
             await asyncio.sleep(5)
             update_heartbeat("radar")
+            if not heartbeat_fixed_logged:
+                logger.info("[D76_HEARTBEAT_FIXED] update_heartbeat resolved — metrics_json_loop stable")
+                heartbeat_fixed_logged = True
             mc.sync_consensus_from_db(db)
             mc.persist_json(path=path)
 
@@ -2268,6 +2273,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
 
     next_heartbeat = time.monotonic() + 10.0
     reconnect_now = False
+    _live_loop_started = time.monotonic()
+    _d75_hb_last = _live_loop_started
+    _d75_hb_trade_base = 0
+    _d75_hb_entropy_base = 0
 
     # ── Run WS persistently (restarts when reconnect_now is set) ──────────
     async def _ws_runner() -> None:
@@ -2308,8 +2317,22 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
         logger.info("[STARTUP] Whale scanner enabled")
 
     while True:
+        now_loop = time.monotonic()
+        if now_loop - _d75_hb_last >= 60.0:
+            trade_ticks_60s = max(0, _ws_trade_count - _d75_hb_trade_base)
+            entropy_fires_60s = max(0, _ws_entropy_fire_count - _d75_hb_entropy_base)
+            logger.info(
+                "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d entropy_fires_60s=%d",
+                now_loop - _live_loop_started,
+                trade_ticks_60s,
+                entropy_fires_60s,
+            )
+            _d75_hb_last = now_loop
+            _d75_hb_trade_base = _ws_trade_count
+            _d75_hb_entropy_base = _ws_entropy_fire_count
+
         # ── Heartbeat: refresh subscriptions every 10s ──────────────────────────
-        if time.monotonic() >= next_heartbeat:
+        if now_loop >= next_heartbeat:
             # Concurrently refresh all tiers (asyncio.gather) then re-subscribe
             new_tokens, _, _, _, _ = await _refresh_all_subscriptions(db)
             # D42: Propagate active market registry to whale_scanner so it can scan T1/T3/T5
@@ -2573,8 +2596,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     # D51: Singleton enforcement
-    from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-    PROCESS_VERSION = "v1.1.13-D74"   # ← AGENT: bump on every change
+    from panopticon_py.utils.process_guard import acquire_singleton
+    PROCESS_VERSION = "v1.1.14-D76"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
