@@ -1,5 +1,5 @@
 # Panopticon - Singleton-Enforced Process Restart with Auto-Recovery
-# Version: v1.0.9-D78
+# Version: v1.0.11-D79
 # Run from: d:\Antigravity\Panopticon
 # MANDATORY: Use this script for ALL restarts.
 # OPTIONAL: Pass "-Continuous" for continuous monitoring with auto-recovery.
@@ -52,15 +52,24 @@ function Start-Backend {
     Start-Process python -ArgumentList "-m uvicorn panopticon_py.api.app:app --host 0.0.0.0 --port 8001" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
 }
 
+# D79: Radar runs INSIDE orchestrator as asyncio task (run_hft_orchestrator.py:L416).
+# DO NOT start a separate radar process — it would create a double-radar.
+# Kill-All still targets the standalone radar entry point (for legacy/manual starts).
 function Start-Radar {
-    $radarLog = "$runDir\radar.log"
-    $radarErr = "$runDir\radar.err.log"
-    Start-Process python -ArgumentList "-m panopticon_py.hunting.run_radar" -WorkingDirectory $projDir -WindowStyle Hidden -RedirectStandardOutput $radarLog -RedirectStandardError $radarErr -PassThru
+    # D79: DEPRECATED — radar is now an asyncio task inside orchestrator.
+    # This function is kept for backward compatibility with legacy scripts.
+    # Remove calls to this function from restart sequence.
+    Write-Host "  [D79 DEPRECATED] Start-Radar called — radar runs inside orchestrator, skipping"
 }
 
 function Start-Orchestrator {
+    $orchLog = "$runDir\orchestrator.log"
+    $orchErr = "$runDir\orchestrator.err.log"
     $env:PANOPTICON_WHALE = "1"
-    Start-Process python -ArgumentList "$projDir\run_hft_orchestrator.py" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+    Start-Process python -ArgumentList "$projDir\run_hft_orchestrator.py" `
+        -WorkingDirectory $projDir -WindowStyle Hidden `
+        -RedirectStandardOutput $orchLog `
+        -RedirectStandardError $orchErr -PassThru
 }
 
 function Start-AnalysisWorker {
@@ -195,9 +204,8 @@ function Full-Restart {
     Write-Host ("  Backend started PID=" + $backend.Id)
     Start-Sleep -Seconds 2
     
-    $radar = Start-Radar
-    Write-Host ("  Radar started PID=" + $radar.Id)
-    Start-Sleep -Seconds 2
+    # D79: Start-Radar DEPRECATED — radar runs inside orchestrator as asyncio task
+    # Radar singleton is verified via orchestrator PID in STEP 4
     
     $orch = Start-Orchestrator
     Write-Host ("  Orchestrator started PID=" + $orch.Id)
@@ -225,7 +233,9 @@ function Full-Restart {
     $ok = $true
     if (Test-Path $manifest) {
         $m = Get-Content $manifest | ConvertFrom-Json -ErrorAction Stop
-        foreach ($svc in @("backend","radar","orchestrator","analysis_worker")) {
+        
+        # D79: Verify backend, orchestrator, analysis_worker as independent processes
+        foreach ($svc in @("backend","orchestrator","analysis_worker")) {
             $entry = $m.PSObject.Properties[$svc].Value
             if ($null -ne $entry) {
                 $svcPid = $entry.pid
@@ -239,6 +249,22 @@ function Full-Restart {
             } else {
                 Write-Warning "  WARN [${svc}] not yet in manifest"
             }
+        }
+        
+        # D79: Radar is a shadow asyncio task inside orchestrator.
+        # Verify radar via orchestrator PID (radar dies when orchestrator dies).
+        $orchEntry = $m.PSObject.Properties["orchestrator"].Value
+        if ($null -ne $orchEntry) {
+            $orchPid = $orchEntry.pid
+            $orchAlive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$orchPid" -ErrorAction SilentlyContinue)
+            if ($orchAlive) {
+                Write-Host "  PASS [radar] SHADOW (PID=$orchPid via orchestrator) RUNNING"
+            } else {
+                Write-Warning "  FAIL [radar] orchestrator dead, radar shadow lost"
+                $ok = $false
+            }
+        } else {
+            Write-Warning "  WARN [radar] orchestrator not in manifest"
         }
     } else {
         Write-Warning "  manifest not found — processes may still be starting"
@@ -305,14 +331,9 @@ function Monitor-Loop {
         }
         
         if ($status.radar -eq 0) {
-            if ($restartAttempts.radar -lt $MaxRestartAttempts) {
-                Write-Host "[$timestamp] Radar DOWN, restarting (attempt $($restartAttempts.radar + 1)/$MaxRestartAttempts)..." -ForegroundColor Yellow
-                Start-Radar | Out-Null
-                $restartAttempts.radar++
-                $changes += "radar"
-            } else {
-                Write-Host "[$timestamp] Radar DOWN, max attempts reached!" -ForegroundColor Red
-            }
+            # D79: Radar runs inside orchestrator as asyncio task.
+            # Cannot restart radar independently. Monitor orchestrator instead.
+            Write-Host "[$timestamp] Radar is internal to orchestrator — monitoring orchestrator" -ForegroundColor DarkYellow
         } else {
             $restartAttempts.radar = 0
         }
