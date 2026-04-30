@@ -1,0 +1,236 @@
+"""
+T2-POL Political Market Monitor (D101)
+======================================
+Scans Gamma API for political-market slugs and maintains pol_market_watchlist.
+Does NOT generate SignalEvents — political market signals are triggered by
+the standard T2 radar path via wallet_observations (Invariant 1.4).
+
+Design constraints:
+- pol_monitor.py ONLY maintains the watchlist (read + write to pol_market_watchlist)
+- Signal generation is handled by run_radar's entropy window + signal_engine pipeline
+- All Gamma API field access uses .get() — no direct [] indexing (RULE-API-1)
+
+Invariant 1.4: T2/T2-POL Smart Money signal source is wallet_observations, not OFI.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import urllib.parse
+
+from panopticon_py.db import ShadowDB
+from panopticon_py.time_utils import utc_now_rfc3339_ms
+
+logger = logging.getLogger(__name__)
+
+# Political market keyword whitelist (slug match, lowercase)
+POL_KEYWORDS: list[str] = [
+    "trump", "biden", "harris", "election", "congress", "senate",
+    "president", "impeach", "tariff", "fed-chair", "supreme-court",
+    "nato", "war", "ceasefire", "sanction", "debt-ceiling",
+    "legislation", "veto", "executive-order",
+]
+
+POL_CATEGORY_MAP: dict[str, str] = {
+    "election": "ELECTION", "president": "ELECTION", "senate": "ELECTION",
+    "congress": "LEGISLATION", "legislation": "LEGISLATION", "veto": "LEGISLATION",
+    "tariff": "POLICY", "fed-chair": "APPOINTMENT", "supreme-court": "APPOINTMENT",
+    "war": "GEOPOLITICAL", "ceasefire": "GEOPOLITICAL", "nato": "GEOPOLITICAL",
+    "sanction": "GEOPOLITICAL",
+}
+
+# Slug segments that indicate non-political or wrong category
+_EXCLUDE_SLUG_SEGMENTS: list[str] = [
+    "updown", "5m", "sport", "nba", "nfl", "nhl", "soccer",
+    "champion", "winner", "world-cup", "playoff", "season",
+]
+
+GAMMA_URL = "https://gamma-api.polymarket.com/markets"
+
+# D101: Concurrency guard — MiniMax API rule applies to httpx calls too (via NGP-api.nvidia.com)
+_httpx_semaphore = asyncio.Semaphore(2)
+
+
+async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
+    """
+    Scan Gamma API for political markets matching POL_KEYWORDS.
+    Upserts matching markets into pol_market_watchlist.
+
+    Returns the count of upserted/updated markets.
+
+    Filter criteria (mirrors Invariant 1.4 T2 definition):
+    - active=True, closed=False, archived=False
+    - Exclude updown/5m/sports slug segments
+    - bestBid NOT in [0.99, ∞) or (-∞, 0.01]
+    - volume >= 5000
+    - slug contains at least one POL_KEYWORD
+    """
+    try:
+        import httpx
+    except ImportError:
+        logger.warning("[POL_SCAN] httpx not installed, skipping scan")
+        return 0
+
+    count = 0
+    offset = 0
+    limit = 100
+
+    async with _httpx_semaphore:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for _ in range(max_pages):
+                try:
+                    resp = await client.get(
+                        GAMMA_URL,
+                        params={
+                            "active": "true",
+                            "closed": "false",
+                            "archived": "false",
+                            "limit": limit,
+                            "offset": offset,
+                        },
+                    )
+                    resp.raise_for_status()
+                    markets = resp.json()
+                except Exception as exc:
+                    logger.warning("[POL_SCAN] gamma-api error: %s", exc)
+                    break
+
+                if not markets:
+                    break
+
+                for m in markets:
+                    slug = (m.get("slug") or "").lower()
+                    # T2 exclusion: skip algorithmic/sports markets
+                    if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
+                        continue
+
+                    try:
+                        vol = float(m.get("volume") or 0)
+                        best_bid = float(m.get("bestBid") or 0.5)
+                    except (ValueError, TypeError):
+                        continue
+
+                    if vol < 5000:
+                        continue
+                    if best_bid >= 0.99 or best_bid <= 0.01:
+                        continue
+
+                    matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
+                    if not matched_kw:
+                        continue
+
+                    # Determine political_category
+                    category = "OTHER"
+                    for kw in matched_kw:
+                        if kw in POL_CATEGORY_MAP:
+                            category = POL_CATEGORY_MAP[kw]
+                            break
+
+                    market_id = m.get("conditionId") or m.get("id") or ""
+                    if not market_id:
+                        continue
+
+                    # tokens field can be absent or empty — use .get() with fallback
+                    tokens = m.get("tokens") or []
+                    token_id = tokens[0].get("token_id") if tokens else None
+
+                    db.upsert_pol_market({
+                        "market_id": market_id,
+                        "token_id": token_id,
+                        "event_slug": slug,
+                        "political_category": category,
+                        "entity_keywords": matched_kw,
+                        "subscribed_at": utc_now_rfc3339_ms(),
+                    })
+                    count += 1
+
+                if len(markets) < limit:
+                    break
+                offset += limit
+                await asyncio.sleep(0.5)  # rate limit guard
+
+    logger.info("[POL_SCAN] upserted=%d political markets", count)
+    return count
+
+
+def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
+    """
+    Synchronous wrapper for scan_pol_markets.
+    Used when calling from a thread-based async context (e.g. asyncio.to_thread).
+    """
+    try:
+        import httpx
+    except ImportError:
+        logger.warning("[POL_SCAN] httpx not installed, skipping scan")
+        return 0
+
+    count = 0
+    offset = 0
+    limit = 100
+
+    for _ in range(max_pages):
+        try:
+            base = "https://gamma-api.polymarket.com"
+            path = "/markets"
+            url = f"{base}{path}?active=true&closed=false&archived=false&limit={limit}&offset={offset}"
+            resp = httpx.get(url, timeout=10.0)
+            resp.raise_for_status()
+            markets = resp.json()
+        except Exception as exc:
+            logger.warning("[POL_SCAN] gamma-api (sync) error: %s", exc)
+            break
+
+        if not markets:
+            break
+
+        for m in markets:
+            slug = (m.get("slug") or "").lower()
+            if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
+                continue
+
+            try:
+                vol = float(m.get("volume") or 0)
+                best_bid = float(m.get("bestBid") or 0.5)
+            except (ValueError, TypeError):
+                continue
+
+            if vol < 5000:
+                continue
+            if best_bid >= 0.99 or best_bid <= 0.01:
+                continue
+
+            matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
+            if not matched_kw:
+                continue
+
+            category = "OTHER"
+            for kw in matched_kw:
+                if kw in POL_CATEGORY_MAP:
+                    category = POL_CATEGORY_MAP[kw]
+                    break
+
+            market_id = m.get("conditionId") or m.get("id") or ""
+            if not market_id:
+                continue
+
+            tokens = m.get("tokens") or []
+            token_id = tokens[0].get("token_id") if tokens else None
+
+            db.upsert_pol_market({
+                "market_id": market_id,
+                "token_id": token_id,
+                "event_slug": slug,
+                "political_category": category,
+                "entity_keywords": matched_kw,
+                "subscribed_at": utc_now_rfc3339_ms(),
+            })
+            count += 1
+
+        if len(markets) < limit:
+            break
+        offset += limit
+
+    logger.info("[POL_SCAN][SYNC] upserted=%d political markets", count)
+    return count

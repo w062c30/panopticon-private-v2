@@ -56,3 +56,17 @@ def get_performance_history(period: str = Query("all", pattern="^(1d|7d|30d|all)
             for p in points
         ],
     )
+
+
+@router.get("/t5-coverage")
+def get_t5_coverage() -> dict:
+    """
+    D101: T5 Sports Market Coverage Panel.
+    Returns 24h signal/execution/pass-rate summary for T5 tier.
+    """
+    db = ShadowDB()
+    try:
+        db.bootstrap()
+        return db.fetch_t5_coverage_summary()
+    finally:
+        db.close()

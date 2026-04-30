@@ -527,10 +527,12 @@ def _sync_metrics_baseline(db, mc) -> None:
 
 _last_subscription_refresh: float = 0.0
 _last_tier1_refresh: float = 0.0
+_last_pol_refresh: float = 0.0  # D101: T2-POL 30-min refresh cadence
 _current_tokens: list[str] = []
 _pending_reconnect: bool = False
 _refresh_interval_sec: float = 60.0
 _TIER1_REFRESH_INTERVAL_SEC = 60.0  # Tier 1 refreshes every 60s (5-min markets expire frequently)
+_POL_REFRESH_INTERVAL_SEC = 1800.0  # D101: T2-POL refreshes every 30 minutes
 
 # D30: preserve last successful tier token sets to avoid subscription flapping
 # when a refresh call is rate-limited and returns [].
@@ -1346,6 +1348,40 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
             raw_markets_count,
         )
     return tier5_tokens
+
+
+def _sync_pol_tokens_from_watchlist(db) -> list[str]:
+    """
+    D101: Sync T2-POL tokens from pol_market_watchlist into _token_tier_map.
+    First performs a Gamma API scan (via sync httpx in thread), then reads
+    the watchlist and registers t2_pol tokens in the shared token tier map.
+
+    Returns list of t2_pol token_ids for subscription inclusion.
+    Must be called from a thread context (asyncio.to_thread).
+    """
+    global _token_tier_map
+
+    # Step 1: Scan Gamma API for new political markets
+    from panopticon_py.hunting.pol_monitor import sync_scan_pol_markets
+    try:
+        scanned = sync_scan_pol_markets(db, max_pages=5)
+        logger.info("[POL] Gamma scan completed: %d upserted", scanned)
+    except Exception as exc:
+        logger.warning("[POL] scan failed: %s", exc)
+
+    # Step 2: Read active political markets and register tokens
+    pol_markets = db.fetch_active_pol_markets()
+    pol_token_ids: list[str] = []
+
+    for pm in pol_markets:
+        token_id = pm.get("token_id")
+        if not token_id:
+            continue
+        _token_tier_map[token_id] = "t2_pol"
+        pol_token_ids.append(token_id)
+
+    logger.info("[POL] registered %d t2_pol tokens from watchlist", len(pol_token_ids))
+    return pol_token_ids
 
 
 def _refresh_active_subscription(db) -> list[str]:
@@ -2626,6 +2662,22 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             from panopticon_py.hunting import whale_scanner as _ws_mod
             _ws_mod.register_active_markets(_token_tier_map)
             reconnect_now = False
+
+            # D101: T2-POL refresh — every 30 minutes scan political markets
+            # via asyncio.to_thread (sync httpx called from thread, safe for event loop)
+            now_ts = time.time()
+            if now_ts - _last_pol_refresh >= _POL_REFRESH_INTERVAL_SEC:
+                _last_pol_refresh = now_ts
+                pol_tokens = await asyncio.to_thread(_sync_pol_tokens_from_watchlist, db)
+                if pol_tokens:
+                    existing = set(_current_tokens)
+                    for t in pol_tokens:
+                        if t not in existing:
+                            _current_tokens.append(t)
+                            existing.add(t)
+                    sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
+                    reconnect_now = True
+                    ew.mark_reconnect()
             if new_tokens:
                 existing = set(_current_tokens)
                 _current_tokens = list(_current_tokens)
@@ -2854,7 +2906,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.27-D81"   # ← AGENT: bump on every change  # D81: identity coverage log + TE push/push_target
+    PROCESS_VERSION = "v1.1.28-D101"   # ← AGENT: bump on every change  # D101: T2-POL political monitor + t2_pol in heartbeat
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

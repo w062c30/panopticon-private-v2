@@ -1,12 +1,11 @@
-D92: Fix whale_scanner INSERT column mismatch
+D100: Kyle lambda buffer bugfix + EXPERIENCE_PLAYBOOK EXP-D100-001
 
-- whale_scanner._upsert_whale_wallet_as_entity: replaced `source` with
-  `discovery_source`, removed non-existent `last_seen_market`/`updated_ts_utc`
-- whale_scanner._promote_qualified_wallets: same fix for path_b_promoted path
-- radar PROCESS_VERSION: v1.1.19-D83 -> v1.1.21-D92
-- EXP-D92-001 added to EXPERIENCE_PLAYBOOK.md
-
-Root cause: whale_scanner used legacy column names (`source`) while
-discovered_entities schema was updated to `discovery_source` in D37+.
-Fix verified: discovered_entities now has 3658 whale_scanner rows with
-insider_score=0.550 (was all 0).
+- db.py: 合併重複的 append_kyle_lambda_sample
+  - 保留 buffer 架構（定義 A）作為骨架
+  - 移植 guard 邏輯（trade_size <= 0, lambda_obs <= 0）至入口層
+  - 刪除直接 INSERT 版本（定義 B）
+- db.py: _flush_kyle_buffer 加入 filtered_count guard bypass warning
+- EXPERIENCE_PLAYBOOK.md: 新增 EXP-D100-001（重複 method 定義泛化規則）
+- versions_ref.json: orchestrator v1.1.21-D81 -> v1.1.22-D100
+- run_hft_orchestrator.py: PROCESS_VERSION v1.1.21-D81 -> v1.1.22-D100
+- PANOPTICON_CORE_LOGIC.md: v2.6 -> v2.7

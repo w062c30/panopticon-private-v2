@@ -1166,6 +1166,75 @@ class ShadowDB:
         self._add_column_if_missing(self.conn, "wallet_observations", "transaction_hash", "TEXT")
         self._add_column_if_missing(self.conn, "wallet_observations", "order_id", "TEXT")
 
+        # D101: T2-POL political market watchlist
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pol_market_watchlist (
+                market_id          TEXT PRIMARY KEY,
+                token_id           TEXT,
+                event_slug         TEXT,
+                political_category TEXT NOT NULL
+                    CHECK(political_category IN (
+                        'ELECTION','LEGISLATION','APPOINTMENT',
+                        'GEOPOLITICAL','POLICY','OTHER'
+                    )),
+                entity_keywords    TEXT NOT NULL,   -- JSON array e.g. '["trump","tariff"]'
+                subscribed_at      TEXT NOT NULL,
+                last_signal_ts     TEXT,
+                is_active          INTEGER NOT NULL DEFAULT 1
+                    CHECK(is_active IN (0,1))
+            );
+            CREATE INDEX IF NOT EXISTS idx_pol_active
+                ON pol_market_watchlist(is_active, subscribed_at DESC);
+        """)
+
+    def upsert_pol_market(self, row: dict) -> None:
+        """D101: Upsert a political market into pol_market_watchlist."""
+        self.conn.execute(
+            """
+            INSERT INTO pol_market_watchlist
+                (market_id, token_id, event_slug, political_category,
+                 entity_keywords, subscribed_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(market_id) DO UPDATE SET
+                token_id=excluded.token_id,
+                event_slug=excluded.event_slug,
+                political_category=excluded.political_category,
+                entity_keywords=excluded.entity_keywords,
+                is_active=1
+            """,
+            (
+                row["market_id"],
+                row.get("token_id"),
+                row.get("event_slug"),
+                row["political_category"],
+                json.dumps(row.get("entity_keywords", [])),
+                row["subscribed_at"],
+            ),
+        )
+        self.conn.commit()
+
+    def fetch_active_pol_markets(self) -> list[dict]:
+        """D101: Return all active political markets ordered by subscription time."""
+        rows = self.conn.execute("""
+            SELECT market_id, token_id, event_slug, political_category,
+                   entity_keywords, subscribed_at, last_signal_ts
+            FROM pol_market_watchlist
+            WHERE is_active = 1
+            ORDER BY subscribed_at DESC
+        """).fetchall()
+        return [
+            {
+                "market_id": r[0],
+                "token_id": r[1],
+                "event_slug": r[2],
+                "political_category": r[3],
+                "entity_keywords": json.loads(r[4] or "[]"),
+                "subscribed_at": r[5],
+                "last_signal_ts": r[6],
+            }
+            for r in rows
+        ]
+
     def _ensure_funding_roots_table(self) -> None:
         self.conn.executescript(
             """
@@ -1465,25 +1534,101 @@ class ShadowDB:
         self.conn.commit()
 
     def upsert_discovered_entity(self, row: dict[str, Any]) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO discovered_entities (entity_id, trust_score, primary_tag, sample_size, last_updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(entity_id) DO UPDATE SET
-              trust_score=excluded.trust_score,
-              primary_tag=excluded.primary_tag,
-              sample_size=excluded.sample_size,
-              last_updated_at=excluded.last_updated_at
-            """,
-            (
-                row["entity_id"],
-                float(row["trust_score"]),
-                str(row.get("primary_tag") or "UNKNOWN"),
-                int(row.get("sample_size") or 0),
-                str(row["last_updated_at"]),
-            ),
-        )
+        # D101: insider_score write path — conditional INSERT/UPDATE to avoid
+        # SQLite ambiguous column error when using COALESCE in ON CONFLICT.
+        insider_score = row.get("insider_score")  # float | None
+
+        if insider_score is not None:
+            self.conn.execute(
+                """
+                INSERT INTO discovered_entities
+                    (entity_id, trust_score, primary_tag, sample_size, last_updated_at, insider_score)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(entity_id) DO UPDATE SET
+                    trust_score=excluded.trust_score,
+                    primary_tag=excluded.primary_tag,
+                    sample_size=excluded.sample_size,
+                    last_updated_at=excluded.last_updated_at,
+                    insider_score=excluded.insider_score
+                """,
+                (
+                    row["entity_id"],
+                    float(row["trust_score"]),
+                    str(row.get("primary_tag") or "UNKNOWN"),
+                    int(row.get("sample_size") or 0),
+                    str(row["last_updated_at"]),
+                    float(insider_score),
+                ),
+            )
+        else:
+            # No insider_score provided — preserve existing value (backward compatible)
+            self.conn.execute(
+                """
+                INSERT INTO discovered_entities (entity_id, trust_score, primary_tag, sample_size, last_updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(entity_id) DO UPDATE SET
+                    trust_score=excluded.trust_score,
+                    primary_tag=excluded.primary_tag,
+                    sample_size=excluded.sample_size,
+                    last_updated_at=excluded.last_updated_at
+                """,
+                (
+                    row["entity_id"],
+                    float(row["trust_score"]),
+                    str(row.get("primary_tag") or "UNKNOWN"),
+                    int(row.get("sample_size") or 0),
+                    str(row["last_updated_at"]),
+                ),
+            )
         self.conn.commit()
+
+    def fetch_t5_coverage_summary(self) -> dict:
+        """
+        D101: T5 體育市場 Coverage 面板資料。
+        返回 24 小時內 T5 市場的信號、執行、勝率摘要。
+
+        Note: Only counts execution_records with market_tier='t5'.
+        Historical records with NULL market_tier are excluded (D46+ tagged records only).
+        """
+        row = self.conn.execute("""
+            SELECT
+                COUNT(*)                                                AS total_signals,
+                SUM(CASE WHEN accepted=1 THEN 1 ELSE 0 END)            AS accepted,
+                SUM(CASE WHEN accepted=0 THEN 1 ELSE 0 END)            AS rejected,
+                AVG(CASE WHEN accepted=1 THEN ev_net ELSE NULL END)     AS avg_ev_accepted,
+                AVG(posterior)                                          AS avg_posterior,
+                COUNT(DISTINCT market_id)                               AS distinct_markets
+            FROM execution_records
+            WHERE market_tier = 't5'
+              AND created_ts_utc > datetime('now', '-24 hours')
+        """).fetchone()
+
+        if not row or not row[0]:
+            return {
+                "tier": "t5",
+                "period": "24h",
+                "total_signals": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "avg_ev_accepted": None,
+                "avg_posterior": None,
+                "distinct_markets": 0,
+                "pass_rate": None,
+            }
+
+        total = int(row[0])
+        accepted = int(row[1] or 0)
+        return {
+            "tier": "t5",
+            "period": "24h",
+            "total_signals": total,
+            "accepted": accepted,
+            "rejected": int(row[2] or 0),
+            "avg_ev_accepted": float(row[3]) if row[3] is not None else None,
+            "avg_posterior": float(row[4]) if row[4] is not None else None,
+            "distinct_markets": int(row[5] or 0),
+            "pass_rate": round(accepted / total, 3) if total > 0 else None,
+        }
 
     def upsert_tracked_wallet(self, row: dict[str, Any]) -> None:
         self.conn.execute(

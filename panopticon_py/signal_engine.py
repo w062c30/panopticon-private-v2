@@ -303,16 +303,23 @@ def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
         return float(row[0])
 
     # D37: Direct query to discovered_entities.insider_score (whale scanner injection)
-    row_de = db.conn.execute(
-        """
-        SELECT insider_score FROM discovered_entities
-        WHERE entity_id = ? COLLATE NOCASE
-        LIMIT 1
-        """,
-        (wallet,),
-    ).fetchone()
-    if row_de is not None and row_de[0] is not None:
-        return float(row_de[0])
+    # D101: Wrapped in try/except to guard against pre-migration DB state.
+    # Filter score > 0.0 to skip DEFAULT 0.0 entries (not scored entities).
+    try:
+        row_de = db.conn.execute(
+            """
+            SELECT insider_score FROM discovered_entities
+            WHERE entity_id = ? COLLATE NOCASE
+            LIMIT 1
+            """,
+            (wallet,),
+        ).fetchone()
+        if row_de is not None and row_de[0] is not None:
+            score = float(row_de[0])
+            if score > 0.0:  # 0.0 = DEFAULT, not yet scored — skip
+                return score
+    except Exception as exc:
+        logger.debug("[SE][D37_FALLBACK_ERR] %s", exc)
 
     row2 = db.conn.execute(
         """
@@ -657,6 +664,17 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         })
         logger.info("[SE][ENTRY_PRICE] market=%s no asks available, skipping trade", market_id)
         return
+
+    # D101: T2-POL political market logging — no posterior override
+    # Political markets use full Bayesian consensus (same as standard T2).
+    # market_tier="t2_pol" is recorded for metrics tracking.
+    if event.market_tier == "t2_pol":
+        logger.info(
+            "[SE][T2_POL] political market=%s posterior=%.3f sources=%d",
+            str(market_id)[:20] if market_id else "None",
+            posterior,
+            len(sources),
+        )
 
     # 7.5 T5 Sports override: no financial insider signal in sports markets
     # Use conservative 50/50 base rate (p_prior = 0.50) instead of Bayesian posterior

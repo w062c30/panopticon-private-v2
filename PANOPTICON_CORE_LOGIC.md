@@ -1,7 +1,7 @@
 # 👁️ Project Panopticon: Core Trading Logic & Architectural Invariants
-# Version: 2.7
+# Version: 2.8
 # Last Updated: 2026-04-30
-# Changelog: v2.7 — D100 Kyle λ buffer bugfix（append_kyle_lambda_sample 重複定義合併 + flush guard bypass 監測）; EXPERIENCE_PLAYBOOK.md EXP-D100-001
+# Changelog: v2.8 — D101 T2-POL political market monitor (pol_monitor.py, pol_market_watchlist); signal_engine T2-POL logging; CORE_LOGIC Invariant 1.4 updated
 # Changelog: v2.6 — D81 Identity Coverage Log + Transfer Entropy Cache; Invariant 4.2 修訂（背景計算白名單 + TE bool-only 約束）
 # Changelog: v2.4 — D29 WS snapshot staleness fix (mc.on_ws_message); T1 KeyError(token_id) fix; T1 prefetch 3->5; NTP sync (ntplib); subscription cache guard; whale_scanner CLOB depth + thin-book signal; D30 kyle_lambda pending-price root-cause fix; PANOPTICON_WHALE default on
 # Changelog: v2.3 — D26 hook wiring complete; D27 persistent WS (_ws_runner); D27 T1 startup init; D28 SKIP investigation (see notes); Phase 5 whale_scanner.py foundation added
@@ -33,10 +33,11 @@
   * **T1 滾動預載**：採用動態 slug 規則預載 5 個視窗（current + 4），3 個資產共 30 個 token（6 tokens × 5 windows）。
   * **T1 訂閱抗抖動**：空 refresh 週期不得清空活躍訂閱；必須沿用最近一次成功快取，防止 `t1=0` 假性崩塌。
   * **T2（短期事件 3-30 天）**：排除演算法市場（`updown`/`5m` 等關鍵字）、體育分類、已解決/封閉市場、`bestBid ≥ 0.99` 或 `≤ 0.01` 的 near-certain 市場。成交量門檻 ≥ $5,000。最高 Smart Money Edge。
+  * **T2-POL（政治市場子層）**：T2 的子集，由 `pol_monitor.py` 掃描 slug 關鍵字（`trump`/`election`/`congress`/`tariff` 等）自動識別。使用 `market_tier="t2_pol"`。Signal 來源同 T2：`wallet_observations` Smart Money flow，非 OFI。`p_prior` 不做 override，完整貝氏後驗進入 L4 Gate。分析層可使用 `pol_market_watchlist.political_category` 做風險分類。
   * **T3（長線市場）**：現有邏輯，保留用於 L2 Discovery wallet_observations 數據源。
   * **T5（LIVE 體育 < 48 小時）**：僅接受體育分類、`active=True`、到期時間 ≤ 48 小時的市場。排除賽季/冠軍關鍵字（`champion`/`winner`/`world-cup-winner` 等）。信號進 `signal_engine` 時使用 `p_prior = 0.50`（保守基準，無財務 insider）。
   * **T5b（賽季冠軍市場）**：嚴禁訂閱 NBA Champion / FIFA World Cup 等長期賽季市場（錯誤的 `p_prior`，屬 Smart Money 市場，不屬 Shannon Entropy 有效範圍）。
-  * **OFI 映射排除**：T2 / T3 / T4 / T5 市場不得加入 `OFI_MARKET_MAP`——它們的 Smart Money 信號來源是 L2 wallet_observations，不是 Hyperliquid OFI。
+  * **OFI 映射排除**：T2 / T2-POL / T3 / T4 / T5 市場不得加入 `OFI_MARKET_MAP`——它們的 Smart Money 信號來源是 L2 wallet_observations，不是 Hyperliquid OFI。
 
 * **[Invariant 1.5] 時間戳合約 (Timestamp Contract)**：所有內部持久化時間戳（`ts_utc`/`*_ts_utc`/`created_at`）**必須**使用 RFC3339 UTC 毫秒字串，結尾為 `Z`（例如 `2026-04-25T11:35:00.765Z`）。外部 API 時間戳在 DB/內部合約邊界僅作正規化。Duration/TTL 時鐘保持單調遞增。代理**嚴禁**向內部表寫入 `+00:00` 或裸露的 epoch-ms/數字時間戳。
 
