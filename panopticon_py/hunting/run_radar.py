@@ -18,6 +18,7 @@ from panopticon_py.db import ShadowDB
 from panopticon_py.hunting.entropy_window import EntropyWindow
 from panopticon_py.signal_engine import SignalEvent
 from panopticon_py.hunting.trade_aggregate import aggregate_taker_sweeps, cross_wallet_burst_cluster
+from panopticon_py.ingestion.order_reconstruction_engine import close_stale_orders
 from panopticon_py.load_env import load_repo_env
 from panopticon_py.analysis.insider_pattern import compute_pattern_score
 from panopticon_py.series.event_series import classify_oracle_risk, ORACLE_RISK_HIGH
@@ -2593,6 +2594,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 # ── BATCH: flush accumulated wallet_obs and kyle samples ──────────
                 db.flush_wallet_obs_buffer()
                 db.flush_kyle_buffer()
+                # D98: close stale orders (orders with no new fills for 30s)
+                closed = close_stale_orders(db)
+                if closed > 0:
+                    logger.info("[D98][ORDER_CLEANUP] closed %d stale orders", closed)
                 # P3 DIAG: log actual z-score even when no entropy fire
                 # D75: minute-level z-score distribution stats
                 z_min = min(_entropy_z_samples) if _entropy_z_samples else None
@@ -2762,7 +2767,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.25-D97"   # ← AGENT: bump on every change  # D97: order_id UnboundLocalError fixed — initialized before pending_trade block
+    PROCESS_VERSION = "v1.1.26-D97"   # ← AGENT: bump on every change  # D97: wired close_stale_orders() into 60s heartbeat cleanup loop
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
