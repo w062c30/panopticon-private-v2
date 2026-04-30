@@ -37,6 +37,7 @@ from panopticon_py.execution.constants import (
 from panopticon_py.fast_gate import FastSignalInput, GateDecision, fast_execution_gate
 from panopticon_py.friction_state import FrictionSnapshot
 from panopticon_py.ingestion.clob_client import fetch_best_ask
+from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 # ---------------------------------------------------------------------------
 # Price cache — Polymarket CLOB /book endpoint with spread-based selection
@@ -783,7 +784,6 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # D103-1: Record last signal timestamp for accepted T2-POL signals
     if accepted and event.market_tier == "t2_pol":
         try:
-            from panopticon_py.time_utils import utc_now_rfc3339_ms
             db.update_pol_last_signal_ts(market_id, utc_now_rfc3339_ms())
         except Exception as _e:
             logger.warning("[POL] last_signal_ts update failed: %s", _e)
