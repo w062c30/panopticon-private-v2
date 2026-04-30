@@ -528,6 +528,7 @@ def _sync_metrics_baseline(db, mc) -> None:
 _last_subscription_refresh: float = 0.0
 _last_tier1_refresh: float = 0.0
 _last_pol_refresh: float = 0.0  # D101: T2-POL 30-min refresh cadence
+_pol_active_count: int = 0  # D105: cached count for heartbeat visibility
 _current_tokens: list[str] = []
 _pending_reconnect: bool = False
 _refresh_interval_sec: float = 60.0
@@ -1359,18 +1360,29 @@ def _sync_pol_tokens_from_watchlist(db) -> list[str]:
     Returns list of t2_pol token_ids for subscription inclusion.
     Must be called from a thread context (asyncio.to_thread).
     """
-    global _token_tier_map
+    global _token_tier_map, _pol_active_count
+
+    # D105-3: POL scan elapsed time (measured inside thread)
+    import time as _time
+    _t0 = _time.monotonic()
 
     # Step 1: Scan Gamma API for new political markets
     from panopticon_py.hunting.pol_monitor import sync_scan_pol_markets
     try:
         scanned = sync_scan_pol_markets(db, max_pages=5)
-        logger.info("[POL] Gamma scan completed: %d upserted", scanned)
+        _elapsed = _time.monotonic() - _t0
+        logger.info(
+            "[POL_REFRESH] scan_complete count=%d elapsed=%.2fs next_refresh_in=%ds",
+            scanned,
+            _elapsed,
+            _POL_REFRESH_INTERVAL_SEC,
+        )
     except Exception as exc:
         logger.warning("[POL] scan failed: %s", exc)
 
     # Step 2: Read active political markets and register tokens
     pol_markets = db.fetch_active_pol_markets()
+    _pol_active_count = len(pol_markets)
     pol_token_ids: list[str] = []
 
     for pm in pol_markets:
@@ -2645,10 +2657,11 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             trade_ticks_60s = max(0, _ws_trade_count - _d75_hb_trade_base)
             entropy_fires_60s = max(0, _ws_entropy_fire_count - _d75_hb_entropy_base)
             logger.info(
-                "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d entropy_fires_60s=%d",
+                "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d entropy_fires_60s=%d pol_markets_active=%d",
                 now_loop - _live_loop_started,
                 trade_ticks_60s,
                 entropy_fires_60s,
+                _pol_active_count,
             )
             _d75_hb_last = now_loop
             _d75_hb_trade_base = _ws_trade_count
@@ -2906,7 +2919,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.28-D101"   # ← AGENT: bump on every change  # D101: T2-POL political monitor + t2_pol in heartbeat
+    PROCESS_VERSION = "v1.1.29-D105"   # ← AGENT: bump on every change  # D105: POL elapsed time log + heartbeat pol_markets_active
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

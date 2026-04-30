@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from panopticon_py.db import ShadowDB
+from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 router = APIRouter(prefix="/api", tags=["watchlist"])
 
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/api", tags=["watchlist"])
 def get_pol_watchlist() -> dict:
     """
     D103: Return active T2-POL political market watchlist.
-    Used by dashboard to display monitored political markets.
+    D105: Added generated_at for data freshness visibility.
     """
     db = ShadowDB()
     try:
@@ -26,6 +27,7 @@ def get_pol_watchlist() -> dict:
         return {
             "count": len(markets),
             "markets": markets,
+            "generated_at": utc_now_rfc3339_ms(),
         }
     finally:
         db.close()

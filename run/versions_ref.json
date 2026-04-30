@@ -1,12 +1,12 @@
 {
   "_doc": "SOURCE OF TRUTH for process versions. Agents MUST update this file when modifying any process. See AGENTS.md §PROCESS-VERSION-PROTOCOL.",
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
-  "radar": "v1.1.28-D101",
+  "radar": "v1.1.29-D105",
   "orchestrator": "v1.1.22-D100",
-  "backend": "v1.1.9-D104",
+  "backend": "v1.1.10-D105",
   "frontend": "v1.1.7-D69",
   "analysis_worker": "v1.1.13-D90",
-  "last_updated": "2026-04-30T12:06:00Z",
-  "updated_by_sprint": "D104",
-  "updated_by_agent": "D104-coding-agent"
+  "last_updated": "2026-04-30T12:16:00Z",
+  "updated_by_sprint": "D105",
+  "updated_by_agent": "D105-coding-agent"
 }

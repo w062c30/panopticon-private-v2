@@ -28,7 +28,7 @@ app = FastAPI(title="Panopticon API", version="0.1.0")
 # D51: Singleton enforcement — must be first after app creation
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 
-PROCESS_VERSION = "v1.1.9-D103"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.10-D105"   # ← AGENT: bump on every change
 acquire_singleton("backend", PROCESS_VERSION)
 
 # Browser dev servers (Vite) use http://localhost:* while API may bind 127.0.0.1 — different origins → CORS required.
