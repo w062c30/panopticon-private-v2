@@ -1,0 +1,12 @@
+D92: Fix whale_scanner INSERT column mismatch
+
+- whale_scanner._upsert_whale_wallet_as_entity: replaced `source` with
+  `discovery_source`, removed non-existent `last_seen_market`/`updated_ts_utc`
+- whale_scanner._promote_qualified_wallets: same fix for path_b_promoted path
+- radar PROCESS_VERSION: v1.1.19-D83 -> v1.1.21-D92
+- EXP-D92-001 added to EXPERIENCE_PLAYBOOK.md
+
+Root cause: whale_scanner used legacy column names (`source`) while
+discovered_entities schema was updated to `discovery_source` in D37+.
+Fix verified: discovered_entities now has 3658 whale_scanner rows with
+insider_score=0.550 (was all 0).

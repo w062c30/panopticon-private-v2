@@ -8,6 +8,18 @@ function calcTotalEv(trades: TradeListItem[]): number {
   return trades.reduce((sum, t) => sum + (t.estimatedEvUsd ?? 0), 0);
 }
 
+function fmtTs(ts: string): string {
+  if (!ts) return "—";
+  try {
+    return new Date(ts).toLocaleString("en-US", {
+      month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  } catch {
+    return ts;
+  }
+}
+
 export function TradeListPanel({ trades }: Props) {
   const totalEv = calcTotalEv(trades);
   const paperTrades = trades.filter((t) => t.source === "paper");
@@ -40,11 +52,12 @@ export function TradeListPanel({ trades }: Props) {
           </span>
         </div>
       </div>
-      <div className="max-h-80 overflow-auto">
+      <div className="overflow-auto">
         <table className="w-full text-left text-xs text-slate-300">
           <thead className="sticky top-0 bg-slate-900">
             <tr>
               <th className="p-2">Event</th>
+              <th className="p-2">Open Time</th>
               <th className="p-2">Source</th>
               <th className="p-2">Status</th>
               <th className="p-2">方向</th>
@@ -56,6 +69,7 @@ export function TradeListPanel({ trades }: Props) {
               <th className="p-2">EV</th>
               <th className="p-2">Realized</th>
               <th className="p-2">Unrealized</th>
+              <th className="p-2">平倉時間</th>
               <th className="p-2">平倉條件</th>
             </tr>
           </thead>
@@ -94,6 +108,7 @@ export function TradeListPanel({ trades }: Props) {
                     </div>
                   )}
                 </td>
+                <td className="p-2 whitespace-nowrap text-slate-400">{fmtTs(trade.openedAt)}</td>
                 <td className="px-2 py-1">
                   <span
                     className={`text-[10px] px-1.5 py-0.5 rounded font-mono uppercase tracking-wide border ${
@@ -134,6 +149,7 @@ export function TradeListPanel({ trades }: Props) {
                   {(trade.unrealizedPnlUsd ?? 0) >= 0 ? "+" : ""}
                   {(trade.unrealizedPnlUsd ?? 0).toFixed(2)}
                 </td>
+                <td className="p-2 whitespace-nowrap text-slate-400">{fmtTs(trade.closedAt)}</td>
                 <td className="p-2">{trade.closeCondition}</td>
               </tr>
               );

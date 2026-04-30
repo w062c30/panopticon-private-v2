@@ -60,7 +60,7 @@ def _mc():
 # ---------------------------------------------------------------------------
 MIN_CONSENSUS_SOURCES = int(os.getenv("MIN_CONSENSUS_SOURCES", "2"))
 INSIDER_SCORE_THRESHOLD = float(os.getenv("INSIDER_SCORE_THRESHOLD", "0.55"))
-ENTROPY_LOOKBACK_SEC = int(os.getenv("ENTROPY_LOOKBACK_SEC", "360"))
+ENTROPY_LOOKBACK_SEC = int(os.getenv("ENTROPY_LOOKBACK_SEC", "1800"))  # D96: was 360, increased to cover data-api polling cadence
 MIN_ENTROPY_Z_THRESHOLD = float(os.getenv("MIN_ENTROPY_Z_THRESHOLD", "-4.0"))
 DEFAULT_CAPITAL = 100.0
 KELLY_FRACTION = 0.25
@@ -516,15 +516,41 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         logging.debug("[SE] |z|=%.2f below threshold magnitude %.2f, skipping", abs(z), abs(MIN_ENTROPY_Z_THRESHOLD))
         return
 
-    # 2. OFI source: orchestrator already mapped HL → PM via OFI_MARKET_MAP
+    # D96-C: T1 short-circuit — T1 markets go to Kyle λ path only, not consensus
+    if event.market_tier == "t1":
+        logging.debug("[SE][T1_SKIP] market=%s z=%.2f — kyle_path only", market_id, z)
+        return
+
+    # 3. OFI source: orchestrator already mapped HL → PM via OFI_MARKET_MAP
     #    Log for observability only — market_id is already correct
     if event.source == "ofi":
         logging.info("[SE][OFI] ofi=%.3f market=%s", event.ofi_shock_value, market_id)
 
-    # 3. Collect insider sources
+    # 4. Collect insider sources
     sources = _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
 
-    # 4. Consensus check
+    # D96-NEW-1c: Grace period — pre-fire / on-fire poll may still be writing wallet_observations
+    if len(sources) < MIN_CONSENSUS_SOURCES:
+        GRACE_PERIOD_SEC   = 8.0
+        RETRY_INTERVAL_SEC = 1.0
+        elapsed = 0.0
+
+        while elapsed < GRACE_PERIOD_SEC:
+            await asyncio.sleep(RETRY_INTERVAL_SEC)
+            elapsed += RETRY_INTERVAL_SEC
+            sources = _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
+            logging.debug(
+                "[SE][GRACE] market=%s elapsed=%.1fs sources=%d",
+                market_id, elapsed, len(sources)
+            )
+            if len(sources) >= MIN_CONSENSUS_SOURCES:
+                logging.info(
+                    "[SE][GRACE_PASS] market=%s found %d sources after %.1fs",
+                    market_id, len(sources), elapsed
+                )
+                break
+
+    # 5. Consensus check
     if len(sources) < MIN_CONSENSUS_SOURCES:
         decision_id = str(uuid4())
         execution_id = decision_id

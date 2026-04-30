@@ -153,7 +153,9 @@ CREATE TABLE IF NOT EXISTS wallet_observations (
   market_id TEXT,
   obs_type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
-  ingest_ts_utc TEXT NOT NULL
+  ingest_ts_utc TEXT NOT NULL,
+  transaction_hash TEXT,
+  order_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallet_obs_address ON wallet_observations(address);
@@ -652,7 +654,9 @@ class ShadowDB:
               market_id TEXT,
               obs_type TEXT NOT NULL,
               payload_json TEXT NOT NULL,
-              ingest_ts_utc TEXT NOT NULL
+              ingest_ts_utc TEXT NOT NULL,
+              transaction_hash TEXT,
+              order_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_wallet_obs_address ON wallet_observations(address);
             CREATE INDEX IF NOT EXISTS idx_wallet_obs_ingest ON wallet_observations(ingest_ts_utc);
@@ -1027,6 +1031,32 @@ class ShadowDB:
         self._add_column_if_missing(self.conn, "discovered_entities", "discovery_source", "TEXT NOT NULL DEFAULT 'unknown'")
         # D82: insider_score for CONSENSUS_SYNC metrics
         self._add_column_if_missing(self.conn, "discovered_entities", "insider_score", "REAL DEFAULT 0.0")
+
+        # D96: order_reconstructions table
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS order_reconstructions (
+                order_id            TEXT PRIMARY KEY,
+                taker_wallet        TEXT NOT NULL,
+                market_id           TEXT NOT NULL,
+                side                TEXT NOT NULL,
+                total_size          REAL NOT NULL,
+                fill_count          INTEGER NOT NULL DEFAULT 1,
+                avg_price           REAL NOT NULL,
+                first_fill_ts       INTEGER NOT NULL,
+                last_fill_ts        INTEGER NOT NULL,
+                is_complete         INTEGER NOT NULL DEFAULT 0,
+                order_type_inferred TEXT,
+                created_at          TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_or_open
+                ON order_reconstructions(taker_wallet, market_id, side, is_complete, last_fill_ts);
+            CREATE INDEX IF NOT EXISTS idx_or_ts
+                ON order_reconstructions(last_fill_ts);
+        """)
+
+        # D96: wallet_observations extended columns
+        self._add_column_if_missing(self.conn, "wallet_observations", "transaction_hash", "TEXT")
+        self._add_column_if_missing(self.conn, "wallet_observations", "order_id", "TEXT")
 
     def _ensure_funding_roots_table(self) -> None:
         self.conn.executescript(
@@ -2606,8 +2636,8 @@ class ShadowDB:
                 try:
                     self.conn.executemany(
                         """
-                        INSERT INTO wallet_observations (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO wallet_observations (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc, transaction_hash, order_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
@@ -2617,6 +2647,8 @@ class ShadowDB:
                                 row["obs_type"],
                                 row["payload_json"] if isinstance(row["payload_json"], str) else json.dumps(row["payload_json"], ensure_ascii=False),
                                 row["ingest_ts_utc"],
+                                row.get("transaction_hash"),
+                                row.get("order_id"),
                             )
                             for row in self._wallet_obs_buffer
                         ],
@@ -2675,8 +2707,8 @@ class ShadowDB:
         try:
             self.conn.executemany(
                 """
-                INSERT INTO wallet_observations (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO wallet_observations (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc, transaction_hash, order_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -2686,6 +2718,8 @@ class ShadowDB:
                         row["obs_type"],
                         row["payload_json"] if isinstance(row["payload_json"], str) else json.dumps(row["payload_json"], ensure_ascii=False),
                         row["ingest_ts_utc"],
+                        row.get("transaction_hash"),
+                        row.get("order_id"),
                     )
                     for row in self._wallet_obs_buffer
                 ],

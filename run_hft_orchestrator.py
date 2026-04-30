@@ -65,7 +65,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.19-D84"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.20-D96"   # ← AGENT: bump on every change
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file

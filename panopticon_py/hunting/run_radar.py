@@ -1583,6 +1583,7 @@ def _poll_data_api_for_takers(token_ids: list[str], db: ShadowDB) -> None:
             if not (taker.startswith("0x") and len(taker) >= 42):
                 continue
             taker_addr = taker[:42].lower()
+            order_id = try_match_or_open(trade, db)
             obs = {
                 "obs_id": str(uuid4()),
                 "address": taker_addr,
@@ -1595,12 +1596,132 @@ def _poll_data_api_for_takers(token_ids: list[str], db: ShadowDB) -> None:
                     "source": "data_api_polling",
                 },
                 "ingest_ts_utc": _utc(),
+                "transaction_hash": trade.get("transactionHash", ""),
+                "order_id": order_id,
             }
             db.append_wallet_observation(obs)
             seen += 1
 
     if seen > 0:
         logger.info("[RADAR][DATA_API] Captured %d taker observations across %d tokens", seen, min(20, len(token_ids)))
+
+
+# D96-NEW-1a: Triggered identity poll for single market
+async def _poll_single_market_identity(
+    asset_id: str,
+    market_id: str,
+    db: ShadowDB,
+    label: str = "triggered",
+) -> int:
+    """
+    Immediately execute one identity poll for a single market.
+    Returns the number of newly written wallet_observations.
+
+    cursor: only trades with timestamp > _last_poll_ts[asset_id] (client-side filter)
+    dedup: INSERT OR IGNORE by transaction_hash (if hash present)
+    """
+    global _last_poll_ts
+
+    url = "https://data-api.polymarket.com/trades"
+    params = {"asset_id": asset_id, "limit": 100, "takerOnly": "true"}
+
+    try:
+        loop = asyncio.get_event_loop()
+        # urllib.request is async-compatible via run_in_executor
+        def _http_get() -> tuple[int, list]:
+            q = urllib.parse.urlencode(params)
+            full_url = f"{url}?{q}"
+            req = urllib.request.Request(
+                full_url,
+                headers={"Accept": "application/json", "User-Agent": "panopticon-radar/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                return (resp.status, json.loads(resp.read().decode("utf-8")))
+
+        status, trades = await loop.run_in_executor(None, _http_get)
+        if status >= 400:
+            logger.warning("[POLL][%s] HTTP %s for %s", label, status, asset_id[:20])
+            return 0
+        if not isinstance(trades, list):
+            return 0
+
+        last_ts = _last_poll_ts.get(asset_id, 0)
+        new_count = 0
+
+        for raw in trades:
+            ts_ms = int(raw.get("timestamp") or 0)
+            if ts_ms <= last_ts:
+                continue  # cursor: already processed
+
+            proxy_wallet = raw.get("proxyWallet") or raw.get("taker_address") or ""
+            tx_hash = raw.get("transactionHash") or ""
+            size = float(raw.get("size") or 0)
+            price = float(raw.get("price") or 0)
+            side = raw.get("side", "")
+            usdc_size = round(size * price, 4)
+
+            # RULE-DATA-2: mandatory three-field validation
+            if not proxy_wallet or usdc_size <= 0:
+                continue
+
+            # order reconstruction
+            order_id = try_match_or_open(raw, db)
+
+            # wallet_observations with transaction_hash dedup
+            if tx_hash:
+                db.conn.execute("""
+                    INSERT OR IGNORE INTO wallet_observations
+                        (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc, transaction_hash, order_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    str(uuid4()),
+                    proxy_wallet.lower()[:42],
+                    market_id,
+                    "clob_trade",
+                    json.dumps({"side": side, "size": size, "price": price, "source": f"data_api_{label}"}, ensure_ascii=False),
+                    _utc(),
+                    tx_hash,
+                    order_id,
+                ))
+            else:
+                db.conn.execute("""
+                    INSERT INTO wallet_observations
+                        (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc, transaction_hash, order_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    str(uuid4()),
+                    proxy_wallet.lower()[:42],
+                    market_id,
+                    "clob_trade",
+                    json.dumps({"side": side, "size": size, "price": price, "source": f"data_api_{label}"}, ensure_ascii=False),
+                    _utc(),
+                    tx_hash,
+                    order_id,
+                ))
+            new_count += 1
+
+        db.conn.commit()
+
+        if trades:
+            max_ts = max(int(t.get("timestamp") or 0) for t in trades)
+            _last_poll_ts[asset_id] = max(last_ts, max_ts)
+
+        logger.info("[POLL][%s] market=%s new=%d", label, market_id[:20], new_count)
+        return new_count
+
+    except Exception as e:
+        logger.warning("[POLL][%s] error: %s", label, e)
+        return 0
+
+
+def try_match_or_open(raw: dict, db) -> str:
+    """
+    Redirect to order_reconstruction_engine.try_match_or_open.
+    Kept as module-level alias for backward compatibility with _poll_data_api_for_takers.
+    """
+    from panopticon_py.ingestion.order_reconstruction_engine import try_match_or_open as _impl
+    return _impl(raw, db)
+
 
 
 _ws_raw_msg_count = 0
@@ -1617,6 +1738,12 @@ _d75_hb_trade_base = 0
 _d75_hb_entropy_base = 0
 _d77_tick_last = 0.0
 _d77_tick_n = 0
+
+# D96-NEW-1a/1b: Triggered identity poll state
+_triggered_poll_cooldown: dict[str, float] = {}   # market_id -> last trigger monotonic ts
+_last_poll_ts: dict[str, int] = {}              # token_id -> last seen trade Unix ms
+LARGE_TRADE_TRIGGER_USDC = 500.0
+TRIGGERED_POLL_COOLDOWN_SEC = 2.0
 
 
 def _pctl(values: list[float], pct: float) -> float | None:
@@ -1738,7 +1865,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             asset_id_top = item.get("asset_id") or item.get("market") or ""
             tier_top = _token_tier_map.get(asset_id_top, "unknown")
             if tier_top == "t1":
-                logger.info(
+                logger.debug(
                     "[DIAG][WS_EVENT_RAW] type=%s asset=%s keys=%s",
                     event_type,
                     asset_id_top[:20] if asset_id_top else "None",
@@ -1965,12 +2092,22 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     except (ValueError, TypeError):
                         secs_left = -1
                     from panopticon_py.hunting import t1_market_clock as t1c
-                    logger.info(
+                    logger.debug(
                         "[DIAG][T1_TICK] asset=%s price=%s size=%s "
                         "window_ts=%s secs_left=%ds ntp_offset=%.3fs",
                         asset_id[:20], trade_price, trade_size,
                         w_ts_str, secs_left, getattr(t1c, "_ntp_offset_seconds", 0.0),
                     )
+                    # D96-B: T1 route — push to per-token ew only; NO signal queue, NO fire, NO DB write
+                    t1_ew = _entropy_windows.setdefault(asset_id, EntropyWindow())
+                    # Derive buy/sell for H_sample
+                    t1_buy = trade_size if trade_side == "BUY" else 0.0
+                    t1_sell = trade_size if trade_side == "SELL" else 0.0
+                    t1_ew.push(recv, t1_buy, t1_sell)
+                    t1_ew.record_H_sample(recv)
+                    # D96-B: STOP — Kyle λ can still compute (mid_before already captured above)
+                    # but T1 does NOT go through consensus pipeline
+                    continue
 
                 # ── Kyle λ calculation (standalone path) ─────────────────────────────────
                 # Compute lambda using mid_before from the book snapshot captured above.
@@ -2004,6 +2141,20 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         delta_v = trade_size
                         if delta_v > 0:
                             lambda_obs = delta_p / delta_v
+                            # D96-NEW-3: upgrade to order-level size if order_id is known
+                            pending_oid = pending.get("order_id")
+                            if pending_oid:
+                                row = db.conn.execute(
+                                    "SELECT total_size FROM order_reconstructions WHERE order_id=? LIMIT 1",
+                                    (pending_oid,),
+                                ).fetchone()
+                                if row:
+                                    effective_size = float(row[0])
+                                    lambda_obs = delta_p / max(effective_size, 0.01)
+                                    logger.debug(
+                                        "[KYLE][D96] order_id=%s total_size=%.4f lambda=%.6f",
+                                        pending_oid[:16], effective_size, lambda_obs,
+                                    )
                             # ── Q10: Guard against window_ts=0 ─────────────────────
                             slug = _token_to_slug_map.get(asset_id, "")
                             ts_part = slug.rsplit("-", 1)[-1] if slug and "-" in slug else ""
@@ -2044,6 +2195,8 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 # as prev_price (critical for consecutive-trade Kyle lambda calculation).
                 # Only set mid_before=None if the entry was brand-new (no mid_before yet);
                 # otherwise keep the existing mid_before to avoid losing book snapshot state.
+                # D96-NEW-3: track order_id per pending trade for downstream Kyle λ upgrade
+                pending_order_id = _pending_trade.get(asset_id, {}).get("order_id")
                 existing = _pending_trade.get(asset_id)
                 _pending_trade[asset_id] = {
                     "size": trade_size,
@@ -2055,6 +2208,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         else mid_before
                     ),
                     "expire_ts": recv + _PENDING_TRADE_TTL_SEC,
+                    "order_id": order_id if order_id else pending_order_id,
                 }
 
                 if trade_side == "BUY":
@@ -2078,6 +2232,28 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         item.get("timestamp", "?"),
                     )
                     _FIRST_TRADE_TICK_LOGGED = True
+
+                # D96-NEW-1a: Pre-fire triggered poll for large T2/T3/T5 trades
+                trade_usdc = trade_price * trade_size
+                if trade_usdc >= LARGE_TRADE_TRIGGER_USDC:
+                    now_mono = time.monotonic()
+                    if now_mono - _triggered_poll_cooldown.get(market_id, 0) > TRIGGERED_POLL_COOLDOWN_SEC:
+                        _triggered_poll_cooldown[market_id] = now_mono
+                        asyncio.create_task(
+                            _poll_single_market_identity(asset_id, market_id, db, label="pre_fire")
+                        )
+                    # D96-NEW-3: sync order reconstruction for the CURRENT trade
+                    # compute order_id now so _pending_trade has it for the next Kyle λ sample
+                    order_id = try_match_or_open({
+                        "proxyWallet": item.get("ws_address") or item.get("taker_address") or "",
+                        "conditionId": asset_id,
+                        "side": trade_side,
+                        "price": trade_price,
+                        "size": trade_size,
+                        "timestamp": int(time.time() * 1000),
+                    }, db)
+                else:
+                    order_id = None
 
                 # Push to EntropyWindow (Trade-Tick only)
                 ew.push(recv, buy, sell)
@@ -2189,6 +2365,12 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         "payload_json": {"msg_keys": list(msg.keys())[:12], "virtual_entities": len(virtuals)},
                         "created_ts_utc": _utc(),
                     })
+
+                    # D96-NEW-1b: On-fire forced poll — pre-emptively fetch identity data
+                    # before signal_engine processes this event (grace period will handle timing)
+                    asyncio.create_task(
+                        _poll_single_market_identity(asset_id, market_id, db, label="on_fire")
+                    )
 
                     # ── C2: D21 Phase 2 — Catalyst detection hook for T2 markets ──────────
                     # Record catalyst event and trigger async backward lookback (fire-and-forget)
@@ -2578,7 +2760,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.21-D92"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.22-D96"   # ← AGENT: bump on every change
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

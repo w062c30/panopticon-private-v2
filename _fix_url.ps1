@@ -1,0 +1,5 @@
+$old = "https://github.com/w062c30/panopticon-private"
+$new = "https://github.com/w062c30/panopticon-private-v2"
+(Get-Content "d:\Antigravity\Panopticon\temp_architect_handoffs\2026-04-29_D78.md") -replace [regex]::Escape($old), $new | Set-Content "d:\Antigravity\Panopticon\temp_architect_handoffs\2026-04-29_D78.md"
+(Get-Content "d:\Antigravity\Panopticon\temp_architect_handoffs\2026-04-29_D78.md") -replace [regex]::Escape($old), $new | Set-Content "d:\Antigravity\Panopticon\temp_architect_handoffs\2026-04-29_D78.md"
+Write-Host "Done"
