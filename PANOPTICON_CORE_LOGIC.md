@@ -1,6 +1,7 @@
 # 👁️ Project Panopticon: Core Trading Logic & Architectural Invariants
-# Version: 2.6
+# Version: 2.7
 # Last Updated: 2026-04-30
+# Changelog: v2.7 — D100 Kyle λ buffer bugfix（append_kyle_lambda_sample 重複定義合併 + flush guard bypass 監測）; EXPERIENCE_PLAYBOOK.md EXP-D100-001
 # Changelog: v2.6 — D81 Identity Coverage Log + Transfer Entropy Cache; Invariant 4.2 修訂（背景計算白名單 + TE bool-only 約束）
 # Changelog: v2.4 — D29 WS snapshot staleness fix (mc.on_ws_message); T1 KeyError(token_id) fix; T1 prefetch 3->5; NTP sync (ntplib); subscription cache guard; whale_scanner CLOB depth + thin-book signal; D30 kyle_lambda pending-price root-cause fix; PANOPTICON_WHALE default on
 # Changelog: v2.3 — D26 hook wiring complete; D27 persistent WS (_ws_runner); D27 T1 startup init; D28 SKIP investigation (see notes); Phase 5 whale_scanner.py foundation added

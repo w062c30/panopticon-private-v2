@@ -773,3 +773,45 @@ Even if `fetch_best_ask` returns a price for AMM (e.g., 0.99), the AMM guard mus
 **D92 修復日期**: 2026-04-30
 
 
+## EXP-D100-001: Python Class 重複方法定義靜默覆蓋（Kyle λ buffer 失效）
+**發現於**: D100（D81 架構審查揭露，發生於 db.py append_kyle_lambda_sample）
+**嚴重性**: P2（非阻塞，但 buffer 機制完全失效，高峰期 SSD IOPS ~50x）
+
+**症狀**:
+- flush_kyle_buffer() 在 heartbeat 中被呼叫但實際上是空操作（_kyle_buffer 永遠為空）
+- kyle_lambda_samples 寫入頻率異常高（每筆各觸發一次 fsync）
+- 無任何 NameError、ImportError 或 RuntimeWarning — 完全靜默
+
+**根本原因**:
+Python class 中若同名 method 被定義兩次，後者無條件靜默覆蓋前者。
+通常發生於：多個 sprint 的 agent 在不知情的情況下分別在同一 class 的不同位置
+新增了同名 method。長文件（>1000 行）中特別難發現。
+
+**泛化規則 RULE-EXP-001-DEDUP**:
+在任何 class 中新增或修改 method 之前，必須執行：
+  grep -c "def <METHOD_NAME>" <FILE_PATH>
+- 結果 = 0：可安全新增
+- 結果 = 1：修改現有定義，不要新增第二份
+- 結果 ≥ 2：立即停止，審查所有重複定義，合併後刪除多餘版本
+
+**泛化規則 RULE-EXP-001-MERGE**:
+兩份重複定義各有獨立價值時（A 有架構優勢，B 有 guard 邏輯），
+正確做法是合併，而非選擇一個刪除另一個：
+  1. 使用架構優勢版本（buffer）作為骨架
+  2. 將 guard 邏輯移植至入口層（append，最早執行位置）
+  3. 在輸出層（flush）保留 filter 作雙重防禦，加 warning log 監測是否被繞過
+
+**死代碼偵測（建議定期執行）**:
+  grep -n "    def " <FILE_PATH> | awk -F: '{print $2}' | sort | uniq -d
+  若有輸出 → 存在重複 method 定義，必須處理
+
+**Regression checklist**:
+- [ ] grep -c "def append_kyle_lambda_sample" panopticon_py/db.py 輸出 1
+- [ ] grep -A 20 "def append_kyle_lambda_sample" ... | grep _kyle_buffer 有輸出
+- [ ] python -c "import ast; ast.parse(open('panopticon_py/db.py').read())" 無錯誤
+- [ ] flush_kyle_buffer 中有 filtered_count > 0 的 logger.warning
+- [ ] orchestrator log 在 kyle λ 樣本到達時出現 [KYLE_FLUSH] 而非每筆各一次 commit
+
+**D100 修復日期**: 2026-04-30
+
+

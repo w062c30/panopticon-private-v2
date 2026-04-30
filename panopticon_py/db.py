@@ -2804,6 +2804,25 @@ class ShadowDB:
                 self._flush_wallet_obs_buffer()
 
     def append_kyle_lambda_sample(self, row: dict[str, Any]) -> None:
+        """
+        Buffer-first kyle λ sample ingestion.
+
+        Guards (入口層唯一防線):
+          - trade_size <= 0  → silent discard（防止 ZeroDivisionError 與 P75 污染）
+          - lambda_obs <= 0  → silent discard（防止 P75 systematic underestimate）
+
+        Buffered: flushes via _flush_kyle_buffer() every _BATCH_SIZE rows or on heartbeat.
+
+        ⚠️ 禁止在此方法中呼叫 self.conn.execute() — 所有 DB 寫入必須通過 _flush_kyle_buffer()
+        ⚠️ 禁止在 _flush_kyle_buffer() 中移除 filter layer — 保留作雙重防禦
+        """
+        trade_size = float(row.get("trade_size") or 0)
+        if trade_size <= 0:
+            return  # guard A
+        lambda_obs = float(row.get("lambda_obs") or 0)
+        if lambda_obs <= 0:
+            return  # guard B
+
         self._kyle_buffer.append(row)
         if len(self._kyle_buffer) >= self._BATCH_SIZE:
             with self._flush_lock:
@@ -2841,6 +2860,9 @@ class ShadowDB:
     def _flush_kyle_buffer(self) -> None:
         if not self._kyle_buffer:
             return
+
+        total_in_buffer = len(self._kyle_buffer)  # ← D100: guard bypass monitoring
+
         rows_to_insert = [
             (row["asset_id"], normalize_external_ts_to_utc(row.get("ts_utc")),
              float(row["delta_price"]), float(row["trade_size"]),
@@ -2851,6 +2873,16 @@ class ShadowDB:
             if float(row.get("trade_size") or 0) > 0
             and float(row.get("lambda_obs") or 0) > 0
         ]
+
+        # ← D100: guard bypass monitoring
+        filtered_count = total_in_buffer - len(rows_to_insert)
+        if filtered_count > 0:
+            logger.warning(
+                "[DB][KYLE_FLUSH] guard bypass detected: %d/%d rows filtered at flush — "
+                "check append_kyle_lambda_sample guards (TASK-D100-1)",
+                filtered_count, total_in_buffer,
+            )
+
         if rows_to_insert:
             try:
                 self.conn.executemany(
@@ -2862,9 +2894,10 @@ class ShadowDB:
                     """,
                     rows_to_insert,
                 )
-                self.conn.commit()
+                self.conn.commit()  # ← 一次，在 executemany 之後
             except Exception as exc:
                 logger.warning("[DB][KYLE_FLUSH_ERR] %s", exc)
+                # ⚠️ 禁止 raise — flush 路徑只能 log.warning
         self._kyle_buffer.clear()
 
     def append_insider_score_snapshot(self, row: dict[str, Any]) -> None:
@@ -3024,39 +3057,6 @@ class ShadowDB:
                 row["trigger_address"].lower(),
                 row["trigger_ts_utc"],
                 row.get("created_ts_utc"),
-            ),
-        )
-        self.conn.commit()
-
-    def append_kyle_lambda_sample(self, row: dict[str, Any]) -> None:
-        # Guard: zero or negative trade_size causes ZeroDivisionError
-        trade_size = float(row.get("trade_size") or 0)
-        if trade_size <= 0:
-            return  # silent discard
-        # Guard: lambda_obs = 0 (no price impact) would systematically underestimate P75
-        lambda_obs = float(row.get("lambda_obs") or 0)
-        if lambda_obs <= 0:
-            return  # silent discard
-
-        ts_utc = normalize_external_ts_to_utc(row.get("ts_utc"))
-
-        self.conn.execute(
-            """
-            INSERT INTO kyle_lambda_samples (
-                asset_id, ts_utc, delta_price, trade_size,
-                lambda_obs, market_id, source, created_at, window_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), ?)
-            """,
-            (
-                row["asset_id"],
-                ts_utc,
-                float(row["delta_price"]),
-                trade_size,
-                lambda_obs,
-                row.get("market_id"),
-                row.get("source", "standalone"),
-                row.get("created_at"),
-                row.get("window_ts", 0),
             ),
         )
         self.conn.commit()
