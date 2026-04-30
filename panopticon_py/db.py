@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import queue
+import re
 import sqlite3
 import threading
 import urllib.parse
@@ -18,6 +19,9 @@ from panopticon_py.time_utils import normalize_external_ts_to_utc, utc_now_rfc33
 from panopticon_py.market_data.clob_series import fetch_settlement_price
 
 logger = logging.getLogger(__name__)
+
+# D115: SQL injection guard for _add_column_if_missing
+_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 
 def _utc() -> str:
@@ -490,13 +494,19 @@ class ShadowDB:
         on_locked: str = "raise",
     ) -> None:
         """
-        D114: Idempotent ALTER TABLE ADD COLUMN — no-op if column already exists.
+        D114/D115: Idempotent ALTER TABLE ADD COLUMN — no-op if column already exists.
 
         on_locked controls behavior when DB is locked by another writer:
           "raise" (default) — propagate OperationalError
           "warn"  — log warning and continue (for high-contention tables)
           "skip"  — silently ignore (use only for non-critical columns)
         """
+        # D115: SQL injection guard — table and column names must be valid identifiers
+        if not _IDENT_RE.match(table):
+            raise ValueError(f"_add_column_if_missing: invalid table name: {table!r}")
+        if not _IDENT_RE.match(column):
+            raise ValueError(f"_add_column_if_missing: invalid column name: {column!r}")
+        # col_def is not validated — may contain spaces, DEFAULT, constraints, etc. (treated as trusted)
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in existing:
             try:
@@ -2123,6 +2133,7 @@ class ShadowDB:
         return float(row[0])
 
     def fetch_open_positions(self) -> list[dict[str, Any]]:
+        """D115: Use named field access (sqlite3.Row supports both r["col"] and r[0])."""
         rows = self.conn.execute(
             """
             SELECT position_id, market_id, cluster_id, side, signed_notional_usd, kelly_fraction, opened_ts_utc, closed_ts_utc
@@ -2132,14 +2143,14 @@ class ShadowDB:
         ).fetchall()
         return [
             {
-                "position_id": r[0],
-                "market_id": r[1],
-                "cluster_id": r[2],
-                "side": r[3],
-                "signed_notional_usd": float(r[4] if r[4] is not None else 0.0),
-                "kelly_fraction": r[5],
-                "opened_ts_utc": r[6],
-                "closed_ts_utc": r[7],
+                "position_id": r["position_id"],
+                "market_id": r["market_id"],
+                "cluster_id": r["cluster_id"],
+                "side": r["side"],
+                "signed_notional_usd": float(r["signed_notional_usd"] if r["signed_notional_usd"] is not None else 0.0),
+                "kelly_fraction": r["kelly_fraction"],
+                "opened_ts_utc": r["opened_ts_utc"],
+                "closed_ts_utc": r["closed_ts_utc"],
             }
             for r in rows
         ]
@@ -3585,115 +3596,104 @@ class AsyncDBWriter:
     def submit(self, kind: str, payload: dict[str, Any]) -> None:
         self._q.put((kind, payload))
 
+    def _dispatch(self, kind: str, payload: dict[str, Any]) -> None:
+        """D115: Dispatch payload by kind. All branches handled here; task_done is called by _loop."""
+        if kind == "raw":
+            self.db.append_raw_event(payload)
+        elif kind == "decision":
+            self.db.append_strategy_decision(payload)
+        elif kind == "execution":
+            self.db.append_execution_record(payload)
+        elif kind == "pending_chain":
+            self.db.upsert_pending_chain(
+                payload["tx_hash"],
+                int(payload["required_confirmations"]),
+                str(payload["status"]),
+                int(payload["confirmations"]),
+                str(payload["updated_ts_utc"]),
+            )
+        elif kind == "settlement_update":
+            self.db.update_execution_settlement(
+                str(payload["tx_hash"]),
+                int(payload["confirmations"]),
+                str(payload["status"]),
+                mined_block_hash=payload.get("mined_block_hash"),
+            )
+        elif kind == "position":
+            self.db.append_position(payload)
+        elif kind == "atomic_execution_reserve":
+            self.db.atomic_execution_and_reserve(
+                execution=payload["execution"],
+                reservation_id=str(payload["reservation_id"]),
+                amount_usdc=float(payload["amount_usdc"]),
+                idempotency_key=payload.get("idempotency_key"),
+                created_ts_utc=str(payload["created_ts_utc"]),
+            )
+        elif kind == "reservation_release_tx":
+            self.db.release_reservations_by_tx_hash(
+                str(payload["tx_hash"]),
+                payload.get("reason"),
+            )
+        elif kind == "reservation_forfeit_tx":
+            self.db.forfeit_reservations_by_tx_hash(str(payload["tx_hash"]), str(payload["reason"]))
+        elif kind == "correlation_upsert":
+            self.db.upsert_correlation_edges(list(payload["rows"]))
+        elif kind == "execution_post_submit":
+            self.db.update_execution_post_submit(
+                str(payload["execution_id"]),
+                tx_hash=payload.get("tx_hash"),
+                clob_order_id=payload.get("clob_order_id"),
+                settlement_status=payload.get("settlement_status"),
+                accepted=payload.get("accepted"),
+                reason=payload.get("reason"),
+            )
+        elif kind == "watched_wallet":
+            self.db.upsert_watched_wallet(payload)
+        elif kind == "wallet_observation":
+            self.db.append_wallet_observation(payload)
+        elif kind == "insider_score":
+            self.db.append_insider_score_snapshot(payload)
+        elif kind == "hunting_shadow_hit":
+            self.db.append_hunting_shadow_hit(payload)
+        elif kind == "virtual_entity_event":
+            self.db.append_virtual_entity_event(payload)
+        elif kind == "discovered_entity_upsert":
+            self.db.upsert_discovered_entity(payload)
+        elif kind == "tracked_wallet_upsert":
+            self.db.upsert_tracked_wallet(payload)
+        elif kind == "discovery_audit":
+            self.db.append_discovery_audit(payload)
+        elif kind == "paper_trade":
+            self.db.append_paper_trade(payload)
+        elif kind == "trade_settlement":
+            self.db.append_trade_settlement(payload)
+        elif kind == "pending_entropy_signal":
+            self.db.append_pending_entropy_signal(payload)
+        elif kind == "wallet_market_position_lifo":
+            self.db.upsert_wallet_market_position_lifo(
+                wallet_address=payload["wallet_address"],
+                market_id=payload["market_id"],
+                fill_price=float(payload["fill_price"]),
+                fill_qty=float(payload["fill_qty"]),
+                side=str(payload["side"]),
+                updated_ts_utc=str(payload["updated_ts_utc"]),
+            )
+        else:
+            logger.warning("[AsyncDBWriter] unknown kind=%r — dropped", kind)
+
     def _loop(self) -> None:
+        """D115: Refactored to guarantee task_done via try/finally."""
         while self._running:
             try:
                 kind, payload = self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if kind == "raw":
-                self.db.append_raw_event(payload)
-                self._q.task_done()
-            elif kind == "decision":
-                self.db.append_strategy_decision(payload)
-                self._q.task_done()
-            elif kind == "execution":
-                self.db.append_execution_record(payload)
-                self._q.task_done()
-            elif kind == "pending_chain":
-                self.db.upsert_pending_chain(
-                    payload["tx_hash"],
-                    int(payload["required_confirmations"]),
-                    str(payload["status"]),
-                    int(payload["confirmations"]),
-                    str(payload["updated_ts_utc"]),
-                )
-                self._q.task_done()
-            elif kind == "settlement_update":
-                self.db.update_execution_settlement(
-                    str(payload["tx_hash"]),
-                    int(payload["confirmations"]),
-                    str(payload["status"]),
-                    mined_block_hash=payload.get("mined_block_hash"),
-                )
-                self._q.task_done()
-            elif kind == "position":
-                self.db.append_position(payload)
-                self._q.task_done()
-            elif kind == "atomic_execution_reserve":
-                self.db.atomic_execution_and_reserve(
-                    execution=payload["execution"],
-                    reservation_id=str(payload["reservation_id"]),
-                    amount_usdc=float(payload["amount_usdc"]),
-                    idempotency_key=payload.get("idempotency_key"),
-                    created_ts_utc=str(payload["created_ts_utc"]),
-                )
-                self._q.task_done()
-            elif kind == "reservation_release_tx":
-                self.db.release_reservations_by_tx_hash(
-                    str(payload["tx_hash"]),
-                    payload.get("reason"),
-                )
-                self._q.task_done()
-            elif kind == "reservation_forfeit_tx":
-                self.db.forfeit_reservations_by_tx_hash(str(payload["tx_hash"]), str(payload["reason"]))
-                self._q.task_done()
-            elif kind == "correlation_upsert":
-                self.db.upsert_correlation_edges(list(payload["rows"]))
-                self._q.task_done()
-            elif kind == "execution_post_submit":
-                self.db.update_execution_post_submit(
-                    str(payload["execution_id"]),
-                    tx_hash=payload.get("tx_hash"),
-                    clob_order_id=payload.get("clob_order_id"),
-                    settlement_status=payload.get("settlement_status"),
-                    accepted=payload.get("accepted"),
-                    reason=payload.get("reason"),
-                )
-                self._q.task_done()
-            elif kind == "watched_wallet":
-                self.db.upsert_watched_wallet(payload)
-                self._q.task_done()
-            elif kind == "wallet_observation":
-                self.db.append_wallet_observation(payload)
-                self._q.task_done()
-            elif kind == "insider_score":
-                self.db.append_insider_score_snapshot(payload)
-                self._q.task_done()
-            elif kind == "hunting_shadow_hit":
-                self.db.append_hunting_shadow_hit(payload)
-                self._q.task_done()
-            elif kind == "virtual_entity_event":
-                self.db.append_virtual_entity_event(payload)
-                self._q.task_done()
-            elif kind == "discovered_entity_upsert":
-                self.db.upsert_discovered_entity(payload)
-                self._q.task_done()
-            elif kind == "tracked_wallet_upsert":
-                self.db.upsert_tracked_wallet(payload)
-                self._q.task_done()
-            elif kind == "discovery_audit":
-                self.db.append_discovery_audit(payload)
-                self._q.task_done()
-            elif kind == "paper_trade":
-                self.db.append_paper_trade(payload)
-                self._q.task_done()
-            elif kind == "trade_settlement":
-                self.db.append_trade_settlement(payload)
-                self._q.task_done()
-            elif kind == "pending_entropy_signal":
-                self.db.append_pending_entropy_signal(payload)
-                self._q.task_done()
-            elif kind == "wallet_market_position_lifo":
-                self.db.upsert_wallet_market_position_lifo(
-                    wallet_address=payload["wallet_address"],
-                    market_id=payload["market_id"],
-                    fill_price=float(payload["fill_price"]),
-                    fill_qty=float(payload["fill_qty"]),
-                    side=str(payload["side"]),
-                    updated_ts_utc=str(payload["updated_ts_utc"]),
-                )
-                self._q.task_done()
+            try:
+                self._dispatch(kind, payload)
+            except Exception as exc:
+                logger.warning("[AsyncDBWriter] dispatch error kind=%s: %s", kind, exc)
+            finally:
+                self._q.task_done()   # D115: guaranteed — even on exception or unknown kind
 
 
 
