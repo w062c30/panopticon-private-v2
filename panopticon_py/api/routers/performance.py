@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from fastapi import APIRouter, Query, Request
 
 from panopticon_py.api.schemas import (
@@ -9,13 +10,16 @@ from panopticon_py.api.schemas import (
     PerformanceResponse,
     PolMarketEntry,
     T5CoverageResponse,
-    T5MarketEntry,
+    TierMarketEntry,
     WatchlistResponse,
 )
 from panopticon_py.db import ShadowDB
 from panopticon_py.polymarket.live_trade_pnl_service import compute_live_history, compute_live_performance, fetch_live_trade_rows
 
 router = APIRouter(prefix="/api", tags=["performance"])
+
+# D103-FE: Module-level constant, read once at process start
+_DEBUG_STATS_ENABLED = os.getenv("DEBUG_STATS_ENABLED", "false").lower() == "true"
 
 
 @router.get("/performance", response_model=PerformanceResponse)
@@ -96,22 +100,52 @@ def get_async_writer_health(request: Request) -> dict:
 @router.get("/watchlist", response_model=WatchlistResponse)
 def get_watchlist() -> WatchlistResponse:
     """
-    D103: Combined political + T5 sports market watchlist.
+    D103-FE: Combined political + T1-T5 market watchlist.
     Returns which markets are currently being monitored, along with
     availability flags so the frontend can display "no data" states cleanly.
     """
     db = ShadowDB()
+    # D104: watchlist is read-only; bootstrap() is called once at process startup in lifespan
     try:
-        db.bootstrap()
         pol = db.fetch_active_pol_markets()
-        t5 = db.fetch_active_t5_markets(lookback_hours=48)
+        t1  = db.fetch_active_markets_by_tier("t1", lookback_hours=48)
+        t2  = db.fetch_active_markets_by_tier("t2", lookback_hours=48)
+        t3  = db.fetch_active_markets_by_tier("t3", lookback_hours=48)
+        t4  = db.fetch_active_markets_by_tier("t4", lookback_hours=48)
+        t5  = db.fetch_active_markets_by_tier("t5", lookback_hours=48)
         return WatchlistResponse(
             pol_markets=[PolMarketEntry(**m) for m in pol],
-            t5_markets=[T5MarketEntry(**m) for m in t5],
-            pol_count=len(pol),
-            t5_count=len(t5),
-            pol_data_available=len(pol) > 0,
-            t5_data_available=len(t5) > 0,
+            t1_markets=[TierMarketEntry(**m) for m in t1],
+            t2_markets=[TierMarketEntry(**m) for m in t2],
+            t3_markets=[TierMarketEntry(**m) for m in t3],
+            t4_markets=[TierMarketEntry(**m) for m in t4],
+            t5_markets=[TierMarketEntry(**m) for m in t5],
+            tier_available={
+                "t1":     len(t1)  > 0,
+                "t2":     len(t2)  > 0,
+                "t2_pol": len(pol) > 0,
+                "t3":     len(t3)  > 0,
+                "t4":     len(t4)  > 0,
+                "t5":     len(t5)  > 0,
+            },
         )
+    finally:
+        db.close()
+
+
+@router.get("/watchlist/market-debug-stats")
+def get_market_debug_stats():
+    """
+    D103-FE DEBUG: Per-market deep stats.
+    Returns {"enabled": false, "markets": {}} in production.
+    Activate via: DEBUG_STATS_ENABLED=true (env var at process start).
+    """
+    if not _DEBUG_STATS_ENABLED:
+        return {"enabled": False, "markets": {}}
+    db = ShadowDB()
+    try:
+        db.bootstrap()
+        stats = db.fetch_market_debug_stats()
+        return {"enabled": True, "markets": stats}
     finally:
         db.close()

@@ -96,13 +96,13 @@ def _extract_token_ids(m: dict) -> tuple[str | None, str | None]:
 
 def _process_market_record(
     m: dict,
-    db: ShadowDB,
+    pending: list[dict],
     upserted_ids: set[str],
 ) -> bool:
     """
-    D111: Process single Gamma API market dict.
-    Side effects: calls db.upsert_pol_market(), modifies upserted_ids.
-    Returns True if upserted, False if filtered.
+    D104: No longer writes to DB directly.
+    Appends to `pending` list for bulk upsert by caller.
+    Returns True if filtered-in, False if filtered.
     """
     slug = (m.get("slug") or "").lower()
     if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
@@ -124,11 +124,11 @@ def _process_market_record(
         (POL_CATEGORY_MAP[kw] for kw in matched_kw if kw in POL_CATEGORY_MAP),
         "OTHER",
     )
-    token_id_yes, token_id_no = _extract_token_ids(m)   # D111: unpack tuple
-    db.upsert_pol_market({
+    token_id_yes, token_id_no = _extract_token_ids(m)
+    pending.append({
         "market_id":          market_id,
-        "token_id":           token_id_yes,
-        "token_id_no":        token_id_no,              # D111: NO-side token
+        "token_id":          token_id_yes,
+        "token_id_no":       token_id_no,
         "event_slug":         slug,
         "political_category": category,
         "entity_keywords":    matched_kw,
@@ -159,9 +159,11 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
         return 0
 
     count = 0
+    total_from_api = 0
     offset = 0
     limit = 100
     upserted_ids: set[str] = set()
+    pending: list[dict] = []  # D104: bulk upsert buffer
 
     # D102: Lazy semaphore — avoid "attached to a different loop" at import time
     semaphore = asyncio.Semaphore(2)
@@ -196,8 +198,9 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
             if not markets:
                 break
 
+            total_from_api += len(markets)
             for m in markets:
-                if _process_market_record(m, db, upserted_ids):
+                if _process_market_record(m, pending, upserted_ids):
                     count += 1
 
             if len(markets) < limit:
@@ -205,25 +208,30 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
             offset += limit
             await asyncio.sleep(0.5)  # rate limit guard — outside semaphore
 
+    # D104: Bulk upsert all pending records in single transaction
+    if pending:
+        db.bulk_upsert_pol_markets(pending)
+
     # D102-2: Deactivate markets not seen in this scan
     if upserted_ids:
         db.deactivate_closed_pol_markets(upserted_ids)
 
-    # D103: Zero-result diagnostic
-    if count == 0 and upserted_ids:
+    # D104: Correct three-way distinction
+    if total_from_api == 0:
         logger.warning(
-            "[POL_SCAN] API returned markets but NONE matched POL_KEYWORDS filter. "
-            "Review POL_KEYWORDS list or filter criteria (vol>=5000, bestBid range). "
-            "Current keywords: %s",
-            POL_KEYWORDS,
+            "[POL_SCAN] Zero markets returned from API — may be unreachable or empty. "
+            "Existing watchlist preserved."
         )
-    elif count == 0 and not upserted_ids:
+    elif count == 0:
         logger.warning(
-            "[POL_SCAN] Zero markets upserted — API may be unreachable or returned empty. "
-            "Existing watchlist preserved (deactivation skipped)."
+            "[POL_SCAN] API returned %d markets but NONE passed filters "
+            "(vol>=5000 / bestBid / POL_KEYWORDS). "
+            "Keywords: %s",
+            total_from_api, POL_KEYWORDS,
         )
+    else:
+        logger.info("[POL_SCAN] upserted=%d / api_total=%d political markets", count, total_from_api)
 
-    logger.info("[POL_SCAN] upserted=%d political markets", count)
     return count
 
 
@@ -239,9 +247,11 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
         return 0
 
     count = 0
+    total_from_api = 0
     offset = 0
     limit = 100
     upserted_ids: set[str] = set()
+    pending: list[dict] = []  # D104: bulk upsert buffer
 
     for _ in range(max_pages):
         try:
@@ -264,31 +274,37 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
         if not markets:
             break
 
+        total_from_api += len(markets)
         for m in markets:
-            if _process_market_record(m, db, upserted_ids):
+            if _process_market_record(m, pending, upserted_ids):
                 count += 1
 
         if len(markets) < limit:
             break
         offset += limit
 
+    # D104: Bulk upsert all pending records in single transaction
+    if pending:
+        db.bulk_upsert_pol_markets(pending)
+
     # D102-2: Deactivate markets not seen in this scan
     if upserted_ids:
         db.deactivate_closed_pol_markets(upserted_ids)
 
-    # D103: Zero-result diagnostic
-    if count == 0 and upserted_ids:
+    # D104: Correct three-way distinction
+    if total_from_api == 0:
         logger.warning(
-            "[POL_SCAN][SYNC] API returned markets but NONE matched POL_KEYWORDS filter. "
-            "Review POL_KEYWORDS list or filter criteria (vol>=5000, bestBid range). "
-            "Current keywords: %s",
-            POL_KEYWORDS,
+            "[POL_SCAN][SYNC] Zero markets returned from API — may be unreachable or empty. "
+            "Existing watchlist preserved."
         )
-    elif count == 0 and not upserted_ids:
+    elif count == 0:
         logger.warning(
-            "[POL_SCAN][SYNC] Zero markets upserted — API may be unreachable or returned empty. "
-            "Existing watchlist preserved (deactivation skipped)."
+            "[POL_SCAN][SYNC] API returned %d markets but NONE passed filters "
+            "(vol>=5000 / bestBid / POL_KEYWORDS). "
+            "Keywords: %s",
+            total_from_api, POL_KEYWORDS,
         )
+    else:
+        logger.info("[POL_SCAN][SYNC] upserted=%d / api_total=%d political markets", count, total_from_api)
 
-    logger.info("[POL_SCAN][SYNC] upserted=%d political markets", count)
     return count

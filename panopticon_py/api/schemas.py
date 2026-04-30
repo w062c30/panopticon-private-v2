@@ -140,11 +140,23 @@ class T5MarketEntry(BaseModel):
     avg_ev: float | None
 
 
+class TierMarketEntry(BaseModel):
+    """D103-FE: Pydantic model for a single T1/T2/T3/T4/T5 market in the watchlist."""
+    market_id: str
+    market_tier: str
+    total_signals: int
+    accepted: int
+    last_signal_ts: str | None
+    avg_ev: float | None
+    avg_posterior: float | None
+
+
 class WatchlistResponse(BaseModel):
-    """D103: Combined political + T5 watchlist with availability flags."""
+    """D103-FE: Combined political + T5 watchlist with availability flags."""
     pol_markets: list[PolMarketEntry]
-    t5_markets: list[T5MarketEntry]
-    pol_count: int
-    t5_count: int
-    pol_data_available: bool
-    t5_data_available: bool
+    t1_markets: list[TierMarketEntry]
+    t2_markets: list[TierMarketEntry]
+    t3_markets: list[TierMarketEntry]
+    t4_markets: list[TierMarketEntry]
+    t5_markets: list[TierMarketEntry]
+    tier_available: dict[str, bool]

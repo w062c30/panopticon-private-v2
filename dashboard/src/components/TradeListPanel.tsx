@@ -52,8 +52,8 @@ export function TradeListPanel({ trades }: Props) {
           </span>
         </div>
       </div>
-      <div className="overflow-auto">
-        <table className="w-full text-left text-xs text-slate-300">
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px] text-left text-xs text-slate-300">
           <thead className="sticky top-0 bg-slate-900">
             <tr>
               <th className="p-2">Event</th>

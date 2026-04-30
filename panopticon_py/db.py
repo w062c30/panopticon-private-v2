@@ -1218,6 +1218,40 @@ class ShadowDB:
         )
         self.conn.commit()
 
+    def bulk_upsert_pol_markets(self, rows: list[dict]) -> int:
+        """
+        D104: Batch upsert for pol_market_watchlist.
+        Single transaction, single commit.
+        Returns row count.
+        """
+        if not rows:
+            return 0
+        self.conn.executemany(
+            """
+            INSERT INTO pol_market_watchlist
+                (market_id, token_id, token_id_no, event_slug, political_category,
+                 entity_keywords, subscribed_at, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(market_id) DO UPDATE SET
+                token_id=excluded.token_id,
+                token_id_no=excluded.token_id_no,
+                event_slug=excluded.event_slug,
+                political_category=excluded.political_category,
+                entity_keywords=excluded.entity_keywords,
+                is_active=1
+            """,
+            [
+                (
+                    r["market_id"], r.get("token_id"), r.get("token_id_no"),
+                    r.get("event_slug"), r["political_category"],
+                    json.dumps(r.get("entity_keywords", [])), r["subscribed_at"],
+                )
+                for r in rows
+            ],
+        )
+        self.conn.commit()
+        return len(rows)
+
     def fetch_active_pol_markets(self) -> list[dict]:
         """D117: Use dict(row) — sqlite3.Row supports both r["col"] and dict(r)."""
         rows = self.conn.execute("""
@@ -1679,6 +1713,115 @@ class ShadowDB:
             (f"-{lookback_hours} hours",),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def fetch_active_markets_by_tier(
+        self, tier: str, lookback_hours: int = 48
+    ) -> list[dict]:
+        """
+        D103-FE: Return recently-seen markets for a given market_tier
+        from execution_records. Used for T1/T2/T3/T4/T5 display.
+        T2-POL uses fetch_active_pol_markets() instead.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT
+                market_id,
+                market_tier,
+                COUNT(*)                                               AS total_signals,
+                SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END)         AS accepted,
+                MAX(created_ts_utc)                                    AS last_signal_ts,
+                AVG(CASE WHEN accepted = 1 THEN ev_net  ELSE NULL END) AS avg_ev,
+                AVG(CASE WHEN accepted = 1 THEN posterior ELSE NULL END) AS avg_posterior
+            FROM execution_records
+            WHERE market_tier = ?
+              AND market_id IS NOT NULL
+              AND created_ts_utc > datetime('now', ? || ' hours')
+            GROUP BY market_id
+            ORDER BY last_signal_ts DESC
+            LIMIT 100
+            """,
+            (tier, f"-{lookback_hours}"),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def fetch_market_debug_stats(
+        self, lookback_hours: int = 24
+    ) -> dict[str, dict]:
+        """
+        D103-FE DEBUG ONLY: Per-market deep stats.
+        WARNING: Must only be called when DEBUG_STATS_ENABLED=true.
+        Queries execution_records (low risk) + kyle_lambda_samples (medium risk).
+        book_events is intentionally excluded to protect hot-write table.
+        """
+        cutoff = f"-{lookback_hours} hours"
+
+        # ── 1. Entropy fire count ──────────────────────────────────────────
+        entropy_rows = self.conn.execute(
+            """
+            SELECT market_id, COUNT(*) AS cnt
+            FROM execution_records
+            WHERE signal_type = 'entropy'
+              AND market_id IS NOT NULL
+              AND created_ts_utc > datetime('now', ?)
+            GROUP BY market_id
+            """,
+            (cutoff,),
+        ).fetchall()
+
+        # ── 2. Paper trade stats ───────────────────────────────────────────
+        paper_rows = self.conn.execute(
+            """
+            SELECT
+                market_id,
+                COUNT(*)                                          AS total_paper,
+                SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END)   AS passed_paper
+            FROM execution_records
+            WHERE status = 'paper'
+              AND market_id IS NOT NULL
+              AND created_ts_utc > datetime('now', ?)
+            GROUP BY market_id
+            """,
+            (cutoff,),
+        ).fetchall()
+
+        # ── 3. Kyle Lambda sample count ───────────────────────────────────
+        kyle_rows: list = []
+        try:
+            kyle_rows = self.conn.execute(
+                """
+                SELECT market_id, COUNT(*) AS cnt
+                FROM kyle_lambda_samples
+                WHERE market_id IS NOT NULL
+                  AND sampled_ts > datetime('now', ?)
+                GROUP BY market_id
+                """,
+                (cutoff,),
+            ).fetchall()
+        except Exception:
+            pass  # Table may not exist in all environments; silently skip
+
+        # ── Merge into single dict keyed by market_id ─────────────────────
+        result: dict[str, dict] = {}
+
+        def _ensure(mid: str) -> dict:
+            if mid not in result:
+                result[mid] = {
+                    "entropy_fires": 0,
+                    "total_paper": 0,
+                    "passed_paper": 0,
+                    "kyle_samples": 0,
+                }
+            return result[mid]
+
+        for r in entropy_rows:
+            _ensure(r[0])["entropy_fires"] = r[1]
+        for r in paper_rows:
+            _ensure(r[0])["total_paper"]   = r[1]
+            _ensure(r[0])["passed_paper"]  = r[2]
+        for r in kyle_rows:
+            _ensure(r[0])["kyle_samples"]  = r[1]
+
+        return result
 
     def upsert_tracked_wallet(self, row: dict[str, Any]) -> None:
         self.conn.execute(

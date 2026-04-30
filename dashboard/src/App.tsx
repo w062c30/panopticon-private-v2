@@ -3,6 +3,7 @@ import { DecisionPanel } from "./components/DecisionPanel";
 import { EntropyLinePanel } from "./components/EntropyLinePanel";
 import { EvWaterfallPanel } from "./components/EvWaterfallPanel";
 import { FingerprintRadarPanel } from "./components/FingerprintRadarPanel";
+import { MarketWatchlistPanel } from "./components/MarketWatchlistPanel";
 import { PerformanceSummaryPanel } from "./components/PerformanceSummaryPanel";
 import { ProcessHeartbeatPanel } from "./components/ProcessHeartbeatPanel";
 import { ReadinessGauge } from "./components/ReadinessGauge";
@@ -70,8 +71,17 @@ export default function App() {
         <LiveReportPanel report={snapshots.report} />
         <WalletNetworkPanel apiBaseUrl={import.meta.env.VITE_API_BASE_URL || "http://localhost:8001"} />
         <RvfMetricsPanel />
-        <ProcessHeartbeatPanel />
-        <TradeListPanel trades={snapshots.trades} />
+        <div className="xl:col-span-2">
+          <ProcessHeartbeatPanel />
+        </div>
+        <div className="xl:col-span-2">
+          <TradeListPanel trades={snapshots.trades} />
+        </div>
+        <div className="xl:col-span-2">
+          <MarketWatchlistPanel
+            apiBaseUrl={import.meta.env.VITE_API_BASE_URL || "http://localhost:8001"}
+          />
+        </div>
       </main>
     </div>
   );
