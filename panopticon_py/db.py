@@ -1654,6 +1654,32 @@ class ShadowDB:
             "pass_rate": round(accepted / total, 3) if total > 0 else None,
         }
 
+    def fetch_active_t5_markets(self, lookback_hours: int = 48) -> list[dict]:
+        """
+        D103: Return recently-seen T5 (sports) markets from execution_records.
+        Uses execution_records as source of truth since T5 has no dedicated watchlist.
+        Returns markets seen within `lookback_hours` with signal stats.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT
+                market_id,
+                COUNT(*)                                            AS total_signals,
+                SUM(CASE WHEN accepted=1 THEN 1 ELSE 0 END)        AS accepted,
+                MAX(created_ts_utc)                                 AS last_signal_ts,
+                AVG(CASE WHEN accepted=1 THEN ev_net ELSE NULL END) AS avg_ev
+            FROM execution_records
+            WHERE market_tier = 't5'
+              AND market_id IS NOT NULL
+              AND created_ts_utc > datetime('now', ?)
+            GROUP BY market_id
+            ORDER BY last_signal_ts DESC
+            LIMIT 50
+            """,
+            (f"-{lookback_hours} hours",),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def upsert_tracked_wallet(self, row: dict[str, Any]) -> None:
         self.conn.execute(
             """

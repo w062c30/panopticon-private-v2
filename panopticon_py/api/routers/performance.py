@@ -7,7 +7,10 @@ from panopticon_py.api.schemas import (
     PerformanceHistoryPoint,
     PerformanceHistoryResponse,
     PerformanceResponse,
+    PolMarketEntry,
     T5CoverageResponse,
+    T5MarketEntry,
+    WatchlistResponse,
 )
 from panopticon_py.db import ShadowDB
 from panopticon_py.polymarket.live_trade_pnl_service import compute_live_history, compute_live_performance, fetch_live_trade_rows
@@ -88,3 +91,27 @@ def get_async_writer_health(request: Request) -> dict:
     if writer is None:
         return {"error": "async_writer not initialized"}
     return writer.health()
+
+
+@router.get("/watchlist", response_model=WatchlistResponse)
+def get_watchlist() -> WatchlistResponse:
+    """
+    D103: Combined political + T5 sports market watchlist.
+    Returns which markets are currently being monitored, along with
+    availability flags so the frontend can display "no data" states cleanly.
+    """
+    db = ShadowDB()
+    try:
+        db.bootstrap()
+        pol = db.fetch_active_pol_markets()
+        t5 = db.fetch_active_t5_markets(lookback_hours=48)
+        return WatchlistResponse(
+            pol_markets=[PolMarketEntry(**m) for m in pol],
+            t5_markets=[T5MarketEntry(**m) for m in t5],
+            pol_count=len(pol),
+            t5_count=len(t5),
+            pol_data_available=len(pol) > 0,
+            t5_data_available=len(t5) > 0,
+        )
+    finally:
+        db.close()

@@ -1393,6 +1393,26 @@ def _sync_pol_tokens_from_watchlist(db) -> list[str]:
     _pol_active_count = len(pol_markets)
     pol_token_ids: list[str] = []
 
+    # D103: Diagnostic — warn if watchlist is empty
+    if not pol_markets:
+        logger.warning(
+            "[POL_WATCHLIST] no active political markets in watchlist. "
+            "Either pol_monitor has not run yet (first boot) or "
+            "Gamma API returned no matching markets. Next scan in %ds.",
+            _POL_REFRESH_INTERVAL_SEC,
+        )
+    else:
+        # D103: Per-market diagnostic log
+        for m in pol_markets:
+            slug = (m.get("event_slug") or m.get("market_id", "?"))[:40]
+            keywords = ", ".join(m.get("entity_keywords") or [])
+            last_sig = m.get("last_signal_ts") or "none"
+            logger.info(
+                "[POL_WATCHLIST] monitoring: %-40s  cat=%-15s  kw=[%s]  last_signal=%s",
+                slug, m["political_category"], keywords, last_sig,
+            )
+        logger.info("[POL_WATCHLIST] %d active political markets loaded.", len(pol_markets))
+
     for pm in pol_markets:
         # D111: register both YES and NO tokens
         for tid in (pm.get("token_id"), pm.get("token_id_no")):
@@ -1403,6 +1423,31 @@ def _sync_pol_tokens_from_watchlist(db) -> list[str]:
 
     logger.info("[POL] registered %d t2_pol tokens from watchlist", len(pol_token_ids))
     return pol_token_ids
+
+
+def _log_t5_market_status(db) -> None:
+    """
+    D103: Log T5 sports markets currently being monitored.
+    Called on radar startup and after each POL refresh cycle.
+    """
+    t5_markets = db.fetch_active_t5_markets(lookback_hours=48)
+    if not t5_markets:
+        logger.warning(
+            "[T5_WATCHLIST] no T5 sports markets seen in last 48h. "
+            "Either radar has not processed any T5-tier signals yet, "
+            "or sports markets subscription is not configured."
+        )
+        return
+    for m in t5_markets:
+        slug = m.get("market_id", "?")[:40]
+        signals = int(m.get("total_signals") or 0)
+        accepted = int(m.get("accepted") or 0)
+        last_ts = m.get("last_signal_ts") or "?"
+        logger.info(
+            "[T5_WATCHLIST] monitoring: %-40s  signals=%-4d  accepted=%-4d  last=%s",
+            slug, signals, accepted, last_ts,
+        )
+    logger.info("[T5_WATCHLIST] %d T5 sports markets active.", len(t5_markets))
 
 
 def _refresh_active_subscription(db) -> list[str]:
@@ -2700,6 +2745,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
                     reconnect_now = True
                     ew.mark_reconnect()
+
+            # D103: Log T5 sports market status after POL refresh cycle
+            await asyncio.to_thread(_log_t5_market_status, db)
+
             if new_tokens:
                 existing = set(_current_tokens)
                 _current_tokens = list(_current_tokens)
@@ -2896,6 +2945,9 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
         logger.warning("[POL][D109] startup scan failed: %s", exc)
     # Even if POL scan fails, startup continues — POL is supplementary, not critical
 
+    # D103: Log T5 sports market status at startup
+    _log_t5_market_status(db)
+
     # ── Start 5s JSON write loop ───────────────────────────────────────────────
     if mc is not None:
         asyncio.create_task(
@@ -2934,7 +2986,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.31-D109"   # ← AGENT: bump on every change  # D109: POL immediate startup scan
+    PROCESS_VERSION = "v1.1.32-D103"   # ← AGENT: bump on every change  # D103: diagnostic logs for POL/T5 watchlist + T5 market status logger
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

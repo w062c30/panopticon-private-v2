@@ -117,3 +117,34 @@ class T5CoverageResponse(BaseModel):
     avg_posterior: float | None = None
     distinct_markets: int
     pass_rate: float | None = None
+
+
+class PolMarketEntry(BaseModel):
+    """D103: Pydantic model for a single political market in the watchlist."""
+    market_id: str
+    event_slug: str | None
+    political_category: str
+    entity_keywords: list[str]
+    token_id: str | None
+    token_id_no: str | None
+    subscribed_at: str
+    last_signal_ts: str | None
+
+
+class T5MarketEntry(BaseModel):
+    """D103: Pydantic model for a single T5 sports market in the watchlist."""
+    market_id: str
+    total_signals: int
+    accepted: int
+    last_signal_ts: str | None
+    avg_ev: float | None
+
+
+class WatchlistResponse(BaseModel):
+    """D103: Combined political + T5 watchlist with availability flags."""
+    pol_markets: list[PolMarketEntry]
+    t5_markets: list[T5MarketEntry]
+    pol_count: int
+    t5_count: int
+    pol_data_available: bool
+    t5_data_available: bool

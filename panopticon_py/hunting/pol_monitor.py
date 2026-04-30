@@ -209,6 +209,20 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
     if upserted_ids:
         db.deactivate_closed_pol_markets(upserted_ids)
 
+    # D103: Zero-result diagnostic
+    if count == 0 and upserted_ids:
+        logger.warning(
+            "[POL_SCAN] API returned markets but NONE matched POL_KEYWORDS filter. "
+            "Review POL_KEYWORDS list or filter criteria (vol>=5000, bestBid range). "
+            "Current keywords: %s",
+            POL_KEYWORDS,
+        )
+    elif count == 0 and not upserted_ids:
+        logger.warning(
+            "[POL_SCAN] Zero markets upserted — API may be unreachable or returned empty. "
+            "Existing watchlist preserved (deactivation skipped)."
+        )
+
     logger.info("[POL_SCAN] upserted=%d political markets", count)
     return count
 
@@ -261,6 +275,20 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
     # D102-2: Deactivate markets not seen in this scan
     if upserted_ids:
         db.deactivate_closed_pol_markets(upserted_ids)
+
+    # D103: Zero-result diagnostic
+    if count == 0 and upserted_ids:
+        logger.warning(
+            "[POL_SCAN][SYNC] API returned markets but NONE matched POL_KEYWORDS filter. "
+            "Review POL_KEYWORDS list or filter criteria (vol>=5000, bestBid range). "
+            "Current keywords: %s",
+            POL_KEYWORDS,
+        )
+    elif count == 0 and not upserted_ids:
+        logger.warning(
+            "[POL_SCAN][SYNC] Zero markets upserted — API may be unreachable or returned empty. "
+            "Existing watchlist preserved (deactivation skipped)."
+        )
 
     logger.info("[POL_SCAN][SYNC] upserted=%d political markets", count)
     return count
