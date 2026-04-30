@@ -9,6 +9,12 @@ export interface PolMarketEntry {
   token_id_no: string | null;
   subscribed_at: string;
   last_signal_ts: string | null;
+  // D106: Signal statistics (from execution_records LEFT JOIN)
+  total_signals: number;
+  accepted: number;
+  last_activity_ts: string | null;
+  avg_ev: number | null;
+  avg_posterior: number | null;
 }
 
 export interface TierMarketEntry {

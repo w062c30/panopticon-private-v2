@@ -1253,17 +1253,48 @@ class ShadowDB:
         return len(rows)
 
     def fetch_active_pol_markets(self) -> list[dict]:
-        """D117: Use dict(row) — sqlite3.Row supports both r["col"] and dict(r)."""
+        """
+        D106: Extended with signal stats from execution_records.
+        LEFT JOIN ensures markets with no signals still appear.
+        """
         rows = self.conn.execute("""
-            SELECT market_id, token_id, token_id_no, event_slug, political_category,
-                   entity_keywords, subscribed_at, last_signal_ts
-            FROM pol_market_watchlist
-            WHERE is_active = 1
-            ORDER BY subscribed_at DESC
+            SELECT
+                p.market_id,
+                p.token_id,
+                p.token_id_no,
+                p.event_slug,
+                p.political_category,
+                p.entity_keywords,
+                p.subscribed_at,
+                p.last_signal_ts,
+                -- D106: Signal statistics (last 48h from execution_records)
+                COALESCE(e.total_signals, 0) AS total_signals,
+                COALESCE(e.accepted, 0)     AS accepted,
+                e.last_activity_ts,
+                e.avg_ev,
+                e.avg_posterior
+            FROM pol_market_watchlist p
+            LEFT JOIN (
+                SELECT
+                    market_id,
+                    COUNT(*)                                              AS total_signals,
+                    SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END)         AS accepted,
+                    MAX(created_ts_utc)                                  AS last_activity_ts,
+                    AVG(CASE WHEN accepted = 1 THEN ev_net  ELSE NULL END) AS avg_ev,
+                    AVG(CASE WHEN accepted = 1 THEN posterior ELSE NULL END) AS avg_posterior
+                FROM execution_records
+                WHERE market_tier = 't2_pol'
+                  AND market_id IS NOT NULL
+                  AND created_ts_utc > datetime('now', '-48 hours')
+                GROUP BY market_id
+            ) e ON e.market_id = p.market_id
+            WHERE p.is_active = 1
+            ORDER BY p.subscribed_at DESC
+            LIMIT 200
         """).fetchall()
         result = []
         for r in rows:
-            row_dict = dict(r)   # D117: replaces dict(zip(cols, r))
+            row_dict = dict(r)
             row_dict["entity_keywords"] = json.loads(row_dict["entity_keywords"] or "[]")
             result.append(row_dict)
         return result
@@ -3461,21 +3492,7 @@ class ShadowDB:
                 """,
                 (int(limit),),
             ).fetchall()
-        return [
-            {
-                "signal_id": r[0],
-                "market_id": r[1],
-                "token_id": r[2],
-                "entropy_z": float(r[3]),
-                "sim_pnl_proxy": r[4],
-                "trigger_address": r[5],
-                "trigger_ts_utc": r[6],
-                "consumed_at": r[7],
-                "consumed_by": r[8],
-                "created_ts_utc": r[9],
-            }
-            for r in rows
-        ]
+        return [dict(r) for r in rows]
 
     def mark_entropy_signal_consumed(self, signal_id: str, consumed_by: str) -> None:
         self.conn.execute(
@@ -3591,12 +3608,14 @@ class ShadowDB:
         ).fetchone()
         if not row:
             return None
+        # D106: Use dict() for consistency with other DAL methods
+        row_dict = dict(row)
         return {
-            "wallet_address": row[0],
-            "market_id": row[1],
-            "current_position_notional": float(row[2]),
-            "avg_entry_price": float(row[3]),
-            "last_updated_ts_utc": row[4],
+            "wallet_address": row_dict["wallet_address"],
+            "market_id": row_dict["market_id"],
+            "current_position_notional": float(row_dict["current_position_notional"]),
+            "avg_entry_price": float(row_dict["avg_entry_price"]),
+            "last_updated_ts_utc": row_dict["last_updated_ts_utc"],
         }
 
     # -------------------------------------------------------------------------

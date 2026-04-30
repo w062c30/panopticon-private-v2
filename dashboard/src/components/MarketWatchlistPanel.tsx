@@ -219,7 +219,12 @@ function TierSection({
             <tr className="border-b border-slate-700 text-slate-500">
               <th className="pb-1 text-left">市場</th>
               {tier === "t2_pol" && (
-                <th className="pb-1 text-left">類別</th>
+                <>
+                  <th className="pb-1 text-right">信號數</th>
+                  <th className="pb-1 text-right">採納</th>
+                  <th className="pb-1 text-right">avg EV</th>
+                  <th className="pb-1 text-left">類別</th>
+                </>
               )}
               {tier !== "t2_pol" && (
                 <>
@@ -305,10 +310,21 @@ function PolRow({
           </div>
         )}
       </td>
+      <td className="py-1 text-right">{m.total_signals}</td>
+      <td className="py-1 text-right">{m.accepted}</td>
+      <td className={`py-1 text-right ${
+        m.avg_ev == null ? "text-slate-500"
+        : m.avg_ev > 0   ? "text-green-400"
+        :                   "text-red-400"
+      }`}>
+        {m.avg_ev != null ? m.avg_ev.toFixed(4) : "—"}
+      </td>
       <td className="py-1 text-slate-400">{m.political_category}</td>
       <td className="py-1 text-right text-slate-500">
         {formatRelativeTime(m.last_signal_ts ?? "")}
       </td>
+      {/* Placeholder cells when debug is disabled — keeps column alignment with TierRow */}
+      {!debugStats.enabled && <td /><td /><td />}
       <DebugCells marketId={m.market_id} debugStats={debugStats} />
     </tr>
   );
@@ -339,6 +355,8 @@ function TierRow({
       <td className="py-1 text-right text-slate-500">
         {formatRelativeTime(m.last_signal_ts ?? "")}
       </td>
+      {/* Placeholder cells when debug is disabled — keeps column alignment with PolRow */}
+      {!debugStats.enabled && <td /><td /><td />}
       <DebugCells marketId={m.market_id} debugStats={debugStats} />
     </tr>
   );

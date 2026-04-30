@@ -129,6 +129,12 @@ class PolMarketEntry(BaseModel):
     token_id_no: str | None
     subscribed_at: str
     last_signal_ts: str | None
+    # D106: Signal statistics (from execution_records LEFT JOIN)
+    total_signals: int = 0
+    accepted: int = 0
+    last_activity_ts: str | None = None
+    avg_ev: float | None = None
+    avg_posterior: float | None = None
 
 
 class T5MarketEntry(BaseModel):
