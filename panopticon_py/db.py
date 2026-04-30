@@ -2251,20 +2251,20 @@ class ShadowDB:
         ).fetchall()
         return [
             {
-                "trade_id": r[0],
-                "market_id": r[1],
-                "event_name": r[2],
-                "direction": r[3],
-                "confidence": float(r[4] if r[4] is not None else 0.0),
-                "open_reason": r[5],
-                "entry_price": r[6],
-                "exit_price": r[7],
-                "position_size_usd": float(r[8] if r[8] is not None else 0.0),
-                "estimated_ev_usd": float(r[9] if r[9] is not None else 0.0),
-                "realized_pnl_usd": float(r[10] if r[10] is not None else 0.0),
-                "close_condition": r[11],
-                "opened_ts_utc": r[12],
-                "closed_ts_utc": r[13],
+                "trade_id":          r["trade_id"],
+                "market_id":         r["market_id"],
+                "event_name":        r["event_name"],
+                "direction":         r["direction"],
+                "confidence":        float(r["confidence"] if r["confidence"] is not None else 0.0),
+                "open_reason":       r["open_reason"],
+                "entry_price":       r["entry_price"],
+                "exit_price":        r["exit_price"],
+                "position_size_usd": float(r["position_size_usd"] if r["position_size_usd"] is not None else 0.0),
+                "estimated_ev_usd":  float(r["estimated_ev_usd"] if r["estimated_ev_usd"] is not None else 0.0),
+                "realized_pnl_usd": float(r["realized_pnl_usd"] if r["realized_pnl_usd"] is not None else 0.0),
+                "close_condition":  r["close_condition"],
+                "opened_ts_utc":     r["opened_ts_utc"],
+                "closed_ts_utc":     r["closed_ts_utc"],
             }
             for r in rows
         ]
@@ -2292,11 +2292,15 @@ class ShadowDB:
         rows = self.conn.execute(
             f"""
             SELECT
-              trade_id, market_id, COALESCE(event_name, market_id), COALESCE(direction, 'YES'),
-              COALESCE(confidence, 0.0), COALESCE(open_reason, 'N/A'),
+              trade_id, market_id,
+              COALESCE(event_name, market_id) AS event_name,
+              COALESCE(direction, 'YES') AS direction,
+              COALESCE(confidence, 0.0) AS confidence,
+              COALESCE(open_reason, 'N/A') AS open_reason,
               entry_price, exit_price, position_size_usd, estimated_ev_usd, realized_pnl_usd,
-              COALESCE(close_condition, close_reason, 'N/A'), opened_ts_utc, closed_ts_utc,
-              COALESCE(source_event, 'live') as source
+              COALESCE(close_condition, close_reason, 'N/A') AS close_condition,
+              opened_ts_utc, closed_ts_utc,
+              COALESCE(source_event, 'live') AS source
             FROM realized_pnl_settlement
             {where_combined}
             ORDER BY closed_ts_utc DESC
@@ -2306,21 +2310,21 @@ class ShadowDB:
         ).fetchall()
         return [
             {
-                "trade_id": r[0],
-                "market_id": r[1],
-                "event_name": r[2],
-                "direction": r[3],
-                "confidence": float(r[4] if r[4] is not None else 0.0),
-                "open_reason": r[5],
-                "entry_price": r[6],
-                "exit_price": r[7],
-                "position_size_usd": float(r[8] if r[8] is not None else 0.0),
-                "estimated_ev_usd": float(r[9] if r[9] is not None else 0.0),
-                "realized_pnl_usd": float(r[10] if r[10] is not None else 0.0),
-                "close_condition": r[11],
-                "opened_ts_utc": r[12],
-                "closed_ts_utc": r[13],
-                "source": r[14] if len(r) > 14 else "live",
+                "trade_id":          r["trade_id"],
+                "market_id":         r["market_id"],
+                "event_name":        r["event_name"],
+                "direction":         r["direction"],
+                "confidence":        float(r["confidence"] if r["confidence"] is not None else 0.0),
+                "open_reason":       r["open_reason"],
+                "entry_price":       r["entry_price"],
+                "exit_price":        r["exit_price"],
+                "position_size_usd": float(r["position_size_usd"] if r["position_size_usd"] is not None else 0.0),
+                "estimated_ev_usd":  float(r["estimated_ev_usd"] if r["estimated_ev_usd"] is not None else 0.0),
+                "realized_pnl_usd": float(r["realized_pnl_usd"] if r["realized_pnl_usd"] is not None else 0.0),
+                "close_condition":  r["close_condition"],
+                "opened_ts_utc":     r["opened_ts_utc"],
+                "closed_ts_utc":     r["closed_ts_utc"],
+                "source":            r["source"],
             }
             for r in rows
         ]
@@ -2738,15 +2742,18 @@ class ShadowDB:
     def fetch_readiness_metrics(self, target_trades: int = 100, target_days: int = 14) -> dict[str, Any]:
         row = self.conn.execute(
             """
-            SELECT COUNT(*), MIN(closed_ts_utc), SUM(CASE WHEN realized_pnl_usd > 0 THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN realized_pnl_usd < 0 THEN 1 ELSE 0 END)
+            SELECT
+              COUNT(*) AS cnt,
+              MIN(closed_ts_utc) AS first_closed,
+              SUM(CASE WHEN realized_pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+              SUM(CASE WHEN realized_pnl_usd < 0 THEN 1 ELSE 0 END) AS losses
             FROM realized_pnl_settlement
             """
         ).fetchone()
-        count = int(row[0] if row and row[0] is not None else 0)
-        first_closed = row[1] if row else None
-        wins = int(row[2] if row and row[2] is not None else 0)
-        losses = int(row[3] if row and row[3] is not None else 0)
+        count = int(row["cnt"] if row and row["cnt"] is not None else 0)
+        first_closed = row["first_closed"] if row else None
+        wins = int(row["wins"] if row and row["wins"] is not None else 0)
+        losses = int(row["losses"] if row and row["losses"] is not None else 0)
         running_days = 0
         if first_closed:
             try:

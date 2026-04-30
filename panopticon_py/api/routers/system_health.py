@@ -56,8 +56,8 @@ def get_link_resolver_stats() -> dict[str, int]:
     finally:
         db.close()
     return {
-        "mappingCount": int(stats["mappingCount"]),
-        "unresolvedOpenCount": int(stats["unresolvedOpenCount"]),
-        "unresolvedResolvedCount": int(stats["unresolvedResolvedCount"]),
+        "mappingCount": int(stats["mapping_count"]),
+        "unresolvedOpenCount": int(stats["unresolved_count"]),
+        "unresolvedResolvedCount": int(stats["resolved_count"]),
         "resolvedThisCycle": int(resolved_now),
     }

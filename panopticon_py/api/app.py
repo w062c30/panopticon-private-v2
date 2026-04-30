@@ -6,6 +6,8 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger("panopticon.api")
@@ -26,7 +28,7 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.22-D118"   # ← AGENT: bump on every change  # D118: async-writer-health endpoint + app.state wiring + batch dict(r) cleanup
+PROCESS_VERSION = "v1.1.23-D119"   # ← AGENT: bump on every change  # D119: Any import + WS dict(r) + AsyncDBWriterStub reads orchestrator snapshot
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -57,15 +59,47 @@ async def _lifespan(app: FastAPI):
 
 
 class AsyncDBWriterStub:
-    """D118: Stub for the read-only backend process. Real writer lives in orchestrator."""
+    """D118/D119: Stub for the read-only backend process.
+    Real writer lives in orchestrator; this stub reads a JSON snapshot
+    written by the orchestrator every 30s (D119 cross-process health sharing).
+    """
 
     def health(self) -> dict[str, Any]:
-        return {
-            "running": False,
-            "thread_alive": False,
-            "queue_depth": 0,
-            "queue_unfinished": 0,
-        }
+        """Read real writer health snapshot written by the orchestrator process."""
+        try:
+            snap_path = os.getenv(
+                "ASYNC_WRITER_HEALTH_PATH", "data/async_writer_health.json"
+            )
+            with open(snap_path) as f:
+                data: dict[str, Any] = json.load(f)
+            written_at = data.get("written_at", "")
+            if written_at:
+                try:
+                    age_sec = (
+                        datetime.now(timezone.utc) - datetime.fromisoformat(written_at)
+                    ).total_seconds()
+                    if age_sec > 60:
+                        data["stale"] = True
+                        data["stale_sec"] = round(age_sec, 1)
+                except Exception:
+                    pass
+            return data
+        except FileNotFoundError:
+            return {
+                "running": False,
+                "thread_alive": False,
+                "queue_depth": 0,
+                "queue_unfinished": 0,
+                "error": "orchestrator snapshot not found",
+            }
+        except Exception as exc:
+            return {
+                "running": False,
+                "thread_alive": False,
+                "queue_depth": 0,
+                "queue_unfinished": 0,
+                "error": str(exc),
+            }
 
 
 app = FastAPI(title="Panopticon API", version="0.1.0", lifespan=_lifespan)
@@ -186,36 +220,40 @@ async def ws_stream(ws: WebSocket) -> None:
                     "type": "live_update",
                     "hunting_hits": [
                         {
-                            "hit_id": r[0], "address": r[1], "market_id": r[2],
-                            "entity_score": r[3], "entropy_z": r[4],
-                            "sim_pnl_proxy": r[5], "outcome": r[6],
-                            "payload_json": r[7], "created_ts_utc": r[8],
+                            "hit_id": d["hit_id"], "address": d["address"], "market_id": d["market_id"],
+                            "entity_score": d["entity_score"], "entropy_z": d["entropy_z"],
+                            "sim_pnl_proxy": d["sim_pnl_proxy"], "outcome": d["outcome"],
+                            "payload_json": d["payload_json"], "created_ts_utc": d["created_ts_utc"],
                         }
                         for r in hit_rows
+                        for d in [dict(r)]
                     ],
                     "wallet_obs": [
                         {
-                            "obs_id": r[0], "address": r[1], "market_id": r[2],
-                            "obs_type": r[3], "payload_json": r[4], "ingest_ts_utc": r[5],
+                            "obs_id": d["obs_id"], "address": d["address"], "market_id": d["market_id"],
+                            "obs_type": d["obs_type"], "payload_json": d["payload_json"], "ingest_ts_utc": d["ingest_ts_utc"],
                         }
                         for r in obs_rows
+                        for d in [dict(r)]
                     ],
                     "tracked_wallets": [
                         {
-                            "wallet_address": r[0], "entity_id": r[1],
-                            "all_time_pnl": r[2], "win_rate": r[3],
-                            "discovery_source": r[4], "last_seen_ts_utc": r[5],
-                            "last_updated_at": r[6],
+                            "wallet_address": d["wallet_address"], "entity_id": d["entity_id"],
+                            "all_time_pnl": d["all_time_pnl"], "win_rate": d["win_rate"],
+                            "discovery_source": d["discovery_source"], "last_seen_ts_utc": d["last_seen_ts_utc"],
+                            "last_updated_at": d["last_updated_at"],
                         }
                         for r in wallet_rows
+                        for d in [dict(r)]
                     ],
                     "raw_events": [
                         {
-                            "event_id": r[0], "layer": r[1], "event_type": r[2],
-                            "source": r[3], "market_id": r[4],
-                            "payload_json": r[5], "ingest_ts_utc": r[6],
+                            "event_id": d["event_id"], "layer": d["layer"], "event_type": d["event_type"],
+                            "source": d["source"], "market_id": d["market_id"],
+                            "payload_json": d["payload_json"], "ingest_ts_utc": d["ingest_ts_utc"],
                         }
                         for r in event_rows
+                        for d in [dict(r)]
                     ],
                     "ts": time.time(),
                 })

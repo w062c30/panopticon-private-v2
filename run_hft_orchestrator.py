@@ -65,7 +65,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.32-D118"   # ← AGENT: bump on every change  # D118: async-writer-health endpoint + stop() reentry guard
+PROCESS_VERSION = "v1.1.33-D119"   # ← AGENT: bump on every change  # D119: AsyncDBWriter + _persist_writer_health every 30s + stop() on shutdown
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -441,8 +441,27 @@ async def main_async() -> int:
     # ── Graph engine (shared across async tracks) ──────────────────────────
     graph_engine = HiddenLinkGraphEngine(db=db)
 
+    # ── AsyncDBWriter — async queue for non-trading DB writes (D119) ───────
+    from panopticon_py.db import AsyncDBWriter
+    db_writer = AsyncDBWriter(db)
+    db_writer.start()
+    logger.info("[DB] AsyncDBWriter started")
+
     # ── Signal Queue — zero-latency event bus [Invariant 1.1] ─────────────
     signal_queue: asyncio.Queue = asyncio.Queue()
+
+    def _utc_now_rfc3339_ms() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+
+    def _persist_writer_health() -> None:
+        """D119: Persist AsyncDBWriter health snapshot every 30s for cross-process read."""
+        snap = db_writer.health()
+        snap["written_at"] = _utc_now_rfc3339_ms()
+        try:
+            with open("data/async_writer_health.json", "w") as f:
+                json.dump(snap, f)
+        except Exception as exc:
+            logger.debug("[DB] Could not persist writer health: %s", exc)
 
     # ── Launch ALL tracks ──────────────────────────────────────────────────
     #   async tasks: Radar, OFI, Graph, Signal Engine (4 tracks in asyncio)
@@ -609,9 +628,17 @@ async def main_async() -> int:
         )
         logger.info("[ORCH] signal_engine restarted")
 
+    # persist writer health every 30s (5s loop × 6)
+    _health_persist_counter = 0
+
     while True:
         await asyncio.sleep(5.0)
         update_heartbeat("orchestrator")
+
+        _health_persist_counter += 1
+        if _health_persist_counter % 6 == 0:
+            _persist_writer_health()
+            _health_persist_counter = 0
 
         # No subprocess workers to monitor — discovery_loop runs in start_shadow_hydration.py
 
@@ -640,6 +667,13 @@ async def main_async() -> int:
             await asyncio.wait_for(task, timeout=5.0)
         except asyncio.CancelledError:
             pass
+
+    # D119: Stop AsyncDBWriter after all tasks
+    try:
+        db_writer.stop()
+        logger.info("[DB] AsyncDBWriter stopped")
+    except Exception as exc:
+        logger.warning("[DB] AsyncDBWriter stop error: %s", exc)
 
     for p in _procs:
         if p.poll() is None:

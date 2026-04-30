@@ -19,14 +19,14 @@ def get_current_report() -> ReportCurrentResponse:
     finally:
         db.close()
 
-    total_links = max(1, int(link_stats["mappingCount"]) + int(link_stats["unresolvedOpenCount"]))
-    canonical_hit_rate = float(link_stats["mappingCount"]) / float(total_links)
-    fallback_rate = float(link_stats["unresolvedOpenCount"]) / float(total_links)
+    total_links = max(1, int(link_stats["mapping_count"]) + int(link_stats["unresolved_count"]))
+    canonical_hit_rate = float(link_stats["mapping_count"]) / float(total_links)
+    fallback_rate = float(link_stats["unresolved_count"]) / float(total_links)
     report = build_live_report(
         rows,
         canonical_hit_rate=canonical_hit_rate,
         fallback_rate=fallback_rate,
-        unresolved_count=int(link_stats["unresolvedOpenCount"]),
+        unresolved_count=int(link_stats["unresolved_count"]),
     )
     return ReportCurrentResponse(
         counts=ReportCounts(**report["counts"]),
