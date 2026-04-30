@@ -18,6 +18,7 @@ from panopticon_py.api.routers.report import router as report_router
 from panopticon_py.api.routers.recommendations import router as recommendations_router
 from panopticon_py.api.routers.system_health import router as system_health_router
 from panopticon_py.api.routers.wallet_graph import router as wallet_graph_router
+from panopticon_py.api.routers.watchlist import router as watchlist_router
 from panopticon_py.load_env import load_repo_env
 
 load_repo_env()
@@ -27,7 +28,7 @@ app = FastAPI(title="Panopticon API", version="0.1.0")
 # D51: Singleton enforcement — must be first after app creation
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 
-PROCESS_VERSION = "v1.1.7-D69"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.9-D103"   # ← AGENT: bump on every change
 acquire_singleton("backend", PROCESS_VERSION)
 
 # Browser dev servers (Vite) use http://localhost:* while API may bind 127.0.0.1 — different origins → CORS required.
@@ -58,6 +59,7 @@ app.include_router(performance_router)
 app.include_router(report_router)
 app.include_router(system_health_router)
 app.include_router(wallet_graph_router)
+app.include_router(watchlist_router)
 
 # Serve built dashboard from disk
 # Mount at /dashboard so it doesn't conflict with /api/*, /health, etc.

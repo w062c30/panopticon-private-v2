@@ -101,6 +101,12 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
                     markets = resp.json()
                 except Exception as exc:
                     logger.warning("[POL_SCAN] gamma-api error: %s", exc)
+                    # D103: first-page failure — skip deactivation to preserve existing records
+                    if not upserted_ids:
+                        logger.warning(
+                            "[POL_SCAN] first-page failure — deactivation skipped "
+                            "to avoid false-deactivation. All existing watchlist markets preserved as active."
+                        )
                     break
 
             if not markets:
@@ -196,6 +202,12 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
             markets = resp.json()
         except Exception as exc:
             logger.warning("[POL_SCAN] gamma-api (sync) error: %s", exc)
+            # D103: first-page failure — skip deactivation to preserve existing records
+            if not upserted_ids:
+                logger.warning(
+                    "[POL_SCAN][SYNC] first-page failure — deactivation skipped "
+                    "to avoid false-deactivation. All existing watchlist markets preserved as active."
+                )
             break
 
         if not markets:

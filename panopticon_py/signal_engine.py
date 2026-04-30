@@ -780,6 +780,14 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         "market_id": market_id,
     })
 
+    # D103-1: Record last signal timestamp for accepted T2-POL signals
+    if accepted and event.market_tier == "t2_pol":
+        try:
+            from panopticon_py.time_utils import utc_now_rfc3339_ms
+            db.update_pol_last_signal_ts(market_id, utc_now_rfc3339_ms())
+        except Exception as _e:
+            logger.warning("[POL] last_signal_ts update failed: %s", _e)
+
     # 11. CLOB submission — only on PASS or DEGRADE (gate.decision != ABORT)
     if gate.decision != GateDecision.ABORT:
         snapshot = _build_friction_snapshot()
