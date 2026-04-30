@@ -144,13 +144,25 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
                 if not market_id:
                     continue
 
-                # D102: RULE-API-1 guard — tokens[0] might be non-dict
+                # D110-1: Multi-strategy token_id extraction (tokens=None, clobTokenIds=JSON-string)
+                token_id: str | None = None
+                # Strategy 1: tokens[] object array
                 tokens = m.get("tokens") or []
-                token_id = (
-                    tokens[0].get("token_id")
-                    if tokens and isinstance(tokens[0], dict)
-                    else None
-                )
+                if tokens and isinstance(tokens[0], dict):
+                    token_id = tokens[0].get("token_id") or tokens[0].get("tokenId")
+                # Strategy 2: clobTokenIds (JSON-encoded string array)
+                if not token_id:
+                    clob = m.get("clobTokenIds")
+                    if isinstance(clob, str):
+                        try:
+                            clob = json.loads(clob)
+                        except Exception:
+                            clob = []
+                    if isinstance(clob, list) and clob:
+                        token_id = str(clob[0])
+                # Strategy 3: direct field
+                if not token_id:
+                    token_id = m.get("tokenId") or m.get("token_id")
 
                 db.upsert_pol_market({
                     "market_id": market_id,
@@ -243,12 +255,25 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
             if not market_id:
                 continue
 
+            # D110-1: Multi-strategy token_id extraction (tokens=None, clobTokenIds=JSON-string)
+            token_id: str | None = None
+            # Strategy 1: tokens[] object array
             tokens = m.get("tokens") or []
-            token_id = (
-                tokens[0].get("token_id")
-                if tokens and isinstance(tokens[0], dict)
-                else None
-            )
+            if tokens and isinstance(tokens[0], dict):
+                token_id = tokens[0].get("token_id") or tokens[0].get("tokenId")
+            # Strategy 2: clobTokenIds (JSON-encoded string array)
+            if not token_id:
+                clob = m.get("clobTokenIds")
+                if isinstance(clob, str):
+                    try:
+                        clob = json.loads(clob)
+                    except Exception:
+                        clob = []
+                if isinstance(clob, list) and clob:
+                    token_id = str(clob[0])
+            # Strategy 3: direct field
+            if not token_id:
+                token_id = m.get("tokenId") or m.get("token_id")
 
             db.upsert_pol_market({
                 "market_id": market_id,
