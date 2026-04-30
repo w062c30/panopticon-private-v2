@@ -1948,15 +1948,17 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         delta_v = embedded_trade_size
                         if delta_v > 0:
                             lambda_obs = delta_p / delta_v
-                            # ── Q10: Guard against window_ts=0 ─────────────────────
-                            slug = _token_to_slug_map.get(asset, "")
-                            ts_part = slug.rsplit("-", 1)[-1] if slug and "-" in slug else ""
-                            window_ts = int(ts_part) if ts_part.isdigit() else 0
-                            if window_ts == 0:
+                            # D97: Guard window_ts=0 only for T1 markets.
+                            # T2/T3/T5 slugs may not end in digits — compute slug/window_ts locally.
+                            slug_book = _token_to_slug_map.get(asset, "")
+                            ts_part_book = slug_book.rsplit("-", 1)[-1] if slug_book and "-" in slug_book else ""
+                            window_ts = int(ts_part_book) if ts_part_book.isdigit() else 0
+                            tier_for_kyle = _token_tier_map.get(asset, "t3")
+                            if tier_for_kyle == "t1" and window_ts == 0:
                                 logger.info(
-                                    "[KYLE_SKIP][NO_WINDOW_TS] asset=%s slug=%s — "
+                                    "[KYLE_SKIP][NO_WINDOW_TS] T1 asset=%s slug=%s — "
                                     "window_ts unknown, skipping kyle sample",
-                                    asset[:20], slug[:40] if slug else "UNKNOWN",
+                                    asset[:20], slug_book[:40] if slug_book else "UNKNOWN",
                                 )
                             else:
                                 db.append_kyle_lambda_sample({
@@ -2155,15 +2157,18 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                                         "[KYLE][D96] order_id=%s total_size=%.4f lambda=%.6f",
                                         pending_oid[:16], effective_size, lambda_obs,
                                     )
-                            # ── Q10: Guard against window_ts=0 ─────────────────────
-                            slug = _token_to_slug_map.get(asset_id, "")
-                            ts_part = slug.rsplit("-", 1)[-1] if slug and "-" in slug else ""
-                            window_ts = int(ts_part) if ts_part.isdigit() else 0
-                            if window_ts == 0:
+                            # D97: Guard window_ts=0 only for T1 markets.
+                            # T2/T3/T5 slugs may not end in digits — use window_ts=0 as fallback.
+                            # Compute slug/window_ts here (slug used in log below; window_ts for guard).
+                            slug_for_kyle = _token_to_slug_map.get(asset_id, "")
+                            ts_part_k = slug_for_kyle.rsplit("-", 1)[-1] if slug_for_kyle and "-" in slug_for_kyle else ""
+                            window_ts = int(ts_part_k) if ts_part_k.isdigit() else 0
+                            tier_for_kyle = _token_tier_map.get(asset_id, "t3")
+                            if tier_for_kyle == "t1" and window_ts == 0:
                                 logger.info(
-                                    "[KYLE_SKIP][NO_WINDOW_TS] asset=%s slug=%s — "
+                                    "[KYLE_SKIP][NO_WINDOW_TS] T1 asset=%s slug=%s — "
                                     "window_ts unknown, skipping kyle sample",
-                                    asset_id[:20], slug[:40] if slug else "UNKNOWN",
+                                    asset_id[:20], slug_for_kyle[:40] if slug_for_kyle else "UNKNOWN",
                                 )
                             else:
                                 db.append_kyle_lambda_sample({
@@ -2190,12 +2195,9 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                                     asset_id[:20], mid_before, trade_price, trade_size,
                                 )
 
-                # Store current trade as pending for the NEXT book or trade event.
-                # D31 FIX: preserve the current trade's price so the next trade uses it
-                # as prev_price (critical for consecutive-trade Kyle lambda calculation).
-                # Only set mid_before=None if the entry was brand-new (no mid_before yet);
-                # otherwise keep the existing mid_before to avoid losing book snapshot state.
                 # D96-NEW-3: track order_id per pending trade for downstream Kyle λ upgrade
+                # Initialize order_id = None so it's in scope for the entire _pending_trade block below.
+                order_id = None
                 pending_order_id = _pending_trade.get(asset_id, {}).get("order_id")
                 existing = _pending_trade.get(asset_id)
                 _pending_trade[asset_id] = {
@@ -2760,7 +2762,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.22-D96"   # ← AGENT: bump on every change
+    PROCESS_VERSION = "v1.1.25-D97"   # ← AGENT: bump on every change  # D97: order_id UnboundLocalError fixed — initialized before pending_trade block
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
