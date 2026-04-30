@@ -1,0 +1,16 @@
+D119: positional→named access + cross-process AsyncDBWriter health
+
+- D119-4: link_resolver_stats() caller audit — updated system_health.py and report.py to use
+  snake_case keys (mapping_count/unresolved_count/resolved_count) instead of camelCase
+- D119-3: Migrated fetch_top_trade_candidates(), fetch_trade_list(), fetch_readiness_metrics()
+  to named access with SQL aliases; removed legacy len(r) defensive check in fetch_trade_list
+- D119-2: WebSocket /ws/stream handler migrated to dict(r) for all four row sets
+  (hunting_hits, wallet_obs, tracked_wallets, raw_events)
+- D119-1: Added from typing import Any to app.py
+- D119-5: Cross-process AsyncDBWriter health — orchestrator now writes health snapshot
+  to data/async_writer_health.json every 30s; backend AsyncDBWriterStub reads this snapshot
+  so /api/async-writer-health reflects real writer state (not always False)
+
+Version bumps:
+- orchestrator: v1.1.33-D119
+- backend: v1.1.23-D119

@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
+import json
 import logging
 import os
 import signal
@@ -54,6 +55,7 @@ from panopticon_py.friction_state import FrictionStateWorker, GlobalFrictionStat
 from panopticon_py.hft.graph_linker import HiddenLinkGraphEngine
 from panopticon_py.hft.hyperliquid_ws_client import HyperliquidOFIEngine, UnderlyingShock
 from panopticon_py.load_env import load_repo_env
+from panopticon_py.time_utils import utc_now_rfc3339_ms  # D120: aligns with canonical time utility
 from scripts.check_shadow_readiness import check_readiness, ReadinessResult
 
 load_repo_env()
@@ -65,7 +67,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.33-D119"   # ← AGENT: bump on every change  # D119: AsyncDBWriter + _persist_writer_health every 30s + stop() on shutdown
+PROCESS_VERSION = "v1.1.34-D120"   # ← AGENT: bump on every change  # D120: import json + utc_now_rfc3339_ms utility alignment
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -450,15 +452,13 @@ async def main_async() -> int:
     # ── Signal Queue — zero-latency event bus [Invariant 1.1] ─────────────
     signal_queue: asyncio.Queue = asyncio.Queue()
 
-    def _utc_now_rfc3339_ms() -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
-
     def _persist_writer_health() -> None:
-        """D119: Persist AsyncDBWriter health snapshot every 30s for cross-process read."""
+        """D119/D120: Persist AsyncDBWriter health snapshot every 30s for cross-process read."""
         snap = db_writer.health()
-        snap["written_at"] = _utc_now_rfc3339_ms()
+        snap["written_at"] = utc_now_rfc3339_ms()
+        snap_path = os.getenv("ASYNC_WRITER_HEALTH_PATH", "data/async_writer_health.json")
         try:
-            with open("data/async_writer_health.json", "w") as f:
+            with open(snap_path, "w") as f:
                 json.dump(snap, f)
         except Exception as exc:
             logger.debug("[DB] Could not persist writer health: %s", exc)

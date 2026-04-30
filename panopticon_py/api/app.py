@@ -28,7 +28,7 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.23-D119"   # ← AGENT: bump on every change  # D119: Any import + WS dict(r) + AsyncDBWriterStub reads orchestrator snapshot
+PROCESS_VERSION = "v1.1.24-D120"   # ← AGENT: bump on every change  # D120: WS idiom cleanup (generator expression)
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -220,40 +220,48 @@ async def ws_stream(ws: WebSocket) -> None:
                     "type": "live_update",
                     "hunting_hits": [
                         {
-                            "hit_id": d["hit_id"], "address": d["address"], "market_id": d["market_id"],
-                            "entity_score": d["entity_score"], "entropy_z": d["entropy_z"],
-                            "sim_pnl_proxy": d["sim_pnl_proxy"], "outcome": d["outcome"],
-                            "payload_json": d["payload_json"], "created_ts_utc": d["created_ts_utc"],
+                            "hit_id":        dict_r["hit_id"],
+                            "address":       dict_r["address"],
+                            "market_id":     dict_r["market_id"],
+                            "entity_score":  dict_r["entity_score"],
+                            "entropy_z":     dict_r["entropy_z"],
+                            "sim_pnl_proxy": dict_r["sim_pnl_proxy"],
+                            "outcome":       dict_r["outcome"],
+                            "payload_json":  dict_r["payload_json"],
+                            "created_ts_utc":dict_r["created_ts_utc"],
                         }
-                        for r in hit_rows
-                        for d in [dict(r)]
+                        for dict_r in (dict(r) for r in hit_rows)
                     ],
                     "wallet_obs": [
                         {
-                            "obs_id": d["obs_id"], "address": d["address"], "market_id": d["market_id"],
-                            "obs_type": d["obs_type"], "payload_json": d["payload_json"], "ingest_ts_utc": d["ingest_ts_utc"],
+                            "obs_id": dict_r["obs_id"], "address": dict_r["address"], "market_id": dict_r["market_id"],
+                            "obs_type": dict_r["obs_type"], "payload_json": dict_r["payload_json"], "ingest_ts_utc": dict_r["ingest_ts_utc"],
                         }
-                        for r in obs_rows
-                        for d in [dict(r)]
+                        for dict_r in (dict(r) for r in obs_rows)
                     ],
                     "tracked_wallets": [
                         {
-                            "wallet_address": d["wallet_address"], "entity_id": d["entity_id"],
-                            "all_time_pnl": d["all_time_pnl"], "win_rate": d["win_rate"],
-                            "discovery_source": d["discovery_source"], "last_seen_ts_utc": d["last_seen_ts_utc"],
-                            "last_updated_at": d["last_updated_at"],
+                            "wallet_address":  dict_r["wallet_address"],
+                            "entity_id":       dict_r["entity_id"],
+                            "all_time_pnl":    dict_r["all_time_pnl"],
+                            "win_rate":        dict_r["win_rate"],
+                            "discovery_source":dict_r["discovery_source"],
+                            "last_seen_ts_utc":dict_r["last_seen_ts_utc"],
+                            "last_updated_at": dict_r["last_updated_at"],
                         }
-                        for r in wallet_rows
-                        for d in [dict(r)]
+                        for dict_r in (dict(r) for r in wallet_rows)
                     ],
                     "raw_events": [
                         {
-                            "event_id": d["event_id"], "layer": d["layer"], "event_type": d["event_type"],
-                            "source": d["source"], "market_id": d["market_id"],
-                            "payload_json": d["payload_json"], "ingest_ts_utc": d["ingest_ts_utc"],
+                            "event_id":     dict_r["event_id"],
+                            "layer":        dict_r["layer"],
+                            "event_type":   dict_r["event_type"],
+                            "source":       dict_r["source"],
+                            "market_id":    dict_r["market_id"],
+                            "payload_json": dict_r["payload_json"],
+                            "ingest_ts_utc":dict_r["ingest_ts_utc"],
                         }
-                        for r in event_rows
-                        for d in [dict(r)]
+                        for dict_r in (dict(r) for r in event_rows)
                     ],
                     "ts": time.time(),
                 })
