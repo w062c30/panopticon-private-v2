@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 logger = logging.getLogger("panopticon.api")
@@ -23,12 +24,32 @@ from panopticon_py.load_env import load_repo_env
 
 load_repo_env()
 
-app = FastAPI(title="Panopticon API", version="0.1.0")
+# D107: lifespan context manager — replaces deprecated @app.on_event("startup")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """
+    D107: FastAPI lifespan context manager (replaces deprecated @app.on_event).
+    Startup: bootstrap DB schema and ensure data/ directory exists.
+    Shutdown: no-op (connections are per-request, no global pool to drain).
+    """
+    os.makedirs("data", exist_ok=True)
+    try:
+        from panopticon_py.db import ShadowDB
+        _db = ShadowDB()
+        _db.bootstrap()
+        _db.close()
+        logger.info("[APP] DB bootstrap complete — backend %s", PROCESS_VERSION)
+    except Exception as exc:
+        logger.warning("[APP] DB bootstrap warning: %s", exc)
+    yield
+
+
+app = FastAPI(title="Panopticon API", version="0.1.0", lifespan=_lifespan)
 
 # D51: Singleton enforcement — must be first after app creation
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 
-PROCESS_VERSION = "v1.1.11-D106"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.12-D107"   # ← AGENT: bump on every change
 acquire_singleton("backend", PROCESS_VERSION)
 
 # Browser dev servers (Vite) use http://localhost:* while API may bind 127.0.0.1 — different origins → CORS required.
@@ -60,15 +81,6 @@ app.include_router(report_router)
 app.include_router(system_health_router)
 app.include_router(wallet_graph_router)
 app.include_router(watchlist_router)
-
-
-@app.on_event("startup")
-def _on_startup():
-    """D106: Bootstrap DB schema once at startup — not per-request."""
-    from panopticon_py.db import ShadowDB
-    _db = ShadowDB()
-    _db.bootstrap()
-    _db.close()
 
 
 # Serve built dashboard from disk
