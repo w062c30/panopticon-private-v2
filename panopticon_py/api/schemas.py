@@ -104,3 +104,16 @@ class ReportCurrentResponse(BaseModel):
     quality: ReportQuality
     findings: list[str]
     updatedAt: str
+
+
+class T5CoverageResponse(BaseModel):
+    """D102: Pydantic model for /api/t5-coverage response."""
+    tier: str
+    period: str
+    total_signals: int
+    accepted: int
+    rejected: int
+    avg_ev_accepted: float | None = None
+    avg_posterior: float | None = None
+    distinct_markets: int
+    pass_rate: float | None = None

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from panopticon_py.api.schemas import MaxDrawdownInfo, PerformanceHistoryPoint, PerformanceHistoryResponse, PerformanceResponse
+from panopticon_py.api.schemas import (
+    MaxDrawdownInfo,
+    PerformanceHistoryPoint,
+    PerformanceHistoryResponse,
+    PerformanceResponse,
+    T5CoverageResponse,
+)
 from panopticon_py.db import ShadowDB
 from panopticon_py.polymarket.live_trade_pnl_service import compute_live_history, compute_live_performance, fetch_live_trade_rows
 
@@ -58,15 +64,15 @@ def get_performance_history(period: str = Query("all", pattern="^(1d|7d|30d|all)
     )
 
 
-@router.get("/t5-coverage")
-def get_t5_coverage() -> dict:
+@router.get("/t5-coverage", response_model=T5CoverageResponse)
+def get_t5_coverage() -> T5CoverageResponse:
     """
-    D101: T5 Sports Market Coverage Panel.
+    D102: T5 Sports Market Coverage Panel.
     Returns 24h signal/execution/pass-rate summary for T5 tier.
     """
     db = ShadowDB()
     try:
         db.bootstrap()
-        return db.fetch_t5_coverage_summary()
+        return T5CoverageResponse(**db.fetch_t5_coverage_summary())
     finally:
         db.close()

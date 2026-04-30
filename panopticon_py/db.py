@@ -432,6 +432,7 @@ class ShadowDB:
         self._ensure_hunting_tables()
         self._ensure_signal_engine_tables()
         self._ensure_discovery_tables()
+        self._ensure_pol_watchlist_table()
         self._ensure_funding_roots_table()
         self._ensure_paper_trade_tables()
         self._ensure_settlement_tables()
@@ -1166,7 +1167,10 @@ class ShadowDB:
         self._add_column_if_missing(self.conn, "wallet_observations", "transaction_hash", "TEXT")
         self._add_column_if_missing(self.conn, "wallet_observations", "order_id", "TEXT")
 
-        # D101: T2-POL political market watchlist
+        # D101: T2-POL political market watchlist — moved to _ensure_pol_watchlist_table()
+
+    def _ensure_pol_watchlist_table(self) -> None:
+        """D102: Decoupled T2-POL watchlist table initialisation."""
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pol_market_watchlist (
                 market_id          TEXT PRIMARY KEY,
@@ -1234,6 +1238,31 @@ class ShadowDB:
             }
             for r in rows
         ]
+
+    def update_pol_last_signal_ts(self, market_id: str, ts: str) -> None:
+        """D102: Record last signal timestamp for a political market."""
+        self.conn.execute(
+            "UPDATE pol_market_watchlist SET last_signal_ts = ? WHERE market_id = ?",
+            (ts, market_id),
+        )
+        self.conn.commit()
+
+    def deactivate_closed_pol_markets(self, active_market_ids: set[str]) -> int:
+        """
+        D102: Set is_active=0 for any pol_market_watchlist entry
+        whose market_id is NOT in active_market_ids.
+        Returns deactivated count.
+        """
+        if not active_market_ids:
+            return 0
+        placeholders = ",".join("?" * len(active_market_ids))
+        cur = self.conn.execute(
+            f"UPDATE pol_market_watchlist SET is_active=0 "
+            f"WHERE is_active=1 AND market_id NOT IN ({placeholders})",
+            tuple(active_market_ids),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def _ensure_funding_roots_table(self) -> None:
         self.conn.executescript(

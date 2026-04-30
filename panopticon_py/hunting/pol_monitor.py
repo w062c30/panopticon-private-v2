@@ -49,8 +49,9 @@ _EXCLUDE_SLUG_SEGMENTS: list[str] = [
 
 GAMMA_URL = "https://gamma-api.polymarket.com/markets"
 
-# D101: Concurrency guard — MiniMax API rule applies to httpx calls too (via NGP-api.nvidia.com)
-_httpx_semaphore = asyncio.Semaphore(2)
+# D101: Concurrency guard for Gamma API calls
+# Note: semaphore is now lazily initialised inside scan_pol_markets()
+# to avoid "attached to a different loop" errors at import time.
 
 
 async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
@@ -76,10 +77,15 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
     count = 0
     offset = 0
     limit = 100
+    upserted_ids: set[str] = set()
 
-    async with _httpx_semaphore:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            for _ in range(max_pages):
+    # D102: Lazy semaphore — avoid "attached to a different loop" at import time
+    semaphore = asyncio.Semaphore(2)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for _ in range(max_pages):
+            # D102: Semaphore wraps single request, not entire loop + sleep
+            async with semaphore:
                 try:
                     resp = await client.get(
                         GAMMA_URL,
@@ -97,59 +103,68 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
                     logger.warning("[POL_SCAN] gamma-api error: %s", exc)
                     break
 
-                if not markets:
-                    break
+            if not markets:
+                break
 
-                for m in markets:
-                    slug = (m.get("slug") or "").lower()
-                    # T2 exclusion: skip algorithmic/sports markets
-                    if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
-                        continue
+            for m in markets:
+                slug = (m.get("slug") or "").lower()
+                # T2 exclusion: skip algorithmic/sports markets
+                if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
+                    continue
 
-                    try:
-                        vol = float(m.get("volume") or 0)
-                        best_bid = float(m.get("bestBid") or 0.5)
-                    except (ValueError, TypeError):
-                        continue
+                try:
+                    vol = float(m.get("volume") or 0)
+                    best_bid = float(m.get("bestBid") or 0.5)
+                except (ValueError, TypeError):
+                    continue
 
-                    if vol < 5000:
-                        continue
-                    if best_bid >= 0.99 or best_bid <= 0.01:
-                        continue
+                if vol < 5000:
+                    continue
+                if best_bid >= 0.99 or best_bid <= 0.01:
+                    continue
 
-                    matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
-                    if not matched_kw:
-                        continue
+                matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
+                if not matched_kw:
+                    continue
 
-                    # Determine political_category
-                    category = "OTHER"
-                    for kw in matched_kw:
-                        if kw in POL_CATEGORY_MAP:
-                            category = POL_CATEGORY_MAP[kw]
-                            break
+                # Determine political_category
+                category = "OTHER"
+                for kw in matched_kw:
+                    if kw in POL_CATEGORY_MAP:
+                        category = POL_CATEGORY_MAP[kw]
+                        break
 
-                    market_id = m.get("conditionId") or m.get("id") or ""
-                    if not market_id:
-                        continue
+                market_id = m.get("conditionId") or m.get("id") or ""
+                if not market_id:
+                    continue
 
-                    # tokens field can be absent or empty — use .get() with fallback
-                    tokens = m.get("tokens") or []
-                    token_id = tokens[0].get("token_id") if tokens else None
+                # D102: RULE-API-1 guard — tokens[0] might be non-dict
+                tokens = m.get("tokens") or []
+                token_id = (
+                    tokens[0].get("token_id")
+                    if tokens and isinstance(tokens[0], dict)
+                    else None
+                )
 
-                    db.upsert_pol_market({
-                        "market_id": market_id,
-                        "token_id": token_id,
-                        "event_slug": slug,
-                        "political_category": category,
-                        "entity_keywords": matched_kw,
-                        "subscribed_at": utc_now_rfc3339_ms(),
-                    })
-                    count += 1
+                db.upsert_pol_market({
+                    "market_id": market_id,
+                    "token_id": token_id,
+                    "event_slug": slug,
+                    "political_category": category,
+                    "entity_keywords": matched_kw,
+                    "subscribed_at": utc_now_rfc3339_ms(),
+                })
+                upserted_ids.add(market_id)
+                count += 1
 
-                if len(markets) < limit:
-                    break
-                offset += limit
-                await asyncio.sleep(0.5)  # rate limit guard
+            if len(markets) < limit:
+                break
+            offset += limit
+            await asyncio.sleep(0.5)  # rate limit guard — outside semaphore
+
+    # D102-2: Deactivate markets not seen in this scan
+    if upserted_ids:
+        db.deactivate_closed_pol_markets(upserted_ids)
 
     logger.info("[POL_SCAN] upserted=%d political markets", count)
     return count
@@ -169,6 +184,7 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
     count = 0
     offset = 0
     limit = 100
+    upserted_ids: set[str] = set()
 
     for _ in range(max_pages):
         try:
@@ -216,7 +232,11 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
                 continue
 
             tokens = m.get("tokens") or []
-            token_id = tokens[0].get("token_id") if tokens else None
+            token_id = (
+                tokens[0].get("token_id")
+                if tokens and isinstance(tokens[0], dict)
+                else None
+            )
 
             db.upsert_pol_market({
                 "market_id": market_id,
@@ -226,11 +246,16 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
                 "entity_keywords": matched_kw,
                 "subscribed_at": utc_now_rfc3339_ms(),
             })
+            upserted_ids.add(market_id)
             count += 1
 
         if len(markets) < limit:
             break
         offset += limit
+
+    # D102-2: Deactivate markets not seen in this scan
+    if upserted_ids:
+        db.deactivate_closed_pol_markets(upserted_ids)
 
     logger.info("[POL_SCAN][SYNC] upserted=%d political markets", count)
     return count
