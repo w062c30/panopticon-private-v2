@@ -26,7 +26,7 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.21-D117"   # ← AGENT: bump on every change  # D117: AsyncDBWriter health() + dispatch timing + dict(r) cleanup
+PROCESS_VERSION = "v1.1.22-D118"   # ← AGENT: bump on every change  # D118: async-writer-health endpoint + app.state wiring + batch dict(r) cleanup
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -36,6 +36,8 @@ async def _lifespan(app: FastAPI):
     D107: FastAPI lifespan context manager (replaces deprecated @app.on_event).
     Startup: bootstrap DB schema and ensure data/ directory exists.
     Shutdown: no-op (connections are per-request, no global pool to drain).
+    D118: AsyncDBWriter stub added to app.state — backend is read-only, real writer
+          lives in the orchestrator process.
     """
     os.makedirs("data", exist_ok=True)
     try:
@@ -44,9 +46,26 @@ async def _lifespan(app: FastAPI):
         _db.bootstrap()
         _db.close()
         logger.info("[APP] DB bootstrap complete — backend %s", PROCESS_VERSION)
+        # D118: Wire AsyncDBWriter stub — backend is read-only; real writer runs in orchestrator.
+        # Stub always shows running=False so /api/async-writer-health reflects reality.
+        _writer = AsyncDBWriterStub()
+        app.state.async_writer = _writer
+        logger.info("[APP] AsyncDBWriter stub wired to app.state (backend is read-only)")
     except Exception as exc:
         logger.warning("[APP] DB bootstrap warning: %s", exc)
     yield
+
+
+class AsyncDBWriterStub:
+    """D118: Stub for the read-only backend process. Real writer lives in orchestrator."""
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "running": False,
+            "thread_alive": False,
+            "queue_depth": 0,
+            "queue_unfinished": 0,
+        }
 
 
 app = FastAPI(title="Panopticon API", version="0.1.0", lifespan=_lifespan)

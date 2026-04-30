@@ -1627,7 +1627,7 @@ class ShadowDB:
               AND created_ts_utc > datetime('now', '-24 hours')
         """).fetchone()
 
-        if not row or not row[0]:
+        if not row or not row["total_signals"]:
             return {
                 "tier": "t5",
                 "period": "24h",
@@ -1640,17 +1640,17 @@ class ShadowDB:
                 "pass_rate": None,
             }
 
-        total = int(row[0])
-        accepted = int(row[1] or 0)
+        total = int(row["total_signals"])
+        accepted = int(row["accepted"] or 0)
         return {
             "tier": "t5",
             "period": "24h",
             "total_signals": total,
             "accepted": accepted,
-            "rejected": int(row[2] or 0),
-            "avg_ev_accepted": float(row[3]) if row[3] is not None else None,
-            "avg_posterior": float(row[4]) if row[4] is not None else None,
-            "distinct_markets": int(row[5] or 0),
+            "rejected": int(row["rejected"] or 0),
+            "avg_ev_accepted": float(row["avg_ev_accepted"]) if row["avg_ev_accepted"] is not None else None,
+            "avg_posterior": float(row["avg_posterior"]) if row["avg_posterior"] is not None else None,
+            "distinct_markets": int(row["distinct_markets"] or 0),
             "pass_rate": round(accepted / total, 3) if total > 0 else None,
         }
 
@@ -2695,6 +2695,7 @@ class ShadowDB:
         self.conn.commit()
 
     def list_open_unresolved_links(self, limit: int = 100) -> list[dict[str, Any]]:
+        """D118: Use dict(r) instead of positional indices."""
         rows = self.conn.execute(
             """
             SELECT unresolved_id, market_id, token_id, event_name, reason, source, created_ts_utc
@@ -2705,18 +2706,7 @@ class ShadowDB:
             """,
             (int(limit),),
         ).fetchall()
-        return [
-            {
-                "unresolved_id": r[0],
-                "market_id": r[1],
-                "token_id": r[2],
-                "event_name": r[3],
-                "reason": r[4],
-                "source": r[5],
-                "created_ts_utc": r[6],
-            }
-            for r in rows
-        ]
+        return [dict(r) for r in rows]
 
     def mark_unresolved_link_resolved(self, unresolved_id: str) -> None:
         self.conn.execute(
@@ -2730,19 +2720,20 @@ class ShadowDB:
         self.conn.commit()
 
     def link_resolver_stats(self) -> dict[str, Any]:
+        """D118: Use named aliases in SELECT — sqlite3.Row supports r["alias_name"]."""
         row = self.conn.execute(
             """
             SELECT
-              (SELECT COUNT(*) FROM polymarket_link_map),
-              (SELECT COUNT(*) FROM polymarket_link_unresolved WHERE resolved = 0),
-              (SELECT COUNT(*) FROM polymarket_link_unresolved WHERE resolved = 1)
+              (SELECT COUNT(*) FROM polymarket_link_map)                    AS mapping_count,
+              (SELECT COUNT(*) FROM polymarket_link_unresolved
+               WHERE resolved = 0)                                        AS unresolved_count,
+              (SELECT COUNT(*) FROM polymarket_link_unresolved
+               WHERE resolved = 1)                                        AS resolved_count
             """
         ).fetchone()
-        return {
-            "mappingCount": int(row[0] if row else 0),
-            "unresolvedOpenCount": int(row[1] if row else 0),
-            "unresolvedResolvedCount": int(row[2] if row else 0),
-        }
+        if not row:
+            return {"mapping_count": 0, "unresolved_count": 0, "resolved_count": 0}
+        return dict(row)
 
     def fetch_readiness_metrics(self, target_trades: int = 100, target_days: int = 14) -> dict[str, Any]:
         row = self.conn.execute(
@@ -2855,6 +2846,7 @@ class ShadowDB:
         self.conn.commit()
 
     def fetch_watched_wallets_by_label(self, label: str, *, active_only: bool = True) -> list[str]:
+        """D118: Use r['address'] instead of r[0]."""
         if active_only:
             rows = self.conn.execute(
                 "SELECT address FROM watched_wallets WHERE label = ? AND active = 1 ORDER BY created_ts_utc",
@@ -2865,7 +2857,7 @@ class ShadowDB:
                 "SELECT address FROM watched_wallets WHERE label = ? ORDER BY created_ts_utc",
                 (label,),
             ).fetchall()
-        return [str(r[0]) for r in rows]
+        return [str(r["address"]) for r in rows]
 
     def upsert_watched_wallet(self, row: dict[str, Any]) -> None:
         self.conn.execute(
@@ -3081,12 +3073,14 @@ class ShadowDB:
         return int(row[0] if row else 0)
 
     def fetch_active_watched_addresses(self) -> list[str]:
+        """D118: Use r['address'] instead of r[0]."""
         rows = self.conn.execute(
             "SELECT address FROM watched_wallets WHERE active = 1 ORDER BY created_ts_utc"
         ).fetchall()
-        return [str(r[0]) for r in rows]
+        return [str(r["address"]) for r in rows]
 
     def fetch_distinct_trade_wallets(self, limit: int = 40) -> list[str]:
+        """D118: Use r['address'] instead of r[0]."""
         rows = self.conn.execute(
             """
             SELECT address FROM wallet_observations
@@ -3098,9 +3092,10 @@ class ShadowDB:
             """,
             (limit,),
         ).fetchall()
-        return [str(r[0]) for r in rows]
+        return [str(r["address"]) for r in rows]
 
     def fetch_recent_wallet_observations(self, address: str, limit: int = 200) -> list[dict[str, Any]]:
+        """D118: Use r['col'] instead of positional indices."""
         rows = self.conn.execute(
             """
             SELECT obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc
@@ -3114,22 +3109,23 @@ class ShadowDB:
         out: list[dict[str, Any]] = []
         for r in rows:
             try:
-                payload = json.loads(r[4])
+                payload = json.loads(r["payload_json"])
             except json.JSONDecodeError:
                 payload = {}
             out.append(
                 {
-                    "obs_id": r[0],
-                    "address": r[1],
-                    "market_id": r[2],
-                    "obs_type": r[3],
+                    "obs_id": r["obs_id"],
+                    "address": r["address"],
+                    "market_id": r["market_id"],
+                    "obs_type": r["obs_type"],
                     "payload": payload,
-                    "ingest_ts_utc": r[5],
+                    "ingest_ts_utc": r["ingest_ts_utc"],
                 }
             )
         return out
 
     def fetch_discovered_entity(self, entity_id: str) -> dict[str, Any] | None:
+        """D118: Use dict(row) instead of positional indices."""
         row = self.conn.execute(
             """
             SELECT entity_id, trust_score, primary_tag, sample_size, last_updated_at
@@ -3138,15 +3134,7 @@ class ShadowDB:
             """,
             (entity_id,),
         ).fetchone()
-        if not row:
-            return None
-        return {
-            "entity_id": row[0],
-            "trust_score": float(row[1]),
-            "primary_tag": row[2],
-            "sample_size": int(row[3]),
-            "last_updated_at": row[4],
-        }
+        return dict(row) if row else None
 
     def count_tier1_entities(
         self,
@@ -3548,7 +3536,9 @@ class AsyncDBWriter:
         self._thread.start()
 
     def stop(self) -> None:
-        """D116: Signal thread to stop and drain queue via sentinel."""
+        """D116/D118: Sentinel drain with reentry guard."""
+        if not self._running:
+            return
         self._running = False
         # D116: drain sentinel — wakes _loop immediately so it drains remaining items
         # before join() is called. Each sentinel item also calls task_done() via finally.

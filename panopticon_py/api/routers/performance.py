@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from panopticon_py.api.schemas import (
     MaxDrawdownInfo,
@@ -76,3 +76,15 @@ def get_t5_coverage() -> T5CoverageResponse:
         return T5CoverageResponse(**db.fetch_t5_coverage_summary())
     finally:
         db.close()
+
+
+@router.get("/async-writer-health")
+def get_async_writer_health(request: Request) -> dict:
+    """
+    D118: AsyncDBWriter queue health — running, thread_alive, queue_depth, queue_unfinished.
+    Backend returns stub (running=False) since the real writer runs in the orchestrator process.
+    """
+    writer = getattr(request.app.state, "async_writer", None)
+    if writer is None:
+        return {"error": "async_writer not initialized"}
+    return writer.health()
