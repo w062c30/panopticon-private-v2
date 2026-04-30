@@ -400,6 +400,7 @@ class ShadowDB:
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path.as_posix(), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row   # D113: enables row["column"] access — fully backward compatible
         self.conn.execute("PRAGMA foreign_keys = ON;")
         # WAL mode: readers don't block writers, writers don't block readers.
         # Critical for running Radar + OFI + Graph + Discovery all on same DB.
@@ -808,22 +809,19 @@ class ShadowDB:
         )
 
         # ── Schema migrations for existing DBs ────────────────────────────────
-        try:
-            self.conn.execute("ALTER TABLE kyle_lambda_samples ADD COLUMN window_ts INTEGER DEFAULT 0")
-        except Exception:
-            pass  # column already exists
+        # D113: unified via _add_column_if_missing
+        self._add_column_if_missing(
+            self.conn, "kyle_lambda_samples", "window_ts", "INTEGER DEFAULT 0"
+        )
 
-        # D70: Add missing columns to polymarket_link_map for BTC 5m resolution
-        for col_def in [
+        # D70/D113: Add missing columns to polymarket_link_map for BTC 5m resolution
+        for col, col_def in [
             ("slug", "TEXT"),
             ("condition_id", "TEXT"),
             ("market_tier", "TEXT"),
             ("created_at", "TEXT"),
         ]:
-            try:
-                self.conn.execute(f"ALTER TABLE polymarket_link_map ADD COLUMN {col_def[0]} {col_def[1]}")
-            except Exception:
-                pass  # column already exists
+            self._add_column_if_missing(self.conn, "polymarket_link_map", col, col_def)
 
         # ── RVF Live Metrics Snapshots ──────────────────────────────────────
         self.conn.executescript(
@@ -1123,20 +1121,16 @@ class ShadowDB:
             CREATE INDEX IF NOT EXISTS idx_tracked_wallets_updated ON tracked_wallets(last_updated_at);
             """
         )
-        existing = {
-            row[1]
-            for row in self.conn.execute("PRAGMA table_info(tracked_wallets)").fetchall()
-        }
-        if "source_quality" not in existing:
-            self.conn.execute("ALTER TABLE tracked_wallets ADD COLUMN source_quality TEXT NOT NULL DEFAULT 'unknown'")
-        if "history_sample_size" not in existing:
-            self.conn.execute("ALTER TABLE tracked_wallets ADD COLUMN history_sample_size INTEGER NOT NULL DEFAULT 0")
-        if "last_seen_ts_utc" not in existing:
-            self.conn.execute("ALTER TABLE tracked_wallets ADD COLUMN last_seen_ts_utc TEXT")
-        if "discovery_source" not in existing:
-            self.conn.execute("ALTER TABLE tracked_wallets ADD COLUMN discovery_source TEXT NOT NULL DEFAULT 'unknown'")
+        # D113: unified via _add_column_if_missing (replaces manual PRAGMA + if-not-in-existing pattern)
+        for col, col_def in [
+            ("source_quality", "TEXT NOT NULL DEFAULT 'unknown'"),
+            ("history_sample_size", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_seen_ts_utc", "TEXT"),
+            ("discovery_source", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ]:
+            self._add_column_if_missing(self.conn, "tracked_wallets", col, col_def)
 
-        # discovered_entities column migrations — use helper (idempotent)
+        # discovered_entities column migrations — already using _add_column_if_missing (keep as-is)
         self._add_column_if_missing(self.conn, "discovered_entities", "discovery_source", "TEXT NOT NULL DEFAULT 'unknown'")
         # D82: insider_score for CONSENSUS_SYNC metrics
         self._add_column_if_missing(self.conn, "discovered_entities", "insider_score", "REAL DEFAULT 0.0")
