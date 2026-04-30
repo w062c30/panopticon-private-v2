@@ -1170,7 +1170,7 @@ class ShadowDB:
         # D101: T2-POL political market watchlist — moved to _ensure_pol_watchlist_table()
 
     def _ensure_pol_watchlist_table(self) -> None:
-        """D102: Decoupled T2-POL watchlist table initialisation. D111: adds token_id_no column."""
+        """D102/D111/D112: Unified migration via _add_column_if_missing."""
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pol_market_watchlist (
                 market_id          TEXT PRIMARY KEY,
@@ -1191,14 +1191,8 @@ class ShadowDB:
             CREATE INDEX IF NOT EXISTS idx_pol_active
                 ON pol_market_watchlist(is_active, subscribed_at DESC);
         """)
-        # D111: migration patch for existing tables (ADD COLUMN is idempotent via try/except)
-        try:
-            self.conn.execute(
-                "ALTER TABLE pol_market_watchlist ADD COLUMN token_id_no TEXT"
-            )
-            self.conn.commit()
-        except Exception:
-            pass  # column already exists — safe to ignore
+        # D112: Use unified helper instead of bare try/except
+        self._add_column_if_missing(self.conn, "pol_market_watchlist", "token_id_no", "TEXT")
 
     def upsert_pol_market(self, row: dict) -> None:
         """D101: Upsert a political market into pol_market_watchlist."""
@@ -1229,7 +1223,7 @@ class ShadowDB:
         self.conn.commit()
 
     def fetch_active_pol_markets(self) -> list[dict]:
-        """D101: Return all active political markets ordered by subscription time. D111: token_id_no added."""
+        """D112: Use column-name mapping instead of positional index to prevent silent breakage."""
         rows = self.conn.execute("""
             SELECT market_id, token_id, token_id_no, event_slug, political_category,
                    entity_keywords, subscribed_at, last_signal_ts
@@ -1237,19 +1231,16 @@ class ShadowDB:
             WHERE is_active = 1
             ORDER BY subscribed_at DESC
         """).fetchall()
-        return [
-            {
-                "market_id": r[0],
-                "token_id": r[1],
-                "token_id_no": r[2],  # D111: NO-side token
-                "event_slug": r[3],
-                "political_category": r[4],
-                "entity_keywords": json.loads(r[5] or "[]"),
-                "subscribed_at": r[6],
-                "last_signal_ts": r[7],
-            }
-            for r in rows
+        cols = [
+            "market_id", "token_id", "token_id_no", "event_slug",
+            "political_category", "entity_keywords", "subscribed_at", "last_signal_ts",
         ]
+        result = []
+        for r in rows:
+            row_dict = dict(zip(cols, r))
+            row_dict["entity_keywords"] = json.loads(row_dict["entity_keywords"] or "[]")
+            result.append(row_dict)
+        return result
 
     def update_pol_last_signal_ts(self, market_id: str, ts: str) -> None:
         """D102: Record last signal timestamp for a political market."""

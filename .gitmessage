@@ -1,9 +1,0 @@
-D111: Dual token_id (YES/NO) support for POL markets
-
-- D111-0: Add token_id_no column to pol_market_watchlist schema with migration patch
-- D111-1: Create _extract_token_ids() returning (token_id_yes, token_id_no) tuple
-- D111-2: Update upsert_pol_market() to accept and store token_id_no
-- D111-3: Create _process_market_record() helper, deduplicate async/sync scan logic
-- D111-4: Update fetch_active_pol_markets() to return token_id_no
-- D111-5: Update _sync_pol_tokens_from_watchlist() to register both YES and NO tokens
-- D111-6: Version bumps (orchestrator v1.1.24¡÷v1.1.25, backend v1.1.14¡÷v1.1.15)
