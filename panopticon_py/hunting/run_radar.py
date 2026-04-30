@@ -1378,7 +1378,13 @@ def _sync_pol_tokens_from_watchlist(db) -> list[str]:
             _POL_REFRESH_INTERVAL_SEC,
         )
     except Exception as exc:
-        logger.warning("[POL] scan failed: %s", exc)
+        _elapsed = _time.monotonic() - _t0
+        logger.warning(
+            "[POL_REFRESH] scan_failed elapsed=%.2fs error=%s",
+            _elapsed,
+            exc,
+        )
+        # D106: continue — do not return early; preserve last known POL tokens
 
     # Step 2: Read active political markets and register tokens
     pol_markets = db.fetch_active_pol_markets()
@@ -2756,13 +2762,6 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 z_p50 = _pctl(_entropy_z_samples, 0.50)
                 z_p90 = _pctl(_entropy_z_samples, 0.90)
                 z_max = max(_entropy_z_samples) if _entropy_z_samples else None
-                # D83: D75_HEARTBEAT reverted to logger.info (log handler confirmed working)
-                logger.info(
-                    "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d entropy_fires_60s=%d",
-                    now_loop - _live_loop_started,
-                    trade_ticks_60s,
-                    entropy_fires_60s,
-                )
                 z_min_str = f"{z_min:.3f}" if z_min is not None else "None"
                 z_p50_str = f"{z_p50:.3f}" if z_p50 is not None else "None"
                 z_p90_str = f"{z_p90:.3f}" if z_p90 is not None else "None"
@@ -2919,7 +2918,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.29-D105"   # ← AGENT: bump on every change  # D105: POL elapsed time log + heartbeat pol_markets_active
+    PROCESS_VERSION = "v1.1.30-D106"   # ← AGENT: bump on every change  # D106: duplicate heartbeat fix + elapsed failure path
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

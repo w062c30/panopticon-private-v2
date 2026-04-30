@@ -28,7 +28,7 @@ app = FastAPI(title="Panopticon API", version="0.1.0")
 # D51: Singleton enforcement — must be first after app creation
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 
-PROCESS_VERSION = "v1.1.10-D105"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.11-D106"   # ← AGENT: bump on every change
 acquire_singleton("backend", PROCESS_VERSION)
 
 # Browser dev servers (Vite) use http://localhost:* while API may bind 127.0.0.1 — different origins → CORS required.
@@ -60,6 +60,16 @@ app.include_router(report_router)
 app.include_router(system_health_router)
 app.include_router(wallet_graph_router)
 app.include_router(watchlist_router)
+
+
+@app.on_event("startup")
+def _on_startup():
+    """D106: Bootstrap DB schema once at startup — not per-request."""
+    from panopticon_py.db import ShadowDB
+    _db = ShadowDB()
+    _db.bootstrap()
+    _db.close()
+
 
 # Serve built dashboard from disk
 # Mount at /dashboard so it doesn't conflict with /api/*, /health, etc.

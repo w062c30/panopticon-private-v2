@@ -22,12 +22,14 @@ def get_pol_watchlist() -> dict:
     """
     db = ShadowDB()
     try:
-        db.bootstrap()
         markets = db.fetch_active_pol_markets()
         return {
             "count": len(markets),
             "markets": markets,
             "generated_at": utc_now_rfc3339_ms(),
         }
+    except Exception:
+        # D106: graceful degrade — return empty list if table not ready yet
+        return {"count": 0, "markets": [], "generated_at": utc_now_rfc3339_ms()}
     finally:
         db.close()
