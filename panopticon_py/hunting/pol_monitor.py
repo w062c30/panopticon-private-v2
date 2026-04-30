@@ -54,6 +54,90 @@ GAMMA_URL = "https://gamma-api.polymarket.com/markets"
 # to avoid "attached to a different loop" errors at import time.
 
 
+def _extract_token_ids(m: dict) -> tuple[str | None, str | None]:
+    """
+    D111: Multi-strategy token_id extraction from Gamma API market dict.
+    Returns (token_id_yes, token_id_no) — YES is clob[0], NO is clob[1].
+
+    Both may be None if API response has no token fields.
+    RULE-API-1 compliant: all access via .get(), isinstance guards.
+    """
+    yes_id: str | None = None
+    no_id:  str | None = None
+
+    # Strategy 1: tokens[] object array
+    tokens = m.get("tokens") or []
+    if len(tokens) >= 1 and isinstance(tokens[0], dict):
+        yes_id = tokens[0].get("token_id") or tokens[0].get("tokenId") or None
+    if len(tokens) >= 2 and isinstance(tokens[1], dict):
+        no_id  = tokens[1].get("token_id") or tokens[1].get("tokenId") or None
+    if yes_id:
+        return str(yes_id), (str(no_id) if no_id else None)
+
+    # Strategy 2: clobTokenIds (JSON-encoded string or list)
+    clob = m.get("clobTokenIds")
+    if isinstance(clob, str):
+        try:
+            clob = json.loads(clob)
+        except Exception:
+            clob = []
+    if isinstance(clob, list):
+        if len(clob) >= 1 and clob[0]:
+            yes_id = str(clob[0])
+        if len(clob) >= 2 and clob[1]:
+            no_id = str(clob[1])
+    if yes_id:
+        return yes_id, no_id
+
+    # Strategy 3: direct field (YES only — no NO equivalent)
+    t = m.get("tokenId") or m.get("token_id")
+    return (str(t) if t else None), None
+
+
+def _process_market_record(
+    m: dict,
+    db: ShadowDB,
+    upserted_ids: set[str],
+) -> bool:
+    """
+    D111: Process single Gamma API market dict.
+    Side effects: calls db.upsert_pol_market(), modifies upserted_ids.
+    Returns True if upserted, False if filtered.
+    """
+    slug = (m.get("slug") or "").lower()
+    if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
+        return False
+    try:
+        vol      = float(m.get("volume")  or 0)
+        best_bid = float(m.get("bestBid") or 0.5)
+    except (ValueError, TypeError):
+        return False
+    if vol < 5000 or best_bid >= 0.99 or best_bid <= 0.01:
+        return False
+    matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
+    if not matched_kw:
+        return False
+    market_id = m.get("conditionId") or m.get("id") or ""
+    if not market_id:
+        return False
+    category = next(
+        (POL_CATEGORY_MAP[kw] for kw in matched_kw if kw in POL_CATEGORY_MAP),
+        "OTHER",
+    )
+    token_id_yes, token_id_no = _extract_token_ids(m)   # D111: unpack tuple
+    db.upsert_pol_market({
+        "market_id":          market_id,
+        "token_id":           token_id_yes,
+        "token_id_no":        token_id_no,              # D111: NO-side token
+        "event_slug":         slug,
+        "political_category": category,
+        "entity_keywords":    matched_kw,
+        "subscribed_at":      utc_now_rfc3339_ms(),
+    })
+    upserted_ids.add(market_id)
+    return True
+
+
 async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
     """
     Scan Gamma API for political markets matching POL_KEYWORDS.
@@ -113,67 +197,8 @@ async def scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
                 break
 
             for m in markets:
-                slug = (m.get("slug") or "").lower()
-                # T2 exclusion: skip algorithmic/sports markets
-                if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
-                    continue
-
-                try:
-                    vol = float(m.get("volume") or 0)
-                    best_bid = float(m.get("bestBid") or 0.5)
-                except (ValueError, TypeError):
-                    continue
-
-                if vol < 5000:
-                    continue
-                if best_bid >= 0.99 or best_bid <= 0.01:
-                    continue
-
-                matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
-                if not matched_kw:
-                    continue
-
-                # Determine political_category
-                category = "OTHER"
-                for kw in matched_kw:
-                    if kw in POL_CATEGORY_MAP:
-                        category = POL_CATEGORY_MAP[kw]
-                        break
-
-                market_id = m.get("conditionId") or m.get("id") or ""
-                if not market_id:
-                    continue
-
-                # D110-1: Multi-strategy token_id extraction (tokens=None, clobTokenIds=JSON-string)
-                token_id: str | None = None
-                # Strategy 1: tokens[] object array
-                tokens = m.get("tokens") or []
-                if tokens and isinstance(tokens[0], dict):
-                    token_id = tokens[0].get("token_id") or tokens[0].get("tokenId")
-                # Strategy 2: clobTokenIds (JSON-encoded string array)
-                if not token_id:
-                    clob = m.get("clobTokenIds")
-                    if isinstance(clob, str):
-                        try:
-                            clob = json.loads(clob)
-                        except Exception:
-                            clob = []
-                    if isinstance(clob, list) and clob:
-                        token_id = str(clob[0])
-                # Strategy 3: direct field
-                if not token_id:
-                    token_id = m.get("tokenId") or m.get("token_id")
-
-                db.upsert_pol_market({
-                    "market_id": market_id,
-                    "token_id": token_id,
-                    "event_slug": slug,
-                    "political_category": category,
-                    "entity_keywords": matched_kw,
-                    "subscribed_at": utc_now_rfc3339_ms(),
-                })
-                upserted_ids.add(market_id)
-                count += 1
+                if _process_market_record(m, db, upserted_ids):
+                    count += 1
 
             if len(markets) < limit:
                 break
@@ -226,65 +251,8 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
             break
 
         for m in markets:
-            slug = (m.get("slug") or "").lower()
-            if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
-                continue
-
-            try:
-                vol = float(m.get("volume") or 0)
-                best_bid = float(m.get("bestBid") or 0.5)
-            except (ValueError, TypeError):
-                continue
-
-            if vol < 5000:
-                continue
-            if best_bid >= 0.99 or best_bid <= 0.01:
-                continue
-
-            matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
-            if not matched_kw:
-                continue
-
-            category = "OTHER"
-            for kw in matched_kw:
-                if kw in POL_CATEGORY_MAP:
-                    category = POL_CATEGORY_MAP[kw]
-                    break
-
-            market_id = m.get("conditionId") or m.get("id") or ""
-            if not market_id:
-                continue
-
-            # D110-1: Multi-strategy token_id extraction (tokens=None, clobTokenIds=JSON-string)
-            token_id: str | None = None
-            # Strategy 1: tokens[] object array
-            tokens = m.get("tokens") or []
-            if tokens and isinstance(tokens[0], dict):
-                token_id = tokens[0].get("token_id") or tokens[0].get("tokenId")
-            # Strategy 2: clobTokenIds (JSON-encoded string array)
-            if not token_id:
-                clob = m.get("clobTokenIds")
-                if isinstance(clob, str):
-                    try:
-                        clob = json.loads(clob)
-                    except Exception:
-                        clob = []
-                if isinstance(clob, list) and clob:
-                    token_id = str(clob[0])
-            # Strategy 3: direct field
-            if not token_id:
-                token_id = m.get("tokenId") or m.get("token_id")
-
-            db.upsert_pol_market({
-                "market_id": market_id,
-                "token_id": token_id,
-                "event_slug": slug,
-                "political_category": category,
-                "entity_keywords": matched_kw,
-                "subscribed_at": utc_now_rfc3339_ms(),
-            })
-            upserted_ids.add(market_id)
-            count += 1
+            if _process_market_record(m, db, upserted_ids):
+                count += 1
 
         if len(markets) < limit:
             break

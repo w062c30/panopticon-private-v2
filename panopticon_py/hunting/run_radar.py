@@ -1354,10 +1354,12 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
 def _sync_pol_tokens_from_watchlist(db) -> list[str]:
     """
     D101: Sync T2-POL tokens from pol_market_watchlist into _token_tier_map.
+    D111: Registers BOTH YES and NO tokens (token_id + token_id_no) as t2_pol.
+
     First performs a Gamma API scan (via sync httpx in thread), then reads
     the watchlist and registers t2_pol tokens in the shared token tier map.
 
-    Returns list of t2_pol token_ids for subscription inclusion.
+    Returns list of all registered t2_pol token_ids (YES + NO combined).
     Must be called from a thread context (asyncio.to_thread).
     """
     global _token_tier_map, _pol_active_count
@@ -1392,11 +1394,12 @@ def _sync_pol_tokens_from_watchlist(db) -> list[str]:
     pol_token_ids: list[str] = []
 
     for pm in pol_markets:
-        token_id = pm.get("token_id")
-        if not token_id:
-            continue
-        _token_tier_map[token_id] = "t2_pol"
-        pol_token_ids.append(token_id)
+        # D111: register both YES and NO tokens
+        for tid in (pm.get("token_id"), pm.get("token_id_no")):
+            if not tid:
+                continue
+            _token_tier_map[tid] = "t2_pol"
+            pol_token_ids.append(tid)
 
     logger.info("[POL] registered %d t2_pol tokens from watchlist", len(pol_token_ids))
     return pol_token_ids

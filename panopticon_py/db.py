@@ -1170,11 +1170,12 @@ class ShadowDB:
         # D101: T2-POL political market watchlist — moved to _ensure_pol_watchlist_table()
 
     def _ensure_pol_watchlist_table(self) -> None:
-        """D102: Decoupled T2-POL watchlist table initialisation."""
+        """D102: Decoupled T2-POL watchlist table initialisation. D111: adds token_id_no column."""
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS pol_market_watchlist (
                 market_id          TEXT PRIMARY KEY,
                 token_id           TEXT,
+                token_id_no        TEXT,              -- D111: NO-side token (clob[1])
                 event_slug         TEXT,
                 political_category TEXT NOT NULL
                     CHECK(political_category IN (
@@ -1190,17 +1191,26 @@ class ShadowDB:
             CREATE INDEX IF NOT EXISTS idx_pol_active
                 ON pol_market_watchlist(is_active, subscribed_at DESC);
         """)
+        # D111: migration patch for existing tables (ADD COLUMN is idempotent via try/except)
+        try:
+            self.conn.execute(
+                "ALTER TABLE pol_market_watchlist ADD COLUMN token_id_no TEXT"
+            )
+            self.conn.commit()
+        except Exception:
+            pass  # column already exists — safe to ignore
 
     def upsert_pol_market(self, row: dict) -> None:
         """D101: Upsert a political market into pol_market_watchlist."""
         self.conn.execute(
             """
             INSERT INTO pol_market_watchlist
-                (market_id, token_id, event_slug, political_category,
+                (market_id, token_id, token_id_no, event_slug, political_category,
                  entity_keywords, subscribed_at, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(market_id) DO UPDATE SET
                 token_id=excluded.token_id,
+                token_id_no=excluded.token_id_no,
                 event_slug=excluded.event_slug,
                 political_category=excluded.political_category,
                 entity_keywords=excluded.entity_keywords,
@@ -1209,6 +1219,7 @@ class ShadowDB:
             (
                 row["market_id"],
                 row.get("token_id"),
+                row.get("token_id_no"),  # D111: NO-side token
                 row.get("event_slug"),
                 row["political_category"],
                 json.dumps(row.get("entity_keywords", [])),
@@ -1218,9 +1229,9 @@ class ShadowDB:
         self.conn.commit()
 
     def fetch_active_pol_markets(self) -> list[dict]:
-        """D101: Return all active political markets ordered by subscription time."""
+        """D101: Return all active political markets ordered by subscription time. D111: token_id_no added."""
         rows = self.conn.execute("""
-            SELECT market_id, token_id, event_slug, political_category,
+            SELECT market_id, token_id, token_id_no, event_slug, political_category,
                    entity_keywords, subscribed_at, last_signal_ts
             FROM pol_market_watchlist
             WHERE is_active = 1
@@ -1230,11 +1241,12 @@ class ShadowDB:
             {
                 "market_id": r[0],
                 "token_id": r[1],
-                "event_slug": r[2],
-                "political_category": r[3],
-                "entity_keywords": json.loads(r[4] or "[]"),
-                "subscribed_at": r[5],
-                "last_signal_ts": r[6],
+                "token_id_no": r[2],  # D111: NO-side token
+                "event_slug": r[3],
+                "political_category": r[4],
+                "entity_keywords": json.loads(r[5] or "[]"),
+                "subscribed_at": r[6],
+                "last_signal_ts": r[7],
             }
             for r in rows
         ]

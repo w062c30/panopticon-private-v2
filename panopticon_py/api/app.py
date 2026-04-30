@@ -26,7 +26,7 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.14-D109"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.15-D111"   # ← AGENT: bump on every change  # D111: fetch_active_pol_markets includes token_id_no
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
