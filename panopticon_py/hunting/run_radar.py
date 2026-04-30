@@ -34,6 +34,15 @@ def _mc():
     except Exception:
         return None
 
+
+# D81: Lazy TE cache getter (avoids circular import)
+def _te():
+    try:
+        from panopticon_py.signal.transfer_entropy_cache import get_te_cache
+        return get_te_cache()
+    except Exception:
+        return None
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,6 +196,7 @@ async def _metrics_json_loop(
     """
     Writes MetricsCollector JSON snapshot every 5s.
     Also syncs consensus stats from DB every 5s (no-op if error).
+    D81: identity_coverage and TE stats synced every 60s.
     Periodically fetches event names for markets without them.
     Cancelled when parent task is cancelled.
     """
@@ -196,16 +206,23 @@ async def _metrics_json_loop(
     last_event_fetch = 0.0
     fetch_interval = 3600  # 1 hour between batch fetches
     heartbeat_fixed_logged = False
+    _loop_count = 0
 
     while True:
         try:
             await asyncio.sleep(5)
+            _loop_count += 1
             update_heartbeat("radar")
             if not heartbeat_fixed_logged:
                 logger.info("[D76_HEARTBEAT_FIXED] update_heartbeat resolved — metrics_json_loop stable")
                 heartbeat_fixed_logged = True
             mc.sync_consensus_from_db(db)
             mc.persist_json(path=path)
+
+            # D81: Sync coverage + TE stats every 60s (every 12 × 5s iterations)
+            if _loop_count % 12 == 0:
+                mc.sync_coverage_from_db(db)
+                mc.sync_te_stats()
 
             # Background job: fetch event names for markets without them
             now = time.time()
@@ -1613,6 +1630,7 @@ async def _poll_single_market_identity(
     market_id: str,
     db: ShadowDB,
     label: str = "triggered",
+    market_tier: str = "t3",
 ) -> int:
     """
     Immediately execute one identity poll for a single market.
@@ -1706,6 +1724,70 @@ async def _poll_single_market_identity(
         if trades:
             max_ts = max(int(t.get("timestamp") or 0) for t in trades)
             _last_poll_ts[asset_id] = max(last_ts, max_ts)
+
+        # ── D81: Identity Coverage 量測 ──────────────────────────────────────
+        # Ground truth：CLOB WS 全域計數器（模組層級，60s 滾動窗口）
+        ws_ticks = _ws_trade_count
+
+        # data-api 觀測
+        api_received    = len(trades)
+        api_with_wallet = sum(
+            1 for t in trades
+            if (t.get("proxyWallet") or t.get("taker_address") or "")
+            not in ("", "0x0000000000000000000000000000000000000000")
+        )
+        page_saturated = int(api_received >= 100)
+
+        # 損失率計算
+        loss_rate  = max(0.0, 1.0 - api_received / ws_ticks) if ws_ticks > 0 else None
+        wallet_cov = (api_with_wallet / api_received) if api_received > 0 else 0.0
+
+        # 累計統計（讀上一筆）
+        prev_row = db.conn.execute(
+            """
+            SELECT event_total_ws_ticks, event_total_api_trades
+            FROM identity_coverage_log
+            WHERE market_id=? AND window_ts=0
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (market_id,),
+        ).fetchone()
+        total_ws  = (prev_row[0] if prev_row else 0) + ws_ticks
+        total_api = (prev_row[1] if prev_row else 0) + api_received
+        cum_loss  = max(0.0, 1.0 - total_api / total_ws) if total_ws > 0 else None
+
+        db.write_identity_coverage({
+            "market_id":              market_id,
+            "asset_id":              asset_id,
+            "window_ts":             0,
+            "market_tier":           market_tier,
+            "event_slug":            "",
+            "window_start_utc":      _utc(),
+            "window_end_utc":        _utc(),
+            "poll_interval_sec":     4.0,
+            "ws_trade_ticks":       ws_ticks,
+            "api_trades_received":  api_received,
+            "api_trades_with_wallet": api_with_wallet,
+            "estimated_loss_rate":  loss_rate,
+            "wallet_coverage_rate": wallet_cov,
+            "api_page_saturated":   page_saturated,
+            "event_total_ws_ticks": total_ws,
+            "event_total_api_trades": total_api,
+            "event_cumulative_loss": cum_loss,
+            "created_at":            _utc(),
+        })
+
+        # 警告日誌
+        if page_saturated:
+            logger.warning(
+                "[COVERAGE][SATURATED] market=%s label=%s ws=%d api=%d → truncation confirmed",
+                market_id[:20], label, ws_ticks, api_received
+            )
+        if loss_rate is not None and loss_rate > 0.30:
+            logger.warning(
+                "[COVERAGE][HIGH_LOSS] market=%s loss=%.1f%% wallet_cov=%.1f%%",
+                market_id[:20], loss_rate * 100, wallet_cov * 100
+            )
 
         logger.info("[POLL][%s] market=%s new=%d", label, market_id[:20], new_count)
         return new_count
@@ -2081,6 +2163,11 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 trade_price = float(item.get("price") or 0)
                 trade_ts = normalize_external_ts_to_utc(item.get("timestamp")) if item.get("timestamp") else _utc()
 
+                # D81: TE target push — Polymarket CLOB last_trade_price (O(1), non-blocking)
+                te = _te()
+                if te is not None:
+                    te.push_target(trade_price)
+
                 # ── [DIAG][T1_TICK] Per-trade diagnostic for T1 markets ───────────────
                 tier = _token_tier_map.get(asset_id, "t3")
                 if tier == "t1":
@@ -2243,7 +2330,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     if now_mono - _triggered_poll_cooldown.get(market_id, 0) > TRIGGERED_POLL_COOLDOWN_SEC:
                         _triggered_poll_cooldown[market_id] = now_mono
                         asyncio.create_task(
-                            _poll_single_market_identity(asset_id, market_id, db, label="pre_fire")
+                            _poll_single_market_identity(asset_id, market_id, db, label="pre_fire", market_tier=tier)
                         )
                     # D96-NEW-3: sync order reconstruction for the CURRENT trade
                     # compute order_id now so _pending_trade has it for the next Kyle λ sample
@@ -2372,7 +2459,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     # D96-NEW-1b: On-fire forced poll — pre-emptively fetch identity data
                     # before signal_engine processes this event (grace period will handle timing)
                     asyncio.create_task(
-                        _poll_single_market_identity(asset_id, market_id, db, label="on_fire")
+                        _poll_single_market_identity(asset_id, market_id, db, label="on_fire", market_tier=tier)
                     )
 
                     # ── C2: D21 Phase 2 — Catalyst detection hook for T2 markets ──────────
@@ -2767,7 +2854,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.26-D97"   # ← AGENT: bump on every change  # D97: wired close_stale_orders() into 60s heartbeat cleanup loop
+    PROCESS_VERSION = "v1.1.27-D81"   # ← AGENT: bump on every change  # D81: identity coverage log + TE push/push_target
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

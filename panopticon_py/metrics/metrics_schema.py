@@ -186,4 +186,8 @@ class MetricsSnapshot:
                         "kyle_total": self.go_live.kyle_total,
                         "paper_trades_total": self.go_live.paper_trades_total,
                         "paper_win_count": self.go_live.paper_win_count},
+            # D81: Identity coverage + Transfer Entropy — injected by MetricsCollector
+            # (populated by sync_coverage_from_db() + sync_te_stats() at 60s cadence)
+            "identity_coverage": {},
+            "transfer_entropy": {},
         }

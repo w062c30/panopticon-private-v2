@@ -162,6 +162,10 @@ class MetricsCollector:
         self._price_debug_last_spread: float | None = None
         self._price_debug_no_price_rc = _RateCounter(86400.0)  # 24h rolling window
 
+        # ── D81: Identity coverage + TE stats ───────────────────────────────
+        self._coverage_stats: dict = {}
+        self._te_stats: dict = {}
+
     # ── Hooks (called from radar / signal_engine log handlers) ───────────────
 
     def on_ws_connected(self) -> None:
@@ -429,6 +433,50 @@ class MetricsCollector:
         except Exception as exc:
             logger.warning("[METRICS][CONSENSUS_SYNC] error: %s", exc)
 
+    def sync_coverage_from_db(self, db) -> None:
+        """[非決策路徑] 每 60s 同步 identity_coverage_log 統計。在 _metrics_json_loop 中調用。"""
+        try:
+            conn = db.conn if hasattr(db, "conn") else db
+            for tier in ("t1", "t2", "t3", "t5"):
+                row = conn.execute(
+                    """
+                    SELECT
+                        COUNT(DISTINCT market_id)                           AS distinct_markets,
+                        COUNT(*)                                            AS total_polls,
+                        AVG(estimated_loss_rate)                            AS avg_loss_rate,
+                        MAX(estimated_loss_rate)                            AS max_loss_rate,
+                        AVG(wallet_coverage_rate)                           AS avg_wallet_coverage,
+                        SUM(CASE WHEN api_page_saturated=1 THEN 1 ELSE 0 END) AS saturated_polls
+                    FROM identity_coverage_log
+                    WHERE market_tier = ? AND created_at > datetime('now', '-24 hours')
+                    """,
+                    (tier,),
+                ).fetchone()
+                if row and row[0]:
+                    self.__dict__.setdefault("_coverage_stats", {})[tier] = {
+                        "distinct_markets":   int(row[0]),
+                        "total_polls":        int(row[1]),
+                        "avg_loss_rate":      round(float(row[2] or 0), 4),
+                        "max_loss_rate":      round(float(row[3] or 0), 4),
+                        "avg_wallet_coverage": round(float(row[4] or 0), 4),
+                        "saturated_polls":    int(row[5] or 0),
+                    }
+        except Exception as exc:
+            logger.warning("[METRICS][COVERAGE_SYNC] error: %s", exc)
+
+    def sync_te_stats(self) -> None:
+        """[非決策路徑] 從 TE cache 讀取監控數值。不進入決策路徑。"""
+        try:
+            from panopticon_py.signal.transfer_entropy_cache import get_te_cache
+            te = get_te_cache()
+            self._te_stats = {
+                "cached_te":   round(te.cached_value, 5),
+                "significant":  te.is_significant,
+                "skip_count":  te.skip_count,
+            }
+        except Exception:
+            pass
+
     # ── Snapshot ─────────────────────────────────────────────────────────────
 
     def collect(self) -> MetricsSnapshot:
@@ -573,6 +621,9 @@ class MetricsCollector:
         import os as _os
         snap = self.collect().to_dict()
         snap["_written_at"] = time.time()
+        # D81: Inject synced coverage + TE stats (written by sync_coverage_from_db / sync_te_stats)
+        snap["identity_coverage"] = getattr(self, "_coverage_stats", {})
+        snap["transfer_entropy"]  = getattr(self, "_te_stats", {})
         tmp_path = path + ".tmp"
         try:
             _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)

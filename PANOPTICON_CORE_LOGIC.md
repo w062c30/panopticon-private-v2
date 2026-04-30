@@ -1,7 +1,7 @@
 # 👁️ Project Panopticon: Core Trading Logic & Architectural Invariants
-# Version: 2.5
-# Last Updated: 2026-04-25
-# Changelog: v2.5 — D31 kyle_lambda consecutive-trade fix (pending mid_before carry-forward); T1 refresh jitter; whale_scanner threshold 6.0→2.0
+# Version: 2.6
+# Last Updated: 2026-04-30
+# Changelog: v2.6 — D81 Identity Coverage Log + Transfer Entropy Cache; Invariant 4.2 修訂（背景計算白名單 + TE bool-only 約束）
 # Changelog: v2.4 — D29 WS snapshot staleness fix (mc.on_ws_message); T1 KeyError(token_id) fix; T1 prefetch 3->5; NTP sync (ntplib); subscription cache guard; whale_scanner CLOB depth + thin-book signal; D30 kyle_lambda pending-price root-cause fix; PANOPTICON_WHALE default on
 # Changelog: v2.3 — D26 hook wiring complete; D27 persistent WS (_ws_runner); D27 T1 startup init; D28 SKIP investigation (see notes); Phase 5 whale_scanner.py foundation added
 # Changelog: v2.2 — Phase 1 WS Protocol: added app-level PING heartbeat (10s), tick_size_change handler, price_change book-snapshot handler, PONG filter
@@ -67,7 +67,31 @@
 * **[Invariant 4.1] 真空與幽靈流動性過濾 (Ghost Liquidity Filter)**：
     * **Volume Floor**：若價格劇烈跳動但真實市價成交量小於安全底線，判定為 MM 撤單真空，直接丟棄信號。
     * **$\lambda$ 異常斷路器**：計算 Kyle's Lambda（$\Delta P / V_{trade}$，動態計算）。若 $V_{trade} = 0$ 或 $\lambda$ 趨近無限大，系統必須無條件鎖死扳機 (ABORT)。
-* **[Invariant 4.2] 零延遲斷路器 (O(1) Circuit Breakers)**：網路 Ping 值、動態手續費等必須由背景執行緒非同步預計算。主決策函式中只能進行 $O(1)$ 的讀取與相減，嚴禁在下單關鍵路徑上發出 I/O 請求。`pending_entropy_signals` DB 輪詢模式（5s 延遲）屬於違反此 Invariant 的反模式，已廢棄，強制使用 `asyncio.Queue` 零延遲傳遞。
+* **[Invariant 4.2] 零延遲斷路器與背景計算調度邊界 (O(1) Circuit Breakers & Async Scheduling)**：
+  主決策函式（`signal_engine._process_event()` 及所有 L4 Gate 調用棧）中只能進行 $O(1)$ 的讀取與相減。嚴禁在下單關鍵路徑上發出任何 I/O 請求，或執行計算複雜度超過 $O(1)$ 的算法。
+
+  **背景預計算白名單（必須以 `asyncio.to_thread()` 或 `run_in_executor()` 實行執行緒隔離）：**
+
+  | 指標 | 更新週期 | 快取形式 | 決策路徑讀取介面 |
+  |-----|---------|---------|----------------|
+  | `ping_ms` | 5s | `float` | 直接讀值 |
+  | `fee_rate` | 30s | `float` | 直接讀值 |
+  | `kyle_lambda_p75[asset_id]` | 60s | `dict[str, float]` | 直接讀值 |
+  | `transfer_entropy_cache[market_pair]` | 15–30s | `bool`（閾值後） | **只讀 `.is_significant: bool`，禁讀 `.cached_value: float`** |
+
+  **Transfer Entropy 合規使用條件：**
+  * ✅ 允許：基於 CLOB WS 匿名 tick 序列的市場級 TE，在獨立背景 task 中以 `asyncio.to_thread()` 預計算，結果快取為布爾標誌，決策路徑僅 O(1) 讀取
+  * ✅ 允許：基於 `wallet_observations` 的錢包級 TE，在路徑 B 的 `asyncio.to_thread()` 中計算，用於 L2 Discovery 離線評分（非 LR 直接輸入，符合 Invariant 6.2）
+  * ❌ 禁止：任何 TE 積分、窗口求和、矩陣運算出現在 `signal_engine._process_event()` 或 `fast_gate.py` 調用棧內（即使以協程形式）
+  * ❌ 禁止：TE `.cached_value`（`float`）直接作為貝氏 LR 的輸入（違反 Invariant 6.2——TE 不具備機率語意）；必須先通過閾值轉為布爾標誌，再轉換為整數 $n$（符合 Invariant 2.2）
+  * ❌ 禁止：在 T1 高峰期（`trade_ticks_60s > 800`）縮短 TE 重算週期（反而增加 event loop 調度壓力）
+
+  **背景計算調度規範（適用所有白名單項目）：**
+  * 計算前必須在 event loop 內做 O(1) 資料快照（`list()` / `copy()`）
+  * 計算函式本身必須是無副作用的純函式（pure function）
+  * 使用 `asyncio.wait_for(timeout=8.0)` 防止執行緒池掛起
+  * 所有快取以標量或淺層 dict 形式暴露，禁止暴露大型資料結構給決策路徑
+  * `pending_entropy_signals` DB 輪詢模式（5s 延遲）屬於違反此 Invariant 的反模式，已廢棄，強制使用 `asyncio.Queue` 零延遲傳遞
 * **[Invariant 4.3] 淨期望值硬閘門 (Strict Net EV Gate)**：若扣除延遲滑點與手續費後的真實預期利潤 $EV_{net} \le 0$，拒絕交易。`fast_gate.py` 是系統唯一的 L4 實現，所有訊號來源（radar 或 ofi）必須經過同一套 Gate 參數，不得為任何來源建立獨立旁路。
 * **[Invariant 4.4] 禁止市價單 (No Market Orders)**：送出至 Polymarket CLOB 的 EIP-712 簽名訂單，`orderType` 必須硬編碼為 **`FOK (Fill-Or-Kill)`**。絕對不允許訂單在未成交的情況下掛在簿子上成為對手盤的肉雞。
 
@@ -318,7 +342,7 @@ assert str(pid) not in r.stdout, f"STILL ALIVE: PID={pid} — do not proceed"
 | 3.1 | L3 | 所有訊號來源必須執行貝氏後驗，OFI 無豁免 |
 | 3.2 | L3 | Fractional Kelly 強制倉位上限 |
 | 4.1 | L4 | Kyle's λ 動態計算；Volume Floor；幽靈流動性 ABORT |
-| 4.2 | L4 | 決策路徑 O(1) 只讀；禁 DB polling；禁 I/O |
+| 4.2 | L4 | 決策路徑 O(1) 只讀；禁 DB polling；禁 I/O；背景計算須 to_thread() 執行緒隔離；TE 只讀 bool |
 | 4.3 | L4 | EV_net ≤ 0 → GATE_ABORT；fast_gate.py 唯一 Gate |
 | 4.4 | L4 | 強制 FOK，禁市價單 |
 | 5.1 | L5 | 實盤需統計顯著性解鎖；紀錄統一進 execution_records |

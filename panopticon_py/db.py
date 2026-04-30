@@ -438,6 +438,7 @@ class ShadowDB:
         self._ensure_polymarket_link_tables()
         self._ensure_insider_pattern_flags_table()
         self._ensure_pipeline_health_table()
+        self._ensure_identity_coverage_table()
         self._ensure_series_tables()
         self.conn.commit()
 
@@ -891,6 +892,113 @@ class ShadowDB:
             CREATE INDEX IF NOT EXISTS idx_rvf_ts ON rvf_metrics_snapshots(ts_utc);
             """
         )
+
+    def _ensure_identity_coverage_table(self) -> None:
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS identity_coverage_log (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                market_id               TEXT NOT NULL,
+                asset_id                TEXT,
+                window_ts               INTEGER DEFAULT 0,
+                market_tier             TEXT NOT NULL,
+                event_slug              TEXT,
+                window_start_utc        TEXT NOT NULL,
+                window_end_utc          TEXT NOT NULL,
+                poll_interval_sec       REAL NOT NULL DEFAULT 4.0,
+                ws_trade_ticks          INTEGER NOT NULL DEFAULT 0,
+                api_trades_received     INTEGER NOT NULL DEFAULT 0,
+                api_trades_with_wallet  INTEGER NOT NULL DEFAULT 0,
+                estimated_loss_rate     REAL,
+                wallet_coverage_rate    REAL,
+                api_page_saturated      INTEGER DEFAULT 0,
+                event_total_ws_ticks    INTEGER DEFAULT 0,
+                event_total_api_trades  INTEGER DEFAULT 0,
+                event_cumulative_loss   REAL,
+                created_at              TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_icl_market_ts
+                ON identity_coverage_log(market_id, window_start_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_icl_tier_ts
+                ON identity_coverage_log(market_tier, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_icl_window_ts
+                ON identity_coverage_log(window_ts, asset_id)
+                WHERE window_ts > 0;
+            """
+        )
+
+    def write_identity_coverage(self, row: dict) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO identity_coverage_log (
+                market_id, asset_id, window_ts, market_tier, event_slug,
+                window_start_utc, window_end_utc, poll_interval_sec,
+                ws_trade_ticks, api_trades_received, api_trades_with_wallet,
+                estimated_loss_rate, wallet_coverage_rate, api_page_saturated,
+                event_total_ws_ticks, event_total_api_trades, event_cumulative_loss,
+                created_at
+            ) VALUES (
+                :market_id, :asset_id, :window_ts, :market_tier, :event_slug,
+                :window_start_utc, :window_end_utc, :poll_interval_sec,
+                :ws_trade_ticks, :api_trades_received, :api_trades_with_wallet,
+                :estimated_loss_rate, :wallet_coverage_rate, :api_page_saturated,
+                :event_total_ws_ticks, :event_total_api_trades, :event_cumulative_loss,
+                :created_at
+            )
+            """,
+            row,
+        )
+        self.conn.commit()
+
+    def fetch_coverage_by_event(self, market_id: str, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT market_id, asset_id, window_ts, market_tier, event_slug,
+                   window_start_utc, window_end_utc, ws_trade_ticks,
+                   api_trades_received, api_trades_with_wallet,
+                   estimated_loss_rate, wallet_coverage_rate,
+                   api_page_saturated, event_cumulative_loss, created_at
+            FROM identity_coverage_log
+            WHERE market_id = ?
+            ORDER BY window_start_utc DESC LIMIT ?
+            """,
+            (market_id, limit),
+        ).fetchall()
+        cols = [
+            "market_id", "asset_id", "window_ts", "market_tier", "event_slug",
+            "window_start_utc", "window_end_utc", "ws_trade_ticks",
+            "api_trades_received", "api_trades_with_wallet",
+            "estimated_loss_rate", "wallet_coverage_rate",
+            "api_page_saturated", "event_cumulative_loss", "created_at",
+        ]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def fetch_coverage_summary(self, market_tier: str | None = None) -> dict:
+        where_clause = "WHERE market_tier = ? AND" if market_tier else "WHERE"
+        args: tuple = (market_tier,) if market_tier else ()
+        row = self.conn.execute(
+            f"""
+            SELECT
+                COUNT(DISTINCT market_id)                           AS distinct_markets,
+                COUNT(*)                                            AS total_polls,
+                AVG(estimated_loss_rate)                            AS avg_loss_rate,
+                MAX(estimated_loss_rate)                            AS max_loss_rate,
+                AVG(wallet_coverage_rate)                           AS avg_wallet_coverage,
+                SUM(CASE WHEN api_page_saturated=1 THEN 1 ELSE 0 END) AS saturated_polls,
+                SUM(ws_trade_ticks)                                 AS total_ws_ticks,
+                SUM(api_trades_received)                            AS total_api_trades
+            FROM identity_coverage_log
+            {where_clause} created_at > datetime('now', '-24 hours')
+            """,
+            args,
+        ).fetchone()
+        if not row:
+            return {}
+        cols = [
+            "distinct_markets", "total_polls", "avg_loss_rate", "max_loss_rate",
+            "avg_wallet_coverage", "saturated_polls", "total_ws_ticks", "total_api_trades",
+        ]
+        return dict(zip(cols, row))
 
     def _ensure_series_tables(self) -> None:
         self.conn.executescript(

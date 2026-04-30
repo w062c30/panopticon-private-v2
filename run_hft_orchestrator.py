@@ -65,7 +65,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.20-D96"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.21-D81"   # ← AGENT: bump on every change
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -250,6 +250,7 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
 async def run_hyperliquid_ofi(
     signal_queue: asyncio.Queue,
     db: ShadowDB,
+    te_cache,
 ) -> None:
     """Run Hyperliquid OFI engine, mapping shocks to signal_queue (no execution gate)."""
     async def on_shock(shock: UnderlyingShock) -> None:
@@ -263,6 +264,11 @@ async def run_hyperliquid_ofi(
             shock.window_total_notional,
             shock.price_after,
         )
+
+        # D81: TE source push — Hyperliquid OFI price_after (O(1), non-blocking)
+        if te_cache is not None:
+            te_cache.push_source(shock.price_after)
+
         # Map Hyperliquid market → Polymarket market_ids via static OFI_MARKET_MAP
         pm_market_ids = OFI_MARKET_MAP.get(shock.market_id, [])
         if not pm_market_ids:
@@ -398,6 +404,24 @@ async def main_async() -> int:
     db.bootstrap()
     logger.info("[DB] ShadowDB initialized at %s", db.path)
 
+    # ── Transfer Entropy Cache [D81] ─────────────────────────────────────────
+    from panopticon_py.signal.transfer_entropy_cache import get_te_cache
+    te_cache = get_te_cache()
+
+    def _te_trade_ticks_getter() -> int:
+        """Read WS trade tick count from radar module (module-level counter)."""
+        try:
+            from panopticon_py.hunting import run_radar as _rr
+            return getattr(_rr, "_ws_trade_count", 0) or 0
+        except Exception:
+            return 0
+
+    te_recompute_task = asyncio.create_task(
+        te_cache._recompute_loop(trade_ticks_getter=_te_trade_ticks_getter),
+        name="te_recompute",
+    )
+    logger.info("[TE] TransferEntropyCache background task started (interval=15s)")
+
     # ── Friction state (O(1) read for HFT gate decisions) ──────────────────
     friction_state = GlobalFrictionState()
     friction_worker = FrictionStateWorker(friction_state)
@@ -414,7 +438,7 @@ async def main_async() -> int:
     # ── Launch ALL tracks ──────────────────────────────────────────────────
     #   async tasks: Radar, OFI, Graph, Signal Engine (4 tracks in asyncio)
     radar_task    = asyncio.create_task(run_polymarket_radar(signal_queue, db), name="radar")
-    ofi_task      = asyncio.create_task(run_hyperliquid_ofi(signal_queue, db), name="ofi")
+    ofi_task      = asyncio.create_task(run_hyperliquid_ofi(signal_queue, db, te_cache), name="ofi")
     graph_task    = asyncio.create_task(run_graph_linker(db), name="graph")
 
     #   signal_engine as asyncio task (NOT subprocess — per Q11 ruling)
@@ -583,7 +607,7 @@ async def main_async() -> int:
         # No subprocess workers to monitor — discovery_loop runs in start_shadow_hydration.py
 
         # If any async task crashed, propagate
-        crashed = [t for t in [radar_task, ofi_task, graph_task, se_task, insider_task]
+        crashed = [t for t in [radar_task, ofi_task, graph_task, se_task, insider_task, te_recompute_task]
                   if t.done() and t.exception()]
         for task in crashed:
             logger.error("[ORCH] %s crashed: %s", task.get_name(), task.exception())
@@ -601,7 +625,7 @@ async def main_async() -> int:
     logger.info("[ORCH] Initiating shutdown")
     _close_event.set()
 
-    for task in [radar_task, ofi_task, graph_task, se_task, insider_task]:
+    for task in [radar_task, ofi_task, graph_task, se_task, insider_task, te_recompute_task]:
         task.cancel()
         try:
             await asyncio.wait_for(task, timeout=5.0)

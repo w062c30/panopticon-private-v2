@@ -55,6 +55,15 @@ def _mc():
     except Exception:
         return None
 
+
+def _te_cache():
+    """Lazy TransferEntropyCache getter — returns the singleton instance. [Invariant 4.2]"""
+    try:
+        from panopticon_py.signal.transfer_entropy_cache import get_te_cache
+        return get_te_cache()
+    except Exception:
+        return None
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -157,17 +166,25 @@ def _utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _consensus_bayesian_update(sources: list[float], prior: float = 0.5) -> tuple[float, float]:
+def _consensus_bayesian_update(
+    sources: list[float],
+    prior: float = 0.5,
+    extra_sources: int = 0,
+) -> tuple[float, float]:
     """
     Geometric-mean likelihood ratio from independent insider-score sources,
     followed by a single Bayesian posterior update.
+
+    [D81] extra_sources: number of additional independent observations
+    (e.g. TE significant flag encoded as n=1) added to the geometric mean denominator.
+    [Invariant 4.2] TE is encoded as bool→int (O(1) read from te_cache.is_significant).
     """
-    n = len(sources)
+    n = len(sources) + extra_sources
     if n == 0:
         return prior, 0.0
 
     log_lr_sum = sum(math.log(s) - math.log(1.0 - s) for s in sources)
-    lr = math.exp(log_lr_sum / n)
+    lr = math.exp(log_lr_sum / n) if n > 0 else 1.0
     lr = max(0.1, min(20.0, lr))
 
     posterior = prior * lr / (prior * lr + (1.0 - prior))
@@ -550,8 +567,15 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
                 )
                 break
 
+    # ── D81: Transfer Entropy — O(1) bool read [Invariant 4.2] ─────────────
+    # [Invariant 4.2] TE only contributes n=1 (bool→int) to consensus denominator.
+    # [Invariant 6.2] TE float must NEVER be used as continuous LR input.
+    te_cache = _te_cache()
+    te_n = 1 if (te_cache is not None and te_cache.is_significant) else 0
+    effective_sources = len(sources) + te_n
+
     # 5. Consensus check
-    if len(sources) < MIN_CONSENSUS_SOURCES:
+    if effective_sources < MIN_CONSENSUS_SOURCES:
         decision_id = str(uuid4())
         execution_id = decision_id
         db.append_execution_record({
@@ -572,11 +596,11 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "market_id": market_id,
         })
         logging.debug("[SE] market=%s insufficient consensus %d < %d",
-                      market_id, len(sources), MIN_CONSENSUS_SOURCES)
+                      market_id, effective_sources, MIN_CONSENSUS_SOURCES)
         return
 
     # 5. Bayesian update
-    posterior, lr = _consensus_bayesian_update(sources)
+    posterior, lr = _consensus_bayesian_update(sources, extra_sources=te_n)
 
     # 6. READ wallet_market_positions for LIFO cost basis (READ ONLY!)
     position = db.get_wallet_market_position(event.trigger_address, market_id)
