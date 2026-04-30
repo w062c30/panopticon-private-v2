@@ -1735,12 +1735,12 @@ class ShadowDB:
             FROM execution_records
             WHERE market_tier = ?
               AND market_id IS NOT NULL
-              AND created_ts_utc > datetime('now', ? || ' hours')
+              AND created_ts_utc > datetime('now', ?)
             GROUP BY market_id
             ORDER BY last_signal_ts DESC
             LIMIT 100
             """,
-            (tier, f"-{lookback_hours}"),
+            (tier, f"-{lookback_hours} hours"),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -1756,11 +1756,13 @@ class ShadowDB:
         cutoff = f"-{lookback_hours} hours"
 
         # ── 1. Entropy fire count ──────────────────────────────────────────
+        # D105: signal_type column does not exist in execution_records.
+        #       Use gate_reason LIKE '%entropy%' to identify entropy-driven signals.
         entropy_rows = self.conn.execute(
             """
             SELECT market_id, COUNT(*) AS cnt
             FROM execution_records
-            WHERE signal_type = 'entropy'
+            WHERE gate_reason LIKE '%entropy%'
               AND market_id IS NOT NULL
               AND created_ts_utc > datetime('now', ?)
             GROUP BY market_id
@@ -1769,14 +1771,16 @@ class ShadowDB:
         ).fetchall()
 
         # ── 2. Paper trade stats ───────────────────────────────────────────
+        # D105: use mode='PAPER' (CHECK constraint enforces uppercase)
+        #       status column does not exist in execution_records
         paper_rows = self.conn.execute(
             """
             SELECT
                 market_id,
-                COUNT(*)                                          AS total_paper,
-                SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END)   AS passed_paper
+                COUNT(*)                                        AS total_paper,
+                SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) AS passed_paper
             FROM execution_records
-            WHERE status = 'paper'
+            WHERE mode = 'PAPER'
               AND market_id IS NOT NULL
               AND created_ts_utc > datetime('now', ?)
             GROUP BY market_id
@@ -1785,6 +1789,7 @@ class ShadowDB:
         ).fetchall()
 
         # ── 3. Kyle Lambda sample count ───────────────────────────────────
+        # D105: use ts_utc (correct column name), sampled_ts does not exist
         kyle_rows: list = []
         try:
             kyle_rows = self.conn.execute(
@@ -1792,13 +1797,13 @@ class ShadowDB:
                 SELECT market_id, COUNT(*) AS cnt
                 FROM kyle_lambda_samples
                 WHERE market_id IS NOT NULL
-                  AND sampled_ts > datetime('now', ?)
+                  AND ts_utc > datetime('now', ?)
                 GROUP BY market_id
                 """,
                 (cutoff,),
             ).fetchall()
         except Exception:
-            pass  # Table may not exist in all environments; silently skip
+            pass  # Table schema guard — silently skip
 
         # ── Merge into single dict keyed by market_id ─────────────────────
         result: dict[str, dict] = {}
@@ -1806,7 +1811,7 @@ class ShadowDB:
         def _ensure(mid: str) -> dict:
             if mid not in result:
                 result[mid] = {
-                    "entropy_fires": 0,
+                    "total_evaluations": 0,
                     "total_paper": 0,
                     "passed_paper": 0,
                     "kyle_samples": 0,
@@ -1814,7 +1819,7 @@ class ShadowDB:
             return result[mid]
 
         for r in entropy_rows:
-            _ensure(r[0])["entropy_fires"] = r[1]
+            _ensure(r[0])["total_evaluations"] = r[1]
         for r in paper_rows:
             _ensure(r[0])["total_paper"]   = r[1]
             _ensure(r[0])["passed_paper"]  = r[2]

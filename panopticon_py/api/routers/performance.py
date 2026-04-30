@@ -103,6 +103,8 @@ def get_watchlist() -> WatchlistResponse:
     D103-FE: Combined political + T1-T5 market watchlist.
     Returns which markets are currently being monitored, along with
     availability flags so the frontend can display "no data" states cleanly.
+
+    NOTE: Relies on lifespan bootstrap() for table initialization (see app.py:48).
     """
     db = ShadowDB()
     # D104: watchlist is read-only; bootstrap() is called once at process startup in lifespan

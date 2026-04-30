@@ -34,7 +34,7 @@ export interface WatchlistResponse {
 }
 
 export interface MarketDebugStats {
-  entropy_fires: number;
+  total_evaluations: number;
   total_paper: number;
   passed_paper: number;
   kyle_samples: number;

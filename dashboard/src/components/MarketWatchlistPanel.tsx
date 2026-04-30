@@ -233,7 +233,7 @@ function TierSection({
               {debugStats.enabled && (
                 <>
                   <th className="pb-1 text-right text-amber-500/70">Kyle樣本</th>
-                  <th className="pb-1 text-right text-amber-500/70">Entropy</th>
+                  <th className="pb-1 text-right text-amber-500/70">評估</th>
                   <th className="pb-1 text-right text-amber-500/70">Paper通過</th>
                 </>
               )}
@@ -276,7 +276,7 @@ function DebugCells({
   return (
     <>
       <td className="py-1 text-right text-amber-400/60">{s.kyle_samples}</td>
-      <td className="py-1 text-right text-amber-400/60">{s.entropy_fires}</td>
+      <td className="py-1 text-right text-amber-400/60">{s.total_evaluations}</td>
       <td className="py-1 text-right text-amber-400/60">
         {s.passed_paper}/{s.total_paper}
       </td>
