@@ -24,7 +24,12 @@ from panopticon_py.load_env import load_repo_env
 
 load_repo_env()
 
-# D107: lifespan context manager — replaces deprecated @app.on_event("startup")
+# ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
+from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
+PROCESS_VERSION = "v1.1.13-D108"   # ← AGENT: bump on every change
+acquire_singleton("backend", PROCESS_VERSION)
+
+# ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """
@@ -45,12 +50,6 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Panopticon API", version="0.1.0", lifespan=_lifespan)
-
-# D51: Singleton enforcement — must be first after app creation
-from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-
-PROCESS_VERSION = "v1.1.12-D107"   # ← AGENT: bump on every change
-acquire_singleton("backend", PROCESS_VERSION)
 
 # Browser dev servers (Vite) use http://localhost:* while API may bind 127.0.0.1 — different origins → CORS required.
 _extra_origins = [
@@ -132,50 +131,37 @@ _ws_manager = _WsConnectionManager()
 async def ws_stream(ws: WebSocket) -> None:
     """Push live hunting/shadow data to connected dashboards every 5 seconds."""
     await _ws_manager._connect(ws)
+    from panopticon_py.db import ShadowDB
+    db = ShadowDB()  # D108-4: created outside try so finally can always close it
     try:
-        # Send initial connection ack
         await ws.send_json({"type": "connected"})
-
-        from panopticon_py.db import ShadowDB
-        db = ShadowDB()
-        last_hit_ts = ""
-        last_obs_ts = ""
-
         while True:
             await asyncio.sleep(5)
             update_heartbeat("backend")
             try:
-                # Latest hunting shadow hits
                 hit_rows = db.conn.execute("""
                     SELECT hit_id, address, market_id, entity_score, entropy_z,
                            sim_pnl_proxy, outcome, payload_json, created_ts_utc
                     FROM hunting_shadow_hits
                     ORDER BY created_ts_utc DESC LIMIT 50
                 """).fetchall()
-
-                # Latest wallet observations
                 obs_rows = db.conn.execute("""
                     SELECT obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc
                     FROM wallet_observations
                     ORDER BY ingest_ts_utc DESC LIMIT 50
                 """).fetchall()
-
-                # Latest tracked wallets (top by PnL)
                 wallet_rows = db.conn.execute("""
                     SELECT wallet_address, entity_id, all_time_pnl, win_rate,
                            discovery_source, last_seen_ts_utc, last_updated_at
                     FROM tracked_wallets
                     ORDER BY all_time_pnl DESC LIMIT 20
                 """).fetchall()
-
-                # Latest raw events (L1/L2/L3)
                 event_rows = db.conn.execute("""
                     SELECT event_id, layer, event_type, source, market_id,
                            payload_json, ingest_ts_utc
                     FROM raw_events
                     ORDER BY ingest_ts_utc DESC LIMIT 20
                 """).fetchall()
-
                 await ws.send_json({
                     "type": "live_update",
                     "hunting_hits": [
@@ -214,11 +200,11 @@ async def ws_stream(ws: WebSocket) -> None:
                     "ts": time.time(),
                 })
             except Exception:
-                # Don't break the stream on DB read errors — just skip this tick
                 pass
     except WebSocketDisconnect:
-        _ws_manager._disconnect(ws)
+        pass
     finally:
+        db.close()  # D108-4: always release DB connection
         _ws_manager._disconnect(ws)
 
 

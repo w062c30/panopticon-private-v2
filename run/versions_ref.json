@@ -3,10 +3,10 @@
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
   "radar": "v1.1.30-D106",
   "orchestrator": "v1.1.22-D100",
-  "backend": "v1.1.12-D107",
+  "backend": "v1.1.13-D108",
   "frontend": "v1.1.7-D69",
   "analysis_worker": "v1.1.13-D90",
-  "last_updated": "2026-04-30T12:41:00Z",
-  "updated_by_sprint": "D107",
-  "updated_by_agent": "D107-coding-agent"
+  "last_updated": "2026-04-30T13:32:00Z",
+  "updated_by_sprint": "D108",
+  "updated_by_agent": "D108-coding-agent"
 }

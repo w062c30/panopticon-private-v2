@@ -99,4 +99,5 @@ FEATURE_INDEX.md
 # ── OS noise ─────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-desktop.inirun/orchestrator.err.log
+desktop.ini
+run/orchestrator.err.log
