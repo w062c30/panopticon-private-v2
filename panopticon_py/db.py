@@ -7,6 +7,7 @@ import queue
 import re
 import sqlite3
 import threading
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -1218,7 +1219,7 @@ class ShadowDB:
         self.conn.commit()
 
     def fetch_active_pol_markets(self) -> list[dict]:
-        """D112: Use column-name mapping instead of positional index to prevent silent breakage."""
+        """D117: Use dict(row) — sqlite3.Row supports both r["col"] and dict(r)."""
         rows = self.conn.execute("""
             SELECT market_id, token_id, token_id_no, event_slug, political_category,
                    entity_keywords, subscribed_at, last_signal_ts
@@ -1226,13 +1227,9 @@ class ShadowDB:
             WHERE is_active = 1
             ORDER BY subscribed_at DESC
         """).fetchall()
-        cols = [
-            "market_id", "token_id", "token_id_no", "event_slug",
-            "political_category", "entity_keywords", "subscribed_at", "last_signal_ts",
-        ]
         result = []
         for r in rows:
-            row_dict = dict(zip(cols, r))
+            row_dict = dict(r)   # D117: replaces dict(zip(cols, r))
             row_dict["entity_keywords"] = json.loads(row_dict["entity_keywords"] or "[]")
             result.append(row_dict)
         return result
@@ -2584,6 +2581,7 @@ class ShadowDB:
         self.conn.commit()
 
     def get_link_mapping_by_market_id(self, market_id: str) -> dict[str, Any] | None:
+        """D117: Use dict(row) instead of positional indices."""
         row = self.conn.execute(
             """
             SELECT market_id, token_id, event_slug, market_slug, canonical_event_url, canonical_embed_url, source, fetched_at
@@ -2593,20 +2591,10 @@ class ShadowDB:
             """,
             (market_id,),
         ).fetchone()
-        if not row:
-            return None
-        return {
-            "market_id": row[0],
-            "token_id": row[1],
-            "event_slug": row[2],
-            "market_slug": row[3],
-            "canonical_event_url": row[4],
-            "canonical_embed_url": row[5],
-            "source": row[6],
-            "fetched_at": row[7],
-        }
+        return dict(row) if row else None
 
     def get_link_mapping_by_token_id(self, token_id: str) -> dict[str, Any] | None:
+        """D117: Use dict(row) instead of positional indices."""
         row = self.conn.execute(
             """
             SELECT market_id, token_id, event_slug, market_slug, canonical_event_url, canonical_embed_url, source, fetched_at
@@ -2616,18 +2604,7 @@ class ShadowDB:
             """,
             (token_id,),
         ).fetchone()
-        if not row:
-            return None
-        return {
-            "market_id": row[0],
-            "token_id": row[1],
-            "event_slug": row[2],
-            "market_slug": row[3],
-            "canonical_event_url": row[4],
-            "canonical_embed_url": row[5],
-            "source": row[6],
-            "fetched_at": row[7],
-        }
+        return dict(row) if row else None
 
     def get_canonical_market_id(self, token_id: str) -> str | None:
         """
@@ -3592,6 +3569,15 @@ class AsyncDBWriter:
                 qsize,
             )
 
+    def health(self) -> dict[str, Any]:
+        """D117: Expose queue health for monitoring endpoints."""
+        return {
+            "running": self._running,
+            "thread_alive": self._thread.is_alive() if self._thread else False,
+            "queue_depth": self._q.qsize(),
+            "queue_unfinished": self._q.unfinished_tasks,
+        }
+
     def _dispatch(self, kind: str, payload: dict[str, Any]) -> None:
         """D115: Dispatch payload by kind. All branches handled here; task_done is called by _loop."""
         if kind == "raw":
@@ -3689,7 +3675,18 @@ class AsyncDBWriter:
             try:
                 if kind == "_stop_sentinel":
                     break
-                self._dispatch(kind, payload)
+                # D117: Time the dispatch to detect WAL contention (>200ms = warning)
+                t0 = time.monotonic()
+                try:
+                    self._dispatch(kind, payload)
+                finally:
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    if elapsed_ms > 200:
+                        logging.getLogger("panopticon_py.db").warning(
+                            "[AsyncDBWriter] slow dispatch: kind=%s elapsed=%.1fms — potential WAL contention",
+                            kind,
+                            elapsed_ms,
+                        )
             except Exception as exc:
                 logger.warning("[AsyncDBWriter] dispatch error kind=%s: %s", kind, exc)
             finally:
