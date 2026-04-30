@@ -975,14 +975,7 @@ class ShadowDB:
             """,
             (market_id, limit),
         ).fetchall()
-        cols = [
-            "market_id", "asset_id", "window_ts", "market_tier", "event_slug",
-            "window_start_utc", "window_end_utc", "ws_trade_ticks",
-            "api_trades_received", "api_trades_with_wallet",
-            "estimated_loss_rate", "wallet_coverage_rate",
-            "api_page_saturated", "event_cumulative_loss", "created_at",
-        ]
-        return [dict(zip(cols, r)) for r in rows]
+        return [dict(r) for r in rows]   # D116: sqlite3.Row — dict(r) is equivalent to dict(zip(cols, r))
 
     def fetch_coverage_summary(self, market_tier: str | None = None) -> dict:
         where_clause = "WHERE market_tier = ? AND" if market_tier else "WHERE"
@@ -1005,11 +998,7 @@ class ShadowDB:
         ).fetchone()
         if not row:
             return {}
-        cols = [
-            "distinct_markets", "total_polls", "avg_loss_rate", "max_loss_rate",
-            "avg_wallet_coverage", "saturated_polls", "total_ws_ticks", "total_api_trades",
-        ]
-        return dict(zip(cols, row))
+        return dict(row)   # D116: sqlite3.Row — dict(row) uses SELECT alias names
 
     def _ensure_series_tables(self) -> None:
         self.conn.executescript(
@@ -3582,19 +3571,26 @@ class AsyncDBWriter:
         self._thread.start()
 
     def stop(self) -> None:
-        # Signal the thread to stop accepting new work, then drain any pending
-        # items from the queue before joining the thread.
+        """D116: Signal thread to stop and drain queue via sentinel."""
         self._running = False
+        # D116: drain sentinel — wakes _loop immediately so it drains remaining items
+        # before join() is called. Each sentinel item also calls task_done() via finally.
+        self._q.put(("_stop_sentinel", {}))
         self._q.join()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-        # Flush buffers to ensure all queued writes have landed in the DB
-        # before the caller receives control.
         self.db.flush_wallet_obs_buffer()
         self.db.flush_kyle_buffer()
 
     def submit(self, kind: str, payload: dict[str, Any]) -> None:
         self._q.put((kind, payload))
+        # D116: backpressure monitor
+        qsize = self._q.qsize()
+        if qsize > 500:
+            logging.getLogger("panopticon_py.db").warning(
+                "[AsyncDBWriter] queue backpressure: qsize=%d — DB writes lagging behind submits",
+                qsize,
+            )
 
     def _dispatch(self, kind: str, payload: dict[str, Any]) -> None:
         """D115: Dispatch payload by kind. All branches handled here; task_done is called by _loop."""
@@ -3682,18 +3678,22 @@ class AsyncDBWriter:
             logger.warning("[AsyncDBWriter] unknown kind=%r — dropped", kind)
 
     def _loop(self) -> None:
-        """D115: Refactored to guarantee task_done via try/finally."""
-        while self._running:
+        """D115/D116: Sentinel-controlled shutdown; task_done guaranteed via try/finally."""
+        while True:
             try:
                 kind, payload = self._q.get(timeout=0.2)
             except queue.Empty:
+                if not self._running:
+                    break
                 continue
             try:
+                if kind == "_stop_sentinel":
+                    break
                 self._dispatch(kind, payload)
             except Exception as exc:
                 logger.warning("[AsyncDBWriter] dispatch error kind=%s: %s", kind, exc)
             finally:
-                self._q.task_done()   # D115: guaranteed — even on exception or unknown kind
+                self._q.task_done()
 
 
 
