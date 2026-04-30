@@ -54,6 +54,55 @@
 - 旁路觀測不得影響 `StrategyInput`、`decide()`、風控 gate、下單流程、倉位大小。
 - 任一報表、儀表板或審查文件必須明確區分 **Baseline Paper Trade** 與 **Experiment Shadow** 數據，不得混算。
 
+## ✅ Coding Agent 強制規則（D101–D120 提煉，2026-05-01）
+
+> 以下規則與 `.cursorrules` 中的 `Agent Hard Rules` 完全對應，此處以任務語境重述，供 coding agent 在收到任務時自查。
+
+### 1. Import 完整性（RULE-IMPORT-1/2）
+- 新增任何函數前，確認函數體用到的所有標準庫已在頂層 import
+- `except Exception` **不能**捕捉 `NameError` 的假設是錯的——它可以，且會靜默吞掉
+- Handoff 驗證清單必須包含一條「觸發函數體路徑」測試，不得只靠 `python -c "import X"`
+
+### 2. 時間工具唯一來源（RULE-TIME-1）
+- 永遠用 `from panopticon_py.time_utils import utc_now_rfc3339_ms`
+- 發現任何 `_utc_now_rfc3339_ms()` 局部定義立即刪除並替換
+
+### 3. SQLite 存取方式（RULE-SQLITE-1）
+- 所有 `sqlite3.Row` 使用 `r["col_name"]` 或 `dict(r)`
+- 新增 DAL method 時 SELECT 欄位必須明確 `AS alias`
+
+### 4. asyncio.Semaphore 使用（RULE-SEMAPHORE-1/2）
+- 永遠在協程內初始化，不在模組頂層
+- `await asyncio.sleep()` 必須在 `async with semaphore:` 區塊**外**
+
+### 5. 外部 API 資料防禦（RULE-API-1）
+- `list[0].get(...)` 前必須 `isinstance(list[0], dict)` 守衛
+- 無論 Gamma、Polymarket 還是任何外部 API，均適用
+
+### 6. Worker stop() 重入（RULE-REENTRY-1）
+- 所有 background thread/worker 的 `stop()` 首行必須檢查 `if not self._running: return`
+
+### 7. 跨 class 介面契約（RULE-CONTRACT-1）
+- Stub/Adapter 與原 class 共用的方法回傳結構必須定義 `TypedDict`
+- 短期豁免：加 docstring `# implicit contract, see OriginalClass.method()`
+
+### 8. 跨進程 JSON 路徑（RULE-PATH-1）
+- 寫入方與讀取方必須使用完全相同的 `os.getenv("..._PATH", default)`
+- 禁止任一方硬編碼路徑，即使預設值相同
+
+### 9. Dead code 清理（RULE-DEAD-1）
+- sprint 完成前 grep 確認所有新增賦值有 reader
+- Shadow variable（同名局部變數遮蓋模組級 global）必須消除
+
+### 10. 閉包提升規則（RULE-CLOSURE-1）
+- 提升為模組級前確認所有引用變數的 scope
+- 無法提升則改用依賴注入參數
+
+### 11. WebSocket payload 格式（RULE-WS-1）
+- `payload_json` 在 WS handler 永遠傳字串，不在 handler 內做 `json.loads()`
+
+---
+
 ## 架構師溝通協議（Architect Agent Handoff）
 
 ### ⚠️ GitHub Repo 主動同步（每次 Handoff 前執行）
@@ -108,36 +157,24 @@ temp_architect_handoff_{date}.md  # 專案根目錄
 - B: {方案} → {優點}/{風險}
 **建議**：{傾向方案}
 → 需要裁決：{具體問題}
-
-### Q2: ...
-
----
-
-**附：背景資料（直接引用程式碼）**
-```python
-# {相關函數名稱}
-{相關程式碼片段}
-```
 ```
 
 **Step 3：copy-paste 給架構師**
-將整份 temp 文件內容在 chat 中貼上，附一句「請審查並裁決」即可。
 
 **Step 4：收到回覆後**
 - 裁決寫入 `FEATURE_INDEX.md` Decision Records
 - 臨時文件刪除或標記 `ARCHIVED`
 
 ### 資料夾管理規則
-- `temp_architect_handoffs/` 目錄下**只保留最新一份 handoff 檔案**（以 `2026-04-XX_DN` 命名者）
-- 所有舊檔案（不包含最新版本）自動移至 `temp_architect_handoffs/old/` 子目錄
-- `old/` 目錄無需管理，舊檔案可自由累積，**永不主動刪除**
-- `old/` 中的檔案**不可引用**（Architect 只能看到 `temp_architect_handoffs/` 的最新檔案）
+- `temp_architect_handoffs/` 目錄下**只保留最新一份 handoff 檔案**
+- 所有舊檔案自動移至 `temp_architect_handoffs/old/`
+- `old/` 中的檔案**不可引用**
 
 ### 規則
 - **每 session 一個檔案**，所有 Q 一次提出，不追加
 - **禁止 commit** 臨時文件至 git
 - **保持簡潔**：只含事實與選項，不解釋已知內容
-- **附：背景資料**：直接附上相關程式碼片段（function signature、關鍵變數、Schema 欄位），不得只寫路徑/行號（架構師無法讀取本機檔案）
+- **附：背景資料**：直接附上相關程式碼片段，不得只寫路徑/行號
 
 ---
 
@@ -146,9 +183,8 @@ temp_architect_handoff_{date}.md  # 專案根目錄
 ### Primary: GET /book (one call, all data)
 `https://clob.polymarket.com/book?token_id=<token_id>`
 Returns: `bids[]`, `asks[]`, `last_trade_price`
-Ref: https://docs.polymarket.com/api-reference/market-data/get-order-book
 
-### Price selection rule (mirrors Polymarket UI):
+### Price selection rule:
 ```
 spread = best_ask - best_bid
 if spread <= 0.10:  use mid_price = (best_bid + best_ask) / 2
@@ -157,42 +193,35 @@ else:               return None → NO_PRICE_DATA
 ```
 **NEVER** return `0.0` to mean "unavailable" — causes silent EV miscalculation.
 
-### Batch: POST /last-trades-prices (up to 500 tokens)
-Ref: https://docs.polymarket.com/api-reference/market-data/get-last-trade-prices-request-body
-
-### Python SDK (read-only reference):
-https://github.com/Polymarket/py-clob-client
-https://github.com/Polymarket/py-clob-client-v2
-
 ### NEVER:
-- Use Gamma API as primary price source (unreliable, mid-only)
-- Use mid_price when spread > 0.10 (distorted, matches Polymarket's own logic)
+- Use Gamma API as primary price source
+- Use mid_price when spread > 0.10
 - Return `0.0` to mean "unavailable"
 
 ---
 
 ### Pre-fix Protocol
-1. **Search EXPERIENCE_PLAYBOOK.md first** — grep for the error message, module name, or symptom keywords
+1. **Search EXPERIENCE_PLAYBOOK.md first**
 2. If matching EXP entry found → follow documented fix exactly
-3. If no match → proceed with analysis, but document findings in EXPERIENCE_PLAYBOOK after fix
-4. **Hard stop at 2 failed attempts** → write escalation handoff, await architect ruling
+3. If no match → proceed with analysis, document in EXPERIENCE_PLAYBOOK after fix
+4. **Hard stop at 2 failed attempts** → write escalation handoff
 
 ---
 
-## Current System Status (as of D84)
+## Current System Status (as of D120)
 
 | Process | Version | Notes |
-|---------|--------|-------|
-| Orchestrator | v1.1.19-D84 | Stable; DB migration helper `_add_column_if_missing` established |
-| Radar | v1.1.19-D83 | Stable; entropy gate operational; diagnostic prints cleared D83 |
-| Backend | v1.1.7-D69 | Stable |
-| Frontend | v1.1.7-D69 | Stable |
+|---------|---------|-------|
+| Orchestrator | v1.1.34-D120 | import json fix + utc_now_rfc3339_ms alignment |
+| Backend | v1.1.24-D120 | WS idiom cleanup |
+| Radar | v1.1.28-D101 | T2-POL political monitor |
 
-**Cleared issues**: insider_score column ✅, ShadowDB.execute ✅, f-string crash ✅, CONSENSUS_SYNC error ✅, D77/D78 diagnostic prints ✅
-
-**Known low-priority**: `restart_all.ps1` interactive terminal timeout — process works correctly, output visibility issue in interactive shells (D85 tracked, non-blocking)
-
-**Active EXP entries**: EXP-D83-001 (live DB ALTER trap), EXP-D81-001 (Python scope), EXP-D80-001 (f-string), EXP-D80-002 (ShadowDB.execute)
+**Active Technical Debt:**
+| ID | 問題 | 優先級 | 目標 Sprint |
+|----|------|--------|------------|
+| Debt-1 | `_on_insider_alert` 裸 `sqlite3.connect`，繞過 WAL/busy_timeout | P0 | D121 |
+| Debt-2 | `AsyncDBWriter.health()` 隱式契約，無 TypedDict | P1 | D121 |
+| Debt-3 | `graph_engine` 局部 dead code，與 global `_graph_engine` 影子 | P2 | D122 |
 
 ---
 
@@ -200,140 +229,43 @@ https://github.com/Polymarket/py-clob-client-v2
 Python has no hot reload. After ANY code change to `panopticon_py/**/*.py`, `run_hft_orchestrator.py`, or `run_radar.py`, you MUST kill and restart ALL running processes before validating.
 
 ⚠️ **CRITICAL**: `-WorkingDirectory` is **MANDATORY** for all `Start-Process python` commands.
-Without it, Python runs from the system temp directory → `ModuleNotFoundError: No module named 'panopticon_py'`.
-Confirmed broken in D46, fix documented in D49.
 
-Restart sequence (PowerShell):
-```
-$projDir = "d:\Antigravity\Panopticon"
-Get-Process python | Where-Object {
-    $_.CommandLine -like "*run_hft_orchestrator*" -or $_.CommandLine -like "*run_radar*"
-} | Stop-Process -Force
-Start-Sleep 3
-Remove-Item -ErrorAction SilentlyContinue "$projDir\data\orchestrator.lock"
-$env:PANOPTICON_WHALE = "1"
-Start-Process python -ArgumentList "panopticon_py\hunting\run_radar.py" -WorkingDirectory $projDir -NoNewWindow -PassThru | Tee-Object -Variable radarProc
-Start-Process python -ArgumentList "run_hft_orchestrator.py" -WorkingDirectory $projDir -NoNewWindow -PassThru | Tee-Object -Variable orchProc
-Start-Sleep 10
-```
-
-Always confirm restart by checking process PIDs and log file timestamps before checking metrics.
+Restart: **ALWAYS use `scripts/restart_all.ps1`**
 
 ---
 
 ## PROCESS SINGLETON PROTOCOL (MANDATORY — ALL AGENTS)
 
-### Overview
-Every managed process enforces a singleton via PID lock files in run/.
-The utility is: `panopticon_py/utils/process_guard.py`
+Every managed process enforces a singleton via PID lock files in `run/`.
+Utility: `panopticon_py/utils/process_guard.py`
 DO NOT bypass, remove, or comment out `acquire_singleton()` calls.
 
-### Managed Processes
 | Name | Entry Point | Guard Name |
 |------|-------------|-----------|
 | backend | panopticon_py/api/app.py | "backend" |
 | radar | panopticon_py/hunting/run_radar.py | "radar" |
 | orchestrator | run_hft_orchestrator.py | "orchestrator" |
-| frontend | dashboard/ (node/vite) | PowerShell only |
 
-### Rule: acquire_singleton() Call Location
-EVERY entry-point file MUST have these as the FIRST executable lines after imports. No exceptions.
+EVERY entry-point MUST have as FIRST executable lines after imports:
 
     from panopticon_py.utils.process_guard import acquire_singleton
     PROCESS_VERSION = "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}"
     acquire_singleton("process_name", PROCESS_VERSION)
 
-If `acquire_singleton()` is missing from any entry point → that file is in violation. Fix it before adding other changes.
-
-### Rule: Only Use restart_all.ps1
-NEVER start individual processes by hand during a session.
-ALWAYS use: `scripts/restart_all.ps1`
-This script: kills all → clears PID files → starts all 4 → verifies singletons.
-
-### Singleton Count Verification (D54)
-DO NOT count raw python processes with `Get-Process` — Cursor IDE and other tools also run python.exe, creating false "DUPLICATE" warnings.
-ALWAYS verify singletons using `run/process_manifest.json` (written by `acquire_singleton()`):
-```powershell
-$m = Get-Content run/process_manifest.json | ConvertFrom-Json
-foreach ($svc in @("backend","radar","orchestrator")) {
-    $entry = $m.PSObject.Properties[$svc].Value
-    if ($null -ne $entry) {
-        $pid = $entry.pid
-        $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$pid")
-        Write-Host "[$svc] PID=$pid alive=$alive version=$($entry.version)"
-    }
-}
-```
-This reads the authoritative manifest and verifies each PID is alive via `Get-CimInstance` (compatible across PowerShell sessions).
-
 ---
 
 ## PROCESS VERSION PROTOCOL (MANDATORY — ALL AGENTS)
 
-### The Source of Truth
-File: `run/versions_ref.json`
-This file tells the system what version SHOULD be running.
-ALL agents MUST update it whenever they modify a process file.
+**RULE-VER-1**: BEFORE modifying any process file, READ its current `PROCESS_VERSION`.
+**RULE-VER-2**: AFTER modifying, INCREMENT `PROCESS_VERSION` (bug fix → PATCH; new feature → MINOR; breaking → MAJOR). Always append `-D{N}`.
+**RULE-VER-3**: AFTER bumping, update `run/versions_ref.json` in the SAME commit.
+**RULE-VER-4**: `versions_ref.json` must never be out of sync with code.
+**RULE-VER-5**: In every Architect Handoff, include version table.
 
-### Mandatory Version Bump Rules
-**RULE-VER-1**: BEFORE modifying any process file, READ its current `PROCESS_VERSION` constant and note the version.
-
-**RULE-VER-2**: AFTER modifying any process file, INCREMENT the `PROCESS_VERSION` constant in its entry point:
-- Bug fix / refactor / config change → bump PATCH (0.0.X)
-- New feature, new endpoint, new DB field → bump MINOR (0.X.0)
-- Breaking inter-process API change → bump MAJOR (X.0.0), escalate to Architect
-Always append current sprint: `-D{N}` e.g. `-D52`
-
-**RULE-VER-3**: AFTER bumping `PROCESS_VERSION`, update `versions_ref.json`:
-- Set the process key to the new version string
-- Update "last_updated" to current UTC ISO timestamp
-- Set "updated_by_sprint" to current sprint number
-- Set "updated_by_agent" to a brief descriptor e.g. "D52-coding-agent"
-
-**RULE-VER-4**: `versions_ref.json` MUST be updated in the SAME commit / session as the code change. Never leave them out of sync.
-
-**RULE-VER-5**: In the Architect Handoff, list ALL version changes:
-| Process | Old Version | New Version | Reason |
-
-### Version Mismatch Behavior
-If a process starts and its `PROCESS_VERSION` != `versions_ref.json` expected:
-- Logs CRITICAL warning at startup (cannot be missed)
-- Still starts (not fatal) — prevents deployment deadlocks
-- Architect must investigate: either code was not redeployed, or versions_ref.json was not updated by the previous agent
-
-### Checking Versions at Runtime
-`GET http://localhost:8001/api/versions`
-→ Returns `process_manifest.json` (all PIDs, versions, start times, `version_match` flags)
-→ Use this in Zero-Trust verification checks
-
-### Inter-process Version Checks
-When one process depends on another (e.g. orchestrator reads radar data):
-
-    from panopticon_py.utils.process_guard import check_peer_version
-    peer = check_peer_version("radar")
-    if peer and not peer["version_match"]:
-        logger.warning("Radar may be running stale code: %s", peer["version"])
-
-Version mismatch is WARN only. Never block business logic on version checks.
-
-### ZERO-TRUST VERIFICATION CHECKLIST (updated)
-
-After EVERY session restart, verify ALL of:
+### ZERO-TRUST VERIFICATION CHECKLIST
 
 ```
-# Singleton check (MUST each be 1)
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run_radar*" } | Measure-Object | Select-Object -ExpandProperty Count   # = 1
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run_hft_orchestrator*" } | Measure-Object | Select-Object -ExpandProperty Count  # = 1
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*uvicorn*" } | Measure-Object | Select-Object -ExpandProperty Count       # = 1
-Get-Process node | Measure-Object | Select-Object -ExpandProperty Count       # = 1
-
-# Version check
 curl -s http://localhost:8001/api/versions | python -m json.tool
 # All version_match fields must be true
 # All status fields must be "running"
-
-# PID files exist
-Get-ChildItem run/*.pid   # expect: backend.pid, radar.pid, orchestrator.pid
 ```
-
-If ANY process shows count ≠ 1: STOP, kill duplicates, escalate.

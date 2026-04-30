@@ -116,3 +116,143 @@ Rationale: The 4-attempt cascade in D81 wasted multiple sprints. 2 attempts is t
 After any bug fix that required more than 1 attempt OR involved a non-obvious root cause:
 Add an EXP entry to EXPERIENCE_PLAYBOOK.md covering: symptoms, root cause, fix pattern, anti-patterns to avoid.
 This is mandatory, not optional. Do it in the same sprint as the fix.
+
+---
+
+## ✅ Agent Hard Rules — D101–D120 Lessons (Added 2026-05-01)
+
+> 以下規則全部從 D101–D120 實際踩坑提煉，與上方規則具同等強制力。
+
+### RULE-IMPORT-1 — `except Exception` 吞掉 `NameError`
+
+`NameError` 是 `Exception` 子類。函數體內若使用了未 import 的標準庫（如 `json.dump()`），`except Exception` **靜默吞噬錯誤**，功能失效無任何 traceback。
+
+**強制要求：**
+- 新增函數若使用標準庫，必須同步確認頂層已 import
+- 所有頂層 import 保持 alphabetical sorted（對照 `isort`）
+- 禁止以 `python -c "import X"` 作為唯一驗證——此只測 import graph，不測函數體
+
+### RULE-IMPORT-2 — `python -c "import X"` 驗證範圍限制
+
+| 測試方法 | 能發現 | 不能發現 |
+|---------|--------|----------|
+| `python -c "import X"` | 頂層語法錯誤、循環依賴 | 函數體內 NameError、runtime path missing import |
+| `python -c "from X import Y; Y()"` | 函數直接路徑錯誤 | 間接呼叫路徑 |
+| 實際啟動服務 | 所有 startup path | 延遲觸發路徑 |
+
+**強制要求：** Handoff 驗證必須包含「模擬觸發路徑」測試，不得只靠 import check。
+
+### RULE-TIME-1 — 禁止局部重實作 `utc_now_rfc3339_ms`
+
+兩次呼叫 `datetime.now(timezone.utc)` 存在跨秒 race，導致時間戳格式錯誤（如 `09:59:59.000Z`）。
+
+**強制要求：**
+- 唯一合法來源：`from panopticon_py.time_utils import utc_now_rfc3339_ms`
+- 禁止在任何模組局部重實作此函數，即使是一行 lambda
+- `_utc()` 輔助（`datetime.now(timezone.utc).isoformat()`）僅限 log 輸出，禁止用於 DB 寫入或跨進程 snapshot
+
+### RULE-SQLITE-1 — 禁止位置索引存取 `sqlite3.Row`
+
+`r[0]~r[14]` 位置索引在 SELECT 欄位順序調整後靜默損壞，無 exception。
+
+**強制要求：**
+- 所有 DAL method 使用 `dict(r)` 或 `r["col_name"]` named access
+- 新增 DAL method 時 SELECT 欄位必須有明確 `AS alias`，禁止依賴 JOIN 自然欄位順序
+- `conn.row_factory = sqlite3.Row` 已在 `ShadowDB.__init__` 設定，無需重複設定
+
+### RULE-SEMAPHORE-1 — `asyncio.Semaphore` 禁止模組級初始化
+
+Python 3.9 下模組級 `asyncio.Semaphore(2)` 可能觸發 `attached to a different loop`。
+
+**強制要求：**
+```python
+# ❌ 禁止
+_httpx_semaphore = asyncio.Semaphore(2)  # 模組級
+
+# ✅ 正確
+async def scan(...):
+    semaphore = asyncio.Semaphore(2)  # 協程內初始化
+```
+
+### RULE-SEMAPHORE-2 — Semaphore 包單次 request，不包整個迴圈
+
+持鎖 `await asyncio.sleep()` 使 Semaphore 退化為 mutex，每次持鎖 `max_pages × sleep_time`。
+
+**強制要求：**
+```python
+# ❌ 禁止
+async with semaphore:
+    for _ in range(max_pages):
+        await client.get(...)
+        await asyncio.sleep(0.5)  # 持鎖睡眠！
+
+# ✅ 正確
+for _ in range(max_pages):
+    async with semaphore:         # 包單次 request
+        resp = await client.get(...)
+    await asyncio.sleep(0.5)      # sleep 在 semaphore 外
+```
+
+### RULE-API-1 — 外部 API list 元素存取前必須 `isinstance` 守衛
+
+```python
+# ❌ 禁止
+token_id = tokens.get("token_id") if tokens else None
+
+# ✅ 正確
+token_id = (
+    tokens.get("token_id")
+    if tokens and isinstance(tokens, dict)
+    else None
+)
+```
+
+所有外部 API 回傳的 list 元素，存取前必須 `isinstance(item, dict)` 守衛。
+
+### RULE-REENTRY-1 — 所有 `stop()` 方法必須首行檢查 `_running`
+
+防止雙重 sentinel 導致 `_loop` 多次 break。
+
+```python
+def stop(self) -> None:
+    if not self._running:  # 重入守衛
+        return
+    self._running = False
+    self._q.put(("_stop_sentinel", {}))
+```
+
+### RULE-CONTRACT-1 — 跨 class 隱式方法契約必須 TypedDict 顯式化
+
+`AsyncDBWriter.health()` 與 `AsyncDBWriterStub.health()` 的 dict key 結構是隱式契約。日後 `AsyncDBWriter.health()` 增加欄位，Stub fallback 不同步，dashboard 結構不一致。
+
+**強制要求：**
+- 跨 class 共用介面（stub pattern、adapter pattern）必須定義共同 `TypedDict` 或 `Protocol`
+- 短期可接受 `dict[str, Any]`，但必須在 docstring 標注 `# implicit contract, see AsyncDBWriter.health()`
+
+### RULE-PATH-1 — 跨進程讀寫同一 JSON 快照必須使用同一 env var 路徑
+
+寫入方與讀取方必須使用**完全相同**的 `os.getenv("..._PATH", default)`，禁止任一方硬編碼路徑。
+
+### RULE-DEAD-1 — 無 reader 的賦值是 dead code，必須刪除
+
+每次 sprint 完成前，對新增的模組級變數和函數內局部變數執行 grep 確認有 reader。無 reader 的賦值必須刪除，不可留作「備用」。
+
+### RULE-CLOSURE-1 — 閉包函數禁止提升為模組級（若引用局部變數）
+
+閉包引用局部變數（如 `db_writer`），提升為模組級函數後 `NameError`。提升前必須改為依賴注入：
+
+```python
+# ❌ 禁止直接提升
+def _persist_writer_health():
+    db_writer.flush()  # NameError at module level
+
+# ✅ 正確：改為依賴注入
+def _persist_writer_health(db_writer: AsyncDBWriter) -> None:
+    db_writer.flush()
+```
+
+### RULE-WS-1 — WebSocket 熱迴圈禁止 `json.loads()` on `payload_json`
+
+`payload_json` 欄位刻意保留字串格式，前端負責解析。在 WS handler 加入 `json.loads()` 破壞設計，且在熱迴圈（每 5s × 50 rows）造成不必要 CPU 開銷。
+
+**強制要求：** `payload_json` 在 WS handler 中永遠傳遞字串，只有 DAL methods 返回 Python dict 時才做 `json.loads()`。
