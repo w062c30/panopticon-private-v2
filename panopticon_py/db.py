@@ -451,10 +451,9 @@ class ShadowDB:
         return self.conn.execute(sql, parameters)
 
     def _ensure_execution_columns(self) -> None:
-        existing = {
-            row[1]
-            for row in self.conn.execute("PRAGMA table_info(execution_records)").fetchall()
-        }
+        """D114: Unified via _add_column_if_missing with on_locked="warn" (high-contention table)."""
+        # NOTE: NOT NULL columns with DEFAULT are safe in ADD COLUMN.
+        #       Adding a NOT NULL column WITHOUT a DEFAULT will raise OperationalError.
         required = [
             ("friction_snapshot_id", "TEXT"),
             ("gate_reason", "TEXT"),
@@ -467,42 +466,54 @@ class ShadowDB:
             ("clob_order_id", "TEXT"),
             ("mode", "TEXT NOT NULL DEFAULT 'PAPER'"),
             ("source", "TEXT NOT NULL DEFAULT 'radar'"),
-            # Phase 2-C-1: p_adj, qty, ev_net, avg_entry_price
             ("p_adj", "REAL"),
             ("qty", "REAL"),
             ("ev_net", "REAL"),
             ("avg_entry_price", "REAL"),
-            # Phase 2-C-2: Bayesian posterior (pre-gate, raw consensus output)
             ("posterior", "REAL"),
-            # Market tier tag: t1/t2/t3/t5 (for p_prior override per Invariant 1.4)
             ("market_tier", "TEXT NOT NULL DEFAULT 't3'"),
-            # D46: market_id and asset_id for routing and auditing
             ("market_id", "TEXT"),
             ("asset_id", "TEXT"),
         ]
         for col, col_type in required:
-            if col not in existing:
-                try:
-                    self.conn.execute(f"ALTER TABLE execution_records ADD COLUMN {col} {col_type}")
-                except sqlite3.OperationalError as exc:
-                    if "locked" in str(exc).lower():
-                        logger.warning(
-                            "[DB] execution_records column '%s' skipped — DB locked by another writer; "
-                            "column will be added on next restart when lock is free",
-                            col,
-                        )
-                    else:
-                        raise
+            self._add_column_if_missing(
+                self.conn, "execution_records", col, col_type, on_locked="warn"
+            )
 
     @staticmethod
-    def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, col_def: str) -> None:
+    def _add_column_if_missing(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        col_def: str,
+        *,
+        on_locked: str = "raise",
+    ) -> None:
         """
-        Idempotent ALTER TABLE ADD COLUMN — no-op if column already exists.
-        Use this instead of raw ALTER TABLE in all _ensure_* migration functions.
+        D114: Idempotent ALTER TABLE ADD COLUMN — no-op if column already exists.
+
+        on_locked controls behavior when DB is locked by another writer:
+          "raise" (default) — propagate OperationalError
+          "warn"  — log warning and continue (for high-contention tables)
+          "skip"  — silently ignore (use only for non-critical columns)
         """
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower():
+                    if on_locked == "warn":
+                        logging.getLogger("panopticon_py.db").warning(
+                            "[DB] %s.%s skipped — DB locked; will add on next restart",
+                            table,
+                            column,
+                        )
+                    elif on_locked == "raise":
+                        raise
+                    # "skip": silently pass
+                else:
+                    raise  # Always re-raise non-locked OperationalErrors
 
     def _ensure_collateral_and_correlation_tables(self) -> None:
         """CREATE TABLE IF NOT EXISTS for upgrades from older DB files."""
@@ -537,17 +548,12 @@ class ShadowDB:
         )
 
     def _ensure_positions_columns(self) -> None:
-        existing = {
-            row[1]
-            for row in self.conn.execute("PRAGMA table_info(positions)").fetchall()
-        }
-        required = [
+        """D114: Unified via _add_column_if_missing."""
+        for col, col_def in [
             ("side", "TEXT NOT NULL DEFAULT 'YES'"),
             ("signed_notional_usd", "REAL NOT NULL DEFAULT 0"),
-        ]
-        for col, col_type in required:
-            if col not in existing:
-                self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {col_type}")
+        ]:
+            self._add_column_if_missing(self.conn, "positions", col, col_def)
 
     def _ensure_paper_trade_tables(self) -> None:
         self.conn.executescript(
@@ -572,12 +578,8 @@ class ShadowDB:
             CREATE INDEX IF NOT EXISTS idx_paper_trades_created ON paper_trades(created_ts_utc);
             """
         )
-        existing = {
-            row[1]
-            for row in self.conn.execute("PRAGMA table_info(paper_trades)").fetchall()
-        }
-        if "wallet_address" not in existing:
-            self.conn.execute("ALTER TABLE paper_trades ADD COLUMN wallet_address TEXT")
+        # D114: Unified via _add_column_if_missing
+        self._add_column_if_missing(self.conn, "paper_trades", "wallet_address", "TEXT")
 
     def _ensure_settlement_tables(self) -> None:
         self.conn.executescript(
