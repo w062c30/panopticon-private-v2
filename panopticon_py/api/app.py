@@ -26,7 +26,7 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.13-D108"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.14-D109"   # ← AGENT: bump on every change
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -132,8 +132,9 @@ async def ws_stream(ws: WebSocket) -> None:
     """Push live hunting/shadow data to connected dashboards every 5 seconds."""
     await _ws_manager._connect(ws)
     from panopticon_py.db import ShadowDB
-    db = ShadowDB()  # D108-4: created outside try so finally can always close it
+    db: ShadowDB | None = None  # D109-1: declared before try so finally can safely close it
     try:
+        db = ShadowDB()  # D109-1: init inside try so ShadowDB() exceptions are caught
         await ws.send_json({"type": "connected"})
         while True:
             await asyncio.sleep(5)
@@ -199,12 +200,14 @@ async def ws_stream(ws: WebSocket) -> None:
                     ],
                     "ts": time.time(),
                 })
-            except Exception:
-                pass
+            except Exception as exc:
+                # D109-1: debug-level log — DB read failures every 5s would flood logs at warning level
+                logger.debug("[WS_STREAM] tick error (will retry): %s", exc)
     except WebSocketDisconnect:
         pass
     finally:
-        db.close()  # D108-4: always release DB connection
+        if db is not None:  # D109-1: guard against ShadowDB() throwing before assignment
+            db.close()
         _ws_manager._disconnect(ws)
 
 

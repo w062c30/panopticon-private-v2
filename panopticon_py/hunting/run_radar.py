@@ -2880,6 +2880,19 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
     except Exception as e:
         logger.warning("[D71_SLUG_AUDIT] audit failed: %s", e)
 
+    # ── D109: POL immediate startup scan (no 30-min wait for first POL data) ──
+    # Note: uses time.time() (Unix timestamp) to match _last_pol_refresh comparison
+    # in the heartbeat loop at L2688 (time.time() vs _last_pol_refresh diff).
+    try:
+        from panopticon_py.hunting.pol_monitor import sync_scan_pol_markets
+        global _last_pol_refresh  # allow assignment to module-level var
+        _initial_pol_count = sync_scan_pol_markets(db, max_pages=3)
+        _last_pol_refresh = time.time()  # matches heartbeat loop L2688 units
+        logger.info("[POL][D109] startup scan complete count=%d", _initial_pol_count)
+    except Exception as exc:
+        logger.warning("[POL][D109] startup scan failed: %s", exc)
+    # Even if POL scan fails, startup continues — POL is supplementary, not critical
+
     # ── Start 5s JSON write loop ───────────────────────────────────────────────
     if mc is not None:
         asyncio.create_task(
@@ -2918,7 +2931,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.30-D106"   # ← AGENT: bump on every change  # D106: duplicate heartbeat fix + elapsed failure path
+    PROCESS_VERSION = "v1.1.31-D109"   # ← AGENT: bump on every change  # D109: POL immediate startup scan
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

@@ -65,7 +65,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.22-D100"   # ← AGENT: bump on every change
+PROCESS_VERSION = "v1.1.23-D109"   # ← AGENT: bump on every change  # D109: POL startup scan
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -236,8 +236,17 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
     """Run Polymarket Radar, feeding SignalEvents into signal_queue (zero disk I/O)."""
     from panopticon_py.hunting.entropy_window import EntropyWindow
     from panopticon_py.hunting.run_radar import _live_ticks
+    from panopticon_py.hunting.run_radar import _sync_pol_tokens_from_watchlist  # D109: POL immediate startup scan
 
     ew = EntropyWindow()
+
+    # ── D109: POL immediate startup scan (not in _main_async — orchestrator bypasses it) ──
+    try:
+        pol_tokens = await asyncio.to_thread(_sync_pol_tokens_from_watchlist, db)
+        logger.info("[POL][D109] startup scan registered %d t2_pol tokens", len(pol_tokens))
+    except Exception as exc:
+        logger.warning("[POL][D109] startup scan failed: %s", exc)
+
     logger.info("[RADAR] Starting Polymarket CLOB WebSocket feed → signal_queue")
     try:
         await _live_ticks(ew, db, signal_queue=signal_queue)
