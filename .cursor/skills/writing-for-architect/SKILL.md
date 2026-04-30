@@ -792,6 +792,35 @@ and the Architect can verify without any code being embedded in the document.
 
 ---
 
+## 架構師職責（Architect Responsibilities）
+
+Every handoff document must include the following section to direct the architect's review focus:
+
+### 1. 審查代碼品質（Code Quality Review）
+Architect must verify the coding agent's implementation against the following requirements:
+- [ ] 代碼是否符合 `shared/contracts/panopticon-event.schema.json` 契約相容
+- [ ] 交易決策是否可回溯 `Prior -> Evidence -> Posterior -> Kelly -> Action`
+- [ ] 是否在程式碼或文件中硬編碼 API Key / 私鑰（不允許）
+- [ ] Graphify 來源資料是否誤入信號/風險/執行路徑（不允許）
+- [ ] `graphify-out/*`、`GRAPH_REPORT.md`、`graph.json` 是否被任何非工程用途讀取
+- [ ] 所有 LLM 推論是否經過可審計日誌（特別是 MiniMax 模型需控制併發 ≤ 2）
+- [ ] `acquire_singleton()` 是否存在於所有 entry point
+- [ ] `PROCESS_VERSION` 是否在 `_lifespan` 定義之前宣告
+- [ ] WebSocket handler 是否在 `finally` 關閉 DB 連接
+
+### 2. 創建完整實作計劃（Implementation Plan Completeness）
+Architect must create or verify a complete implementation plan that includes:
+- [ ] 每個 task 的具體檔案路徑與行號範圍（file:L_start–L_end）
+- [ ] 明確的 dependency order（誰依賴誰）
+- [ ] 預測可能的 code flaw 並給出 constraints，例如：
+  - 變數初始化順序風險（示警：某變數在某函數中使用但定義在調用後）
+  - 非同步上下文中的 blocking call 風險（示警：sync function 在 async path 中被調用）
+  - 資源洩漏風險（示警：某連接/文件在 exception path 中未關閉）
+  - 版本契約風險（示警：某 PROCESS_VERSION 在調用前未定義）
+  - DB schema 不兼容風險（示警：新欄位可能導致舊查詢失敗）
+- [ ] 每個步驟的驗證方式（如何確認修改正確）
+- [ ] 版本 bump 策略（哪個 process 改、從什麼版本、改成什麼版本）
+
 
 ## Language
 
@@ -800,6 +829,7 @@ and the Architect can verify without any code being embedded in the document.
 - Code, log output, file paths: English only
 - Q{N} question body: English (precision over familiarity)
 - Ruling acknowledgements: Traditional Chinese
-```
+
+---
 
 ***
