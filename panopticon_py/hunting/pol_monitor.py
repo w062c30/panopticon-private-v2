@@ -255,10 +255,17 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
 
     for _ in range(max_pages):
         try:
-            base = "https://gamma-api.polymarket.com"
-            path = "/markets"
-            url = f"{base}{path}?active=true&closed=false&archived=false&limit={limit}&offset={offset}"
-            resp = httpx.get(url, timeout=10.0)
+            resp = httpx.get(
+                GAMMA_URL,
+                params={
+                    "active": "true",
+                    "closed": "false",
+                    "archived": "false",
+                    "limit": limit,
+                    "offset": offset,
+                },
+                timeout=10.0,
+            )
             resp.raise_for_status()
             markets = resp.json()
         except Exception as exc:
