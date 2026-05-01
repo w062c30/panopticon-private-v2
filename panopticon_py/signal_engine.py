@@ -534,6 +534,15 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     z = event.z
     market_id = event.market_id
 
+    # D107-2: Source validation — must match execution_records CHECK constraint
+    _VALID_SOURCES = {"radar", "ofi"}  # Sync with SCHEMA_SQL CHECK constraint
+    safe_source = event.source if event.source in _VALID_SOURCES else "radar"
+    if event.source not in _VALID_SOURCES:
+        logger.warning(
+            "[SE] Unknown source=%r for market=%s — defaulting to 'radar'",
+            event.source, market_id
+        )
+
     # 1. Z-score threshold check — skip if |z| is below threshold magnitude
     # Threshold is negative (e.g. -4.0), magnitude is abs(threshold)=4.0
     # Skip when |z| < 4.0 (low magnitude), continue when |z| >= 4.0 (high magnitude signal)
@@ -592,7 +601,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "accepted": 0,
             "reason": REASON_INSUFFICIENT_CONSENSUS,
             "mode": "PAPER",
-            "source": event.source,
+            "source": safe_source,  # D107-2: validated against CHECK constraint
             "gate_reason": REASON_INSUFFICIENT_CONSENSUS,
             "latency_ms": 150.0,
             "posterior": 0.0,
@@ -602,6 +611,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "avg_entry_price": 0.0,
             "created_ts_utc": _utc(),
             "market_id": market_id,
+            "market_tier": event.market_tier,  # D107: was missing — all tiers now recorded
         })
         logging.debug("[SE] market=%s insufficient consensus %d < %d",
                       market_id, effective_sources, MIN_CONSENSUS_SOURCES)
@@ -626,7 +636,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "accepted": 0,
             "reason": REASON_NO_PRICE_DATA,
             "mode": "PAPER",
-            "source": event.source,
+            "source": safe_source,  # D107-2: validated against CHECK constraint
             "gate_reason": REASON_NO_PRICE_DATA,
             "latency_ms": 150.0,
             "posterior": posterior,
@@ -636,6 +646,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "avg_entry_price": prev_avg_entry,
             "created_ts_utc": _utc(),
             "market_id": market_id,
+            "market_tier": event.market_tier,  # D107: was missing — all tiers now recorded
         })
         logging.warning("[SE] market=%s no price data", market_id)
         return
@@ -652,7 +663,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "accepted": 0,
             "reason": REASON_NO_PRICE_DATA,
             "mode": "PAPER",
-            "source": event.source,
+            "source": safe_source,  # D107-2: validated against CHECK constraint
             "gate_reason": REASON_NO_PRICE_DATA,
             "latency_ms": 150.0,
             "posterior": posterior,
@@ -662,6 +673,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "avg_entry_price": prev_avg_entry,
             "created_ts_utc": _utc(),
             "market_id": market_id,
+            "market_tier": event.market_tier,  # D107: was missing — all tiers now recorded
         })
         logger.info("[SE][ENTRY_PRICE] market=%s no asks available, skipping trade", market_id)
         return
@@ -769,7 +781,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         "accepted": accepted,
         "reason": reason,
         "mode": "PAPER",
-        "source": event.source,
+        "source": safe_source,  # D107-2: validated against CHECK constraint
         "gate_reason": gate.reason,
         "latency_ms": signal_input.delta_t_ms,
         "posterior": posterior,
@@ -779,6 +791,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         "avg_entry_price": signal_input.avg_entry_price,
         "created_ts_utc": _utc(),
         "market_id": market_id,
+        "market_tier": event.market_tier,  # D107: was missing — all tiers now recorded
     })
 
     # D103-1: Record last signal timestamp for accepted T2-POL signals
