@@ -1982,6 +1982,39 @@ class ShadowDB:
         )
         self.conn.commit()
 
+    def run_maintenance(self) -> None:
+        """
+        D113: Periodic SQLite maintenance — ANALYZE + WAL checkpoint.
+
+        Run every 6 hours from watchdog main loop (not on radar hot path).
+        ANALYZE updates sqlite_stat1 so query planner uses correct indexes.
+        WAL checkpoint prevents WAL file from growing unbounded.
+        PRAGMA integrity_check early-detects DB corruption.
+
+        Note: PRAGMA wal_checkpoint(TRUNCATE) may return busy > 0 under reader
+        load — this is normal, not an error. Do not raise.
+        """
+        try:
+            logger.info("[DB_MAINT] Starting SQLite ANALYZE...")
+            self.conn.execute("ANALYZE")
+            self.conn.commit()
+
+            result = self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            logger.info(
+                "[DB_MAINT] WAL checkpoint: busy=%s log=%s checkpointed=%s",
+                result[0], result[1], result[2],
+            )
+
+            ic = self.conn.execute("PRAGMA integrity_check(10)").fetchall()
+            if ic != [("ok",)]:
+                logger.error("[DB_MAINT] INTEGRITY CHECK FAILED: %s", ic)
+            else:
+                logger.info("[DB_MAINT] Integrity check OK")
+
+        except Exception as exc:
+            logger.error("[DB_MAINT] Maintenance error: %s", exc)
+            raise
+
     def close(self) -> None:
         # Flush pending buffers before closing so no rows are lost
         self.flush_wallet_obs_buffer()

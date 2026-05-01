@@ -28,10 +28,20 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.33-D111"   # ← AGENT: bump on every change  # D111: JSX Fragment fix (frontend) — backend schema already complete
+PROCESS_VERSION = "v1.1.34-D113"   # ← AGENT: bump on every change  # D113: heartbeat loop for watchdog monitoring
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
+async def _backend_heartbeat_loop() -> None:
+    """Write heartbeat every 30s so watchdog can monitor backend liveness."""
+    while True:
+        try:
+            update_heartbeat("backend")
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """
@@ -40,6 +50,7 @@ async def _lifespan(app: FastAPI):
     Shutdown: no-op (connections are per-request, no global pool to drain).
     D118: AsyncDBWriter stub added to app.state — backend is read-only, real writer
           lives in the orchestrator process.
+    D113: Backend heartbeat task added for watchdog monitoring.
     """
     os.makedirs("data", exist_ok=True)
     try:
@@ -55,7 +66,19 @@ async def _lifespan(app: FastAPI):
         logger.info("[APP] AsyncDBWriter stub wired to app.state (backend is read-only)")
     except Exception as exc:
         logger.warning("[APP] DB bootstrap warning: %s", exc)
+
+    # D113: Start heartbeat task — watchdog reads last_heartbeat_ts from process_manifest.json
+    heartbeat_task = asyncio.create_task(_backend_heartbeat_loop(), name="backend-heartbeat")
+    logger.info("[APP] Backend heartbeat task started")
+
     yield
+
+    # Shutdown: cancel heartbeat task
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
 
 
 class AsyncDBWriterStub:

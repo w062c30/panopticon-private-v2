@@ -597,6 +597,22 @@ _TIER5_EXCLUDE_SEASON_KEYWORDS = [
     "world-cup-winner", "nba-champion", "nfl-champion",
     "superbowl", "stanley-cup",
 ]
+
+# D113: Dual-strategy slug keywords for team-specific Gamma entries
+# Must have trailing dash/prefix to avoid false matches (e.g. "nba-" not "nba")
+_TIER5_SLUG_SPORTS_KEYWORDS = [
+    "nba-", "nfl-", "epl-", "premier-league-",
+    "champions-league-", "fa-cup-", "bundesliga-",
+    "will-win-the-match", "beats-", "wins-the-match",
+    "match-winner", "score-more-goals",
+]
+
+# D113: Guard against POL/crypto markets caught by slug-only match
+_TIER5_SLUG_POL_GUARD = [
+    "trump", "election", "tariff", "senate", "btc", "eth", "crypto",
+    "will-trump", "president", "government",
+]
+
 _TIER5_MAX_END_SEC = 172800  # 48h; only short LIVE sports markets
 
 
@@ -1122,21 +1138,47 @@ async def _backward_lookback(
 
 
 def _is_tier5_sports_market(m: dict) -> bool:
-    """Return True if market m is a LIVE sports market (T5)."""
+    """
+    Return True if market m is a LIVE sports market (T5).
+
+    D113: Dual-strategy detection:
+      Strategy 1: groupItemTitle / category keyword match (generic sports words)
+      Strategy 2: slug-level sports league/match keywords (team-specific Gamma entries)
+
+    Must pass at least one strategy; slug-only match requires additional POL guard.
+    """
     slug = str(m.get("slug") or m.get("conditionId") or "").lower()
 
     # Exclude long-horizon season/championship markets (NBA/FIFA/etc.)
     if any(kw in slug for kw in _TIER5_EXCLUDE_SEASON_KEYWORDS):
         return False
 
-    # Check both groupItemTitle (primary for sports from Gamma) and category
+    # Strategy 1: groupItemTitle / category keyword match (generic sports words)
     category_raw = str(
         m.get("groupItemTitle") or
         m.get("category") or
         ""
     ).lower()
-    if not any(s in category_raw for s in _TIER5_SPORTS_CATEGORIES):
+    category_match = any(s in category_raw for s in _TIER5_SPORTS_CATEGORIES)
+
+    # Strategy 2: slug-level sports league/match keywords
+    slug_match = any(kw in slug for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
+
+    # Must pass at least one strategy
+    if not (category_match or slug_match):
+        logger.debug(
+            "[T5_FILTER] rejected slug=%-40s groupItemTitle=%s category=%s",
+            slug[:40],
+            m.get("groupItemTitle", "")[:30],
+            m.get("category", "")[:20],
+        )
         return False
+
+    # D113: Guard against POL/crypto markets caught by slug-only match
+    if slug_match and not category_match:
+        if any(g in slug for g in _TIER5_SLUG_POL_GUARD):
+            return False
+
     if not m.get("active"):
         return False
 
@@ -1302,7 +1344,7 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
                 seen.add(key)
                 tier5_tokens.append(key)
         else:
-            # T5 diagnostic: count rejection reasons
+            # D113: Diagnostic — track slug-match vs category-match for validation
             slug_lc = str(m.get("slug") or "").lower()
             category_lc = str(m.get("groupItemTitle") or m.get("category") or "").lower()
             active = bool(m.get("active"))
@@ -1310,8 +1352,13 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
             reason = []
             if any(kw in slug_lc for kw in _TIER5_EXCLUDE_SEASON_KEYWORDS):
                 reason.append("season_kw")
-            if not any(s in category_lc for s in _TIER5_SPORTS_CATEGORIES):
-                reason.append(f"no_sports_cat({category_lc[:20]})")
+            # D113: dual-strategy check
+            category_match = any(s in category_lc for s in _TIER5_SPORTS_CATEGORIES)
+            slug_match = any(kw in slug_lc for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
+            if not (category_match or slug_match):
+                reason.append(f"no_sports({category_lc[:15]}|{slug_lc[:15]})")
+            elif slug_match and not category_match and any(g in slug_lc for g in _TIER5_SLUG_POL_GUARD):
+                reason.append("pol_guard")
             if not active:
                 reason.append("inactive")
             if end_iso:
@@ -2987,7 +3034,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.36-D112"   # ← AGENT: bump on every change  # D112: fix _last_pol_refresh UnboundLocalError in _live_ticks global declaration
+    PROCESS_VERSION = "v1.1.37-D113"   # ← AGENT: bump on every change  # D113: T5 dual-strategy category filter + slug keywords + POL guard
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

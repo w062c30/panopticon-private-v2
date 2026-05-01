@@ -40,7 +40,7 @@ _VERSIONS_REF = _RUN_DIR / "versions_ref.json"
 _MANIFEST = _RUN_DIR / "process_manifest.json"
 _MANIFEST_LOCK = _RUN_DIR / ".manifest.lock"
 
-VALID_PROCESS_NAMES = frozenset({"radar", "orchestrator", "backend", "frontend", "analysis_worker"})
+VALID_PROCESS_NAMES = frozenset({"radar", "orchestrator", "backend", "frontend", "analysis_worker", "watchdog"})
 
 
 # ── PID file helpers ────────────────────────────────────────────────────────────
@@ -67,6 +67,14 @@ def _is_alive(pid: int) -> bool:
             return True
     except (OSError, PermissionError):
         return False
+
+
+def is_process_alive(pid: int) -> bool:
+    """
+    Public wrapper for _is_alive().
+    Exposed for watchdog and other external consumers.
+    """
+    return _is_alive(pid)
 
 
 def _kill(pid: int, timeout: float = 5.0) -> bool:
@@ -97,6 +105,14 @@ def _kill(pid: int, timeout: float = 5.0) -> bool:
     level = logging.INFO if dead else logging.ERROR
     logger.log(level, "[guard] PID=%d dead=%s", pid, dead)
     return dead
+
+
+def is_process_alive(pid: int) -> bool:
+    """
+    Public wrapper for _is_alive().
+    Exposed for watchdog and other external consumers.
+    """
+    return _is_alive(pid)
 
 
 # ── Manifest helpers ────────────────────────────────────────────────────────────

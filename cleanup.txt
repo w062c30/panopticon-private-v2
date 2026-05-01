@@ -1,0 +1,5 @@
+Cleanup: Remove redundant debug/check scripts and commit messages from root
+
+- Removed: COMMIT_MSG*.txt (4 files)
+- Removed: _acc_check.py, _check_*.py, _diag_db.py, _q_ord.py, _snap_check.py, _test_d100.py (8 files)
+- Removed: check_db*.py, check_indent.py, check_test*.py, check_versions.py (9 files)
