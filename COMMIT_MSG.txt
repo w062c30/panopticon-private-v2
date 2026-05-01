@@ -1,0 +1,13 @@
+D103-FE + D104: MarketWatchlistPanel + pol_monitor fixes
+
+D103-FE: MarketWatchlistPanel - full-tier watchlist UI
+- Backend: fetch_active_markets_by_tier() + fetch_market_debug_stats() DAL methods
+- Backend: Updated /api/watchlist for t1-t5 + T2-POL with tier_available flags
+- Backend: /api/watchlist/market-debug-stats (DEBUG_STATS_ENABLED env var)
+- Frontend: MarketWatchlistPanel.tsx with tier filter toggles, 30s refresh
+- Frontend: App.tsx layout - panel spans xl:col-span-2
+- Frontend: TradeListPanel.tsx - overflow-x-auto + min-w-[900px]
+
+D104: pol_monitor fixes
+- pol_monitor.py: zero-data distinction (total_from_api vs count), bulk upsert
+- performance.py: removed unnecessary bootstrap() from watchlist endpoint

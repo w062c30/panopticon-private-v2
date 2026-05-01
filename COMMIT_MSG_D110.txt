@@ -1,0 +1,8 @@
+D110: volume24hr filter fix + filter debug logs
+
+- pol_monitor.py: _process_market_record now uses volume24hr (rolling 24h)
+  instead of volume (all-time cumulative), with fallback chain
+  volume24hr -> volumeNum -> volume. Also added logger.debug for
+  vol/bid threshold rejections and keyword non-matches.
+- run_radar.py: PROCESS_VERSION bumped to v1.1.34-D110
+- versions_ref.json: radar updated to v1.1.34-D110

@@ -1,0 +1,13 @@
+D103: POL+T5 watchlist monitoring + zero-data diagnostics
+
+- New DAL: fetch_active_t5_markets() - queries execution_records for T5 sports
+  markets seen in last 48h, returns total_signals/accepted/last_signal_ts/avg_ev
+- New endpoint: GET /api/watchlist - returns pol_markets[] + t5_markets[] with
+  pol_data_available and t5_data_available flags
+- New Pydantic schemas: PolMarketEntry, T5MarketEntry, WatchlistResponse
+- run_radar.py: diagnostic logs on empty POL watchlist, per-market monitoring
+  log with category/keywords/last_signal, T5 status logger on startup + POL
+  refresh cycle
+- pol_monitor.py: zero-data distinction - warns separately for (a) API returned
+  markets but none matched POL_KEYWORDS vs (b) API unreachable/empty
+- Versions bumped: backend v1.1.25-D103, radar v1.1.32-D103

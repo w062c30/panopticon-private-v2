@@ -1,16 +1,11 @@
-D119: positional→named access + cross-process AsyncDBWriter health
+D120 rules: .cursorrules + AGENTS.md + DATA_COLLECTION_PLAN update
 
-- D119-4: link_resolver_stats() caller audit — updated system_health.py and report.py to use
-  snake_case keys (mapping_count/unresolved_count/resolved_count) instead of camelCase
-- D119-3: Migrated fetch_top_trade_candidates(), fetch_trade_list(), fetch_readiness_metrics()
-  to named access with SQL aliases; removed legacy len(r) defensive check in fetch_trade_list
-- D119-2: WebSocket /ws/stream handler migrated to dict(r) for all four row sets
-  (hunting_hits, wallet_obs, tracked_wallets, raw_events)
-- D119-1: Added from typing import Any to app.py
-- D119-5: Cross-process AsyncDBWriter health — orchestrator now writes health snapshot
-  to data/async_writer_health.json every 30s; backend AsyncDBWriterStub reads this snapshot
-  so /api/async-writer-health reflects real writer state (not always False)
-
-Version bumps:
-- orchestrator: v1.1.33-D119
-- backend: v1.1.23-D119
+- .cursorrules: replaced with integrated D101-D120 Agent Hard Rules
+  (RULE-IMPORT-1/2, RULE-TIME-1, RULE-SQLITE-1, RULE-SEMAPHORE-1/2,
+   RULE-API-1, RULE-REENTRY-1, RULE-CONTRACT-1, RULE-PATH-1,
+   RULE-DEAD-1, RULE-CLOSURE-1, RULE-WS-1)
+- AGENTS.md: updated System Status (D120 versions), Technical Debt table,
+  added Coding Agent Hard Rules section aligned with .cursorrules
+- docs/DATA_COLLECTION_PLAN.md: replaced with full plan including
+  D101-D120 lessons quick-reference table, monitoring thresholds,
+  milestone timeline

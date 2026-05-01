@@ -1959,6 +1959,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     global _last_ws_diag_log_ts, _live_loop_started
     global _d75_hb_last, _d77_tick_last, _d77_tick_n
     global _d75_hb_trade_base, _d75_hb_entropy_base
+    global _last_pol_refresh  # D112: added missing declaration — crash at L2736 if absent
 
     # ── MetricsCollector: get singleton + baseline sync ──────────────────────────
     mc = _mc()
@@ -2986,7 +2987,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.34-D110"   # ← AGENT: bump on every change  # D110: volume24hr filter fix + filter debug logs
+    PROCESS_VERSION = "v1.1.36-D112"   # ← AGENT: bump on every change  # D112: fix _last_pol_refresh UnboundLocalError in _live_ticks global declaration
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

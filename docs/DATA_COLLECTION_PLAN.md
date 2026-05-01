@@ -23,21 +23,21 @@
 python run_hft_orchestrator.py
 
 # 終端 2：Backend API
-uvicorn panopticon_py.api.app:app --host 0.0.0.0 --port 8000
+uvicorn panopticon_py.api.app:app --host 0.0.0.0 --port 8001
 
 # 瀏覽器 Dashboard
-http://localhost:8000/dashboard/
+http://localhost:8001/dashboard/
 ```
 
 **啟動後立即驗證（Zero-Trust）：**
 ```bash
-curl http://localhost:8000/api/versions
+curl http://localhost:8001/api/versions
 # 期望：所有 version_match: true
 
-curl http://localhost:8000/api/async-writer-health
+curl http://localhost:8001/api/async-writer-health
 # 期望：running=true, stale=false, queue_depth < 50
 
-curl http://localhost:8000/api/t5-coverage
+curl http://localhost:8001/api/t5-coverage
 # 期望：有效數據回傳
 ```
 

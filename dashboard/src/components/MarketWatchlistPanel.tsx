@@ -50,7 +50,8 @@ function getTierMarkets(
 }
 
 function getTierCount(data: WatchlistResponse, tier: TierKey): number {
-  return getTierMarkets(data, tier).length;
+  const markets = getTierMarkets(data, tier);
+  return (markets as unknown[])?.length ?? 0;
 }
 
 // ── Main Component ───────────────────────────────────────────────────────
@@ -116,9 +117,10 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
 
   // ── Render ───────────────────────────────────────────────────────────
   return (
-    <div className="rounded-xl border border-slate-700 bg-panPanel p-4">
+    <div className="rounded-xl border border-slate-700 bg-panPanel p-4 flex flex-col"
+         style={{ maxHeight: "calc(100vh - 8rem)", overflow: "hidden" }}>
       {/* Header */}
-      <div className="mb-3 flex items-center gap-3">
+      <div className="mb-3 flex items-center gap-3 shrink-0">
         <h2 className="text-base font-semibold text-slate-100">
           市場監控清單
         </h2>
@@ -132,7 +134,7 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
       </div>
 
       {/* Tier Filter Toggles */}
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="mb-4 flex flex-wrap gap-2 shrink-0">
         {ALL_TIERS.map((tier) => {
           const active = enabledTiers.has(tier);
           return (
@@ -156,23 +158,26 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
 
       {/* States */}
       {loading && (
-        <p className="text-sm text-slate-400">載入中...</p>
+        <p className="text-sm text-slate-400 shrink-0">載入中...</p>
       )}
       {error && (
-        <p className="text-sm text-red-400">⚠ API 無回應：{error}</p>
+        <p className="text-sm text-red-400 shrink-0">⚠ API 無回應：{error}</p>
       )}
 
-      {/* Tier Sections */}
-      {data &&
-        ALL_TIERS.filter((t) => enabledTiers.has(t)).map((tier) => (
-          <TierSection
-            key={tier}
-            tier={tier}
-            data={data}
-            available={data.tier_available[tier]}
-            debugStats={debugStats}
-          />
-        ))}
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto space-y-4 min-h-0">
+        {/* Tier Sections */}
+        {data &&
+          ALL_TIERS.filter((t) => enabledTiers.has(t)).map((tier) => (
+            <TierSection
+              key={tier}
+              tier={tier}
+              data={data}
+              available={data.tier_available[tier]}
+              debugStats={debugStats}
+            />
+          ))}
+      </div>
     </div>
   );
 }
@@ -324,7 +329,7 @@ function PolRow({
         {formatRelativeTime(m.last_signal_ts ?? "")}
       </td>
       {/* Placeholder cells when debug is disabled — keeps column alignment with TierRow */}
-      {!debugStats.enabled && <td /><td /><td />}
+      {!debugStats.enabled && <><td /><td /><td /></>}
       <DebugCells marketId={m.market_id} debugStats={debugStats} />
     </tr>
   );
@@ -356,7 +361,7 @@ function TierRow({
         {formatRelativeTime(m.last_signal_ts ?? "")}
       </td>
       {/* Placeholder cells when debug is disabled — keeps column alignment with PolRow */}
-      {!debugStats.enabled && <td /><td /><td />}
+      {!debugStats.enabled && <><td /><td /><td /></>}
       <DebugCells marketId={m.market_id} debugStats={debugStats} />
     </tr>
   );
