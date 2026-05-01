@@ -713,16 +713,19 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # 7.5 T5 Sports override: no financial insider signal in sports markets
     # Use conservative 50/50 base rate (p_prior = 0.50) instead of Bayesian posterior
     # D118: Apply time-to-event decay weighting — closer to event = stronger signal
+    # D119: Use DEBUG level for passive monitoring; use grep "[SE][T5_PRIOR]" to observe
     if event.market_tier == "t5":
         tte = event.time_to_event
         if tte > 0:
             weight = _t5_time_decay_weight(time.time() + tte)
+            tte_h = tte / 3600.0
         else:
             weight = 0.30  # unknown expiry → conservative minimum
+            tte_h = -1.0
         posterior = 0.50 * weight
-        logger.info(
-            "[SE][T5_SPORTS] sports market=%s tte=%.0fs weight=%.2f p_prior=%.4f",
-            market_id, tte, weight, posterior,
+        logger.debug(
+            "[SE][T5_PRIOR] market=%s tte_h=%.1f weight=%.2f prior=%.4f",
+            market_id, tte_h, weight, posterior,
         )
 
     # 8. Build FastSignalInput

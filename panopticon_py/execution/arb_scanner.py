@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.2.0-D118"
+PROCESS_VERSION = "v0.3.0-D119"
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -119,13 +119,22 @@ def _is_tier5_sports_market(m: dict) -> bool:
     return True
 
 
-async def fetch_t5_market_ids() -> list[str]:
+async def fetch_t5_token_ids() -> tuple[list[str], list[str]]:
     """
-    D118-1: Fetch active T5 sports market_ids from Gamma API.
-    Returns list of Polymarket market_id strings that pass _is_tier5_sports_market.
+    D119-P0: Fetch active T5 sports CLOB token_ids from Gamma API.
+
+    Returns:
+        (token_ids, market_ids) — both lists of strings.
+        - token_ids: used for CLOB WS subscription (clobTokenIds[0])
+        - market_ids: condition_id for logging/debugging
+
+    Polymarket CLOB WS subscription field is "assets_ids" = clobTokenIds array,
+    NOT the market condition_id. Using wrong ID results in silent WS drop.
     """
+    token_ids: list[str] = []
     market_ids: list[str] = []
-    seen: set[str] = set()
+    seen_tokens: set[str] = set()
+    seen_markets: set[str] = set()
     try:
         base = os.getenv("GAMMA_PUBLIC_API_BASE", "https://gamma-api.polymarket.com").strip()
         path = os.getenv("GAMMA_PUBLIC_MARKETS_PATH", "/markets").strip()
@@ -135,21 +144,50 @@ async def fetch_t5_market_ids() -> list[str]:
         markets = resp.json()
     except Exception as e:
         logger.warning("[ARB] Failed to fetch T5 markets from Gamma: %s", e)
-        return []
+        return [], []
 
     if not isinstance(markets, list):
-        return []
+        return [], []
 
     for m in markets:
         if not isinstance(m, dict):
             continue
         if _is_tier5_sports_market(m):
+            # Extract CLOB token IDs (NOT the condition_id market id)
+            raw_tids = m.get("clobTokenIds") or m.get("clob_token_ids") or []
+            if isinstance(raw_tids, str):
+                try:
+                    raw_tids = json.loads(raw_tids)
+                except json.JSONDecodeError:
+                    raw_tids = []
+            elif not isinstance(raw_tids, list):
+                raw_tids = [raw_tids]
+
+            # Use first token (YES outcome) for subscription
+            tid_raw = raw_tids[0] if raw_tids else None
+            # D119-P0: Gamma API returns token_id as decimal integer string
+            # (e.g. "43891259347116330522865864075089973515827852946539612217753302847337982135578")
+            # JSON parser may treat it as str if it overflows int precision.
+            # Convert to 0x hex for CLOB WS subscription.
+            if isinstance(tid_raw, int):
+                tid_str = "0x" + hex(tid_raw)[2:]
+            elif isinstance(tid_raw, str) and tid_raw.isdigit():
+                # Large decimal string → convert via int then to 0x hex
+                tid_str = "0x" + hex(int(tid_raw))[2:]
+            elif isinstance(tid_raw, str) and tid_raw.startswith("0x"):
+                tid_str = tid_raw  # already hex
+            else:
+                tid_str = str(tid_raw).strip() if tid_raw is not None else ""
             mid = str(m.get("id") or m.get("market_id") or "")
-            if mid and mid not in seen:
-                seen.add(mid)
+
+            if tid_str and tid_str not in seen_tokens:
+                seen_tokens.add(tid_str)
+                token_ids.append(tid_str)
+            if mid and mid not in seen_markets:
+                seen_markets.add(mid)
                 market_ids.append(mid)
 
-    return market_ids
+    return token_ids, market_ids
 
 
 # ---------------------------------------------------------------------------
@@ -185,30 +223,45 @@ class ArbScanner:
 
     async def run(self) -> None:
         """
-        D118-1: Main entry point.
-        Auto-discovers T5 market IDs from Gamma API, refreshes every 60s.
+        D119-P0: Main entry point.
+        Auto-discovers T5 token_ids from Gamma API (CLOB WS uses token_id, NOT condition_id).
+        Refreshes every 60s.
         """
         from panopticon_py.utils.process_guard import acquire_singleton
         acquire_singleton("arb_scanner", PROCESS_VERSION)
 
         logger.info("[ARB] Starting ArbScanner paper_mode=%s auto_refresh=%ds",
                     PAPER_MODE, self._refresh_interval)
-        current_mids: list[str] = []
+        current_token_ids: list[str] = []
+        current_market_ids: list[str] = []
 
         while True:
             try:
-                # ── Step 1: Auto-discover T5 market IDs ──────────────────────────
-                new_mids = await fetch_t5_market_ids()
-                if new_mids:
-                    current_mids = new_mids
-                    logger.info("[ARB] Discovered %d T5 markets via Gamma API", len(current_mids))
-                elif not current_mids:
-                    logger.warning("[ARB] No T5 markets found; retrying in 30s…")
+                # ── Step 1: Auto-discover T5 token_ids (CLOB WS format) ───────────
+                token_ids, market_ids = await fetch_t5_token_ids()
+                if token_ids:
+                    current_token_ids = token_ids
+                    current_market_ids = market_ids
+                    logger.info("[ARB] Discovered %d T5 token_ids (%d markets) via Gamma API",
+                                len(current_token_ids), len(current_market_ids))
+                    # D119-P0: [ARB_INIT] format validation
+                    # Valid CLOB token_id = "0x" + 64 hex chars = 66 total chars
+                    sample = current_token_ids[:3]
+                    all_valid = all(len(t) == 66 and t.startswith("0x") for t in current_token_ids)
+                    invalid = [t for t in current_token_ids if not (len(t) == 66 and t.startswith("0x"))]
+                    logger.info(
+                        "[ARB_INIT] token_ids=%d sample=%s all_valid_format=%s",
+                        len(current_token_ids), sample, all_valid,
+                    )
+                    if invalid:
+                        logger.warning("[ARB_INIT] %d invalid token_ids: %s", len(invalid), invalid[:5])
+                elif not current_token_ids:
+                    logger.warning("[ARB] No T5 token_ids found; retrying in 30s…")
                     await asyncio.sleep(30)
                     continue
 
-                # ── Step 2: Run WS listener with current_mids ─────────────────────
-                await self._connect_and_listen(current_mids)
+                # ── Step 2: Run WS listener with CLOB token_ids ────────────────────
+                await self._connect_and_listen(current_token_ids)
 
             except asyncio.CancelledError:
                 raise
@@ -216,13 +269,14 @@ class ArbScanner:
                 logger.warning("[ARB] Error in run loop: %s; reconnecting in 10s…", e)
                 await asyncio.sleep(10)
 
-    async def _connect_and_listen(self, market_ids: list[str]) -> None:
+    async def _connect_and_listen(self, token_ids: list[str]) -> None:
         import websockets
-        sub_msg = {"type": "subscribe", "markets": market_ids}
+        # D119-P0: Polymarket CLOB WS uses "assets_ids" field (clobTokenIds, NOT condition_ids)
+        sub_msg = {"type": "subscribe", "assets_ids": token_ids}
         async with websockets.connect(ARB_WS_URL, ping_interval=20) as ws:
             self._ws = ws
             await ws.send(json.dumps(sub_msg))
-            logger.info("[ARB] Subscribed to %d markets via WebSocket", len(market_ids))
+            logger.info("[ARB] Subscribed to %d token_ids via WebSocket (assets_ids format)", len(token_ids))
             async for raw in ws:
                 from panopticon_py.utils.process_guard import update_heartbeat
                 update_heartbeat("arb_scanner")
