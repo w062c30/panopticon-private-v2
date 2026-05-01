@@ -551,6 +551,9 @@ _radar_db: ShadowDB | None = None
 # Used by SignalEvent.market_tier when entropy fires
 _token_tier_map: dict[str, str] = {}  # token_id -> "t1"|"t2"|"t3"|"t5"
 
+# Token → market endtime (Unix timestamp, for T5 time-decay weighting)
+_token_endtime_map: dict[str, float] = {}  # token_id -> endDate Unix ts
+
 # Token → slug mapping (for T1 window tracking + pruning)
 _token_to_slug_map: dict[str, str] = {}  # token_id -> slug (e.g. "btc-updown-5m-1777018200")
 
@@ -627,7 +630,32 @@ _TIER5_SLUG_POL_GUARD = [
     "will-trump", "president", "government",
 ]
 
-_TIER5_MAX_END_SEC = 172800  # 48h; only short LIVE sports markets
+_TIER5_MAX_END_SEC = 3888000   # 45 days; D117: championship/semifinal markets settle in 1-6 weeks
+
+
+def _t5_time_decay_weight(end_time_ts: float) -> float:
+    """
+    D117: Time-to-event decay weight for T5 scoring.
+    Closer to event = stronger Smart Money signal.
+
+    time_to_event:  < 6h   → weight 1.0  (live/in-play, strongest signal)
+    time_to_event:  6–24h  → weight 0.85 (pre-game, near term)
+    time_to_event:  1–3d   → weight 0.65 (pre-game, medium term)
+    time_to_event:  3–7d   → weight 0.45 (pre-game, longer term)
+    time_to_event:  > 7d   → weight 0.30 (speculative, championship markets)
+    """
+    now = time.time()
+    tte_hours = max(0.0, (end_time_ts - now) / 3600.0)
+    if tte_hours < 6:
+        return 1.0
+    elif tte_hours < 24:
+        return 0.85
+    elif tte_hours < 72:
+        return 0.65
+    elif tte_hours < 168:
+        return 0.45
+    else:
+        return 0.30
 
 
 def _is_tier1_market(m: dict) -> bool:
@@ -1188,13 +1216,12 @@ def _is_tier5_sports_market(m: dict) -> bool:
         )
         return False
 
-    # D113: Guard against POL/crypto markets caught by slug-only match
+    # Guard against POL/crypto markets caught by slug-only match
     if slug_match and not category_match:
         if any(g in slug for g in _TIER5_SLUG_POL_GUARD):
+            # Pol-guard blocked — return False so else-branch counts it
             return False
-
-    if not m.get("active"):
-        return False
+        # slug_only passed — continue to active/expiry checks
 
     # T5 is only for short-horizon LIVE sports markets (<= 48h to settlement)
     end_iso = m.get("endDateIso") or ""
@@ -1335,11 +1362,23 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
     seen: set[str] = set()
     tier5_count = 0
     raw_markets_count = 0
-    diag_rejects: dict[str, int] = {}
+    # D117: Per-reason counters for detailed diagnostic
+    diag: dict[str, int] = {
+        "category_only": 0,
+        "slug_only": 0,
+        "pol_guard": 0,
+        "season_kw": 0,
+        "inactive": 0,
+        "expiry>45d": 0,
+        "bad_expiry": 0,
+    }
+    pol_guard_examples: list[str] = []
+    slug_only_examples: list[str] = []
     for m in markets:
         if not isinstance(m, dict):
             continue
         raw_markets_count += 1
+        slug_lc = str(m.get("slug") or "").lower()
         if _is_tier5_sports_market(m):
             tier5_count += 1
             raw_tids = m.get("clobTokenIds") or m.get("clob_token_ids") or []
@@ -1351,33 +1390,9 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
                     raw_tids = []
             elif not isinstance(raw_tids, list):
                 raw_tids = [raw_tids]
-            for tid in raw_tids:
-                key = str(tid).strip() if tid is not None else ""
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                tier5_tokens.append(key)
-        else:
-            # D113: Diagnostic — track slug-match vs category-match for validation
-            slug_lc = str(m.get("slug") or "").lower()
-            category_lc = str(m.get("groupItemTitle") or m.get("category") or "").lower()
-            active = bool(m.get("active"))
+            # D117: cache endtime for T5 time-decay weighting
+            end_ts = 0.0
             end_iso = m.get("endDateIso") or ""
-            reason = []
-            if any(kw in slug_lc for kw in _TIER5_EXCLUDE_SEASON_KEYWORDS):
-                reason.append("season_kw")
-            # D113: dual-strategy check
-            category_match = any(s in category_lc for s in _TIER5_SPORTS_CATEGORIES)
-            slug_match = any(kw in slug_lc for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
-            if not (category_match or slug_match):
-                reason.append(f"no_sports({category_lc[:15]}|{slug_lc[:15]})")
-            elif slug_match and not category_match:
-                if any(g in slug_lc for g in _TIER5_SLUG_POL_GUARD):
-                    reason.append("pol_guard")
-                else:
-                    reason.append("slug_only")  # D116: slug matched but filter rejected
-            if not active:
-                reason.append("inactive")
             if end_iso:
                 try:
                     end_dt_raw = end_iso.replace("Z", "+00:00")
@@ -1388,29 +1403,68 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
                         offset = end_dt.utcoffset()
                         if offset is not None:
                             end_dt = (end_dt.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
-                    delta_sec = (end_dt - datetime.now(timezone.utc)).total_seconds()
-                    if delta_sec > _TIER5_MAX_END_SEC:
-                        reason.append("expiry>48h")
+                    end_ts = end_dt.timestamp()
                 except (ValueError, TypeError):
-                    reason.append("bad_expiry")
-            key_reason = "|".join(reason) if reason else "unknown"
-            diag_rejects[key_reason] = diag_rejects.get(key_reason, 0) + 1
+                    pass
+            for tid in raw_tids:
+                key = str(tid).strip() if tid is not None else ""
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                tier5_tokens.append(key)
+                _token_endtime_map[key] = end_ts
+        else:
+            # D117: Detailed rejection reason tracking
+            category_lc = str(m.get("groupItemTitle") or m.get("category") or "").lower()
+            category_match = any(s in category_lc for s in _TIER5_SPORTS_CATEGORIES)
+            slug_match = any(kw in slug_lc for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
+            active = bool(m.get("active"))
 
-    logger.info("[L1_TIER5_DIAG] raw=%d tier5=%d  rejects: %s",
-                 raw_markets_count, tier5_count,
-                 dict(sorted(diag_rejects.items(), key=lambda x: -x[1])[:5]))
+            if any(kw in slug_lc for kw in _TIER5_EXCLUDE_SEASON_KEYWORDS):
+                diag["season_kw"] += 1
+            elif slug_match and not category_match:
+                if any(g in slug_lc for g in _TIER5_SLUG_POL_GUARD):
+                    diag["pol_guard"] += 1
+                    if len(pol_guard_examples) < 3:
+                        pol_guard_examples.append(slug_lc[:60])
+                else:
+                    diag["slug_only"] += 1
+                    if len(slug_only_examples) < 3:
+                        slug_only_examples.append(slug_lc[:60])
+            elif category_match:
+                # Category matched but rejected by another filter
+                diag["category_only"] += 1
 
-    # D116: Log when slug-match catches a market (useful for keyword validation)
-    slug_hits = sum(
-        1 for m in markets
-        if isinstance(m, dict)
-        and not _is_tier5_sports_market(m)
-        and any(kw in str(m.get("slug") or "").lower() for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
-        and not any(s in str(m.get("groupItemTitle") or m.get("category") or "").lower()
-                   for s in _TIER5_SPORTS_CATEGORIES)
+            if not active:
+                diag["inactive"] += 1
+            if active:
+                end_iso = m.get("endDateIso") or ""
+                if end_iso:
+                    try:
+                        end_dt_raw = end_iso.replace("Z", "+00:00")
+                        end_dt = datetime.fromisoformat(end_dt_raw)
+                        if end_dt.tzinfo is None:
+                            end_dt = end_dt.replace(tzinfo=timezone.utc)
+                        else:
+                            offset = end_dt.utcoffset()
+                            if offset is not None:
+                                end_dt = (end_dt.replace(tzinfo=None) - offset).replace(tzinfo=timezone.utc)
+                        delta_sec = (end_dt - datetime.now(timezone.utc)).total_seconds()
+                        if delta_sec > _TIER5_MAX_END_SEC:
+                            diag["expiry>45d"] += 1
+                    except (ValueError, TypeError):
+                        diag["bad_expiry"] += 1
+
+    logger.info(
+        "[L1_TIER5_DIAG] raw=%d tier5=%d | cat=%d slug=%d pol=%d season=%d inactive=%d expiry=%d bad=%d",
+        raw_markets_count, tier5_count,
+        diag["category_only"], diag["slug_only"], diag["pol_guard"],
+        diag["season_kw"], diag["inactive"], diag["expiry>45d"], diag["bad_expiry"],
     )
-    if slug_hits > 0:
-        logger.info("[L1_TIER5_DIAG] slug-match caught %d markets (POL-guard may filter some)", slug_hits)
+    if pol_guard_examples:
+        logger.info("[L1_TIER5_DIAG] pol_guard examples: %s", pol_guard_examples)
+    if slug_only_examples:
+        logger.info("[L1_TIER5_DIAG] slug_only examples: %s", slug_only_examples)
 
     if tier5_count > 0:
         logger.info(
@@ -2677,6 +2731,12 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                             ts_part = slug.rsplit("-", 1)[-1]
                             series_id = slug.rsplit(f"-{ts_part}", 1)[0] if ts_part.isdigit() else slug
                             window_ts = int(ts_part) if ts_part.isdigit() else 0
+                        # D117: T5 time-decay weighting
+                        time_to_event = 0.0
+                        if tier == "t5":
+                            end_ts = _token_endtime_map.get(token_id, 0.0)
+                            if end_ts > 0:
+                                time_to_event = max(0.0, end_ts - time.time())
                         await signal_queue.put(SignalEvent(
                             source="radar",
                             market_id=market_id,
@@ -2687,6 +2747,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                             market_tier=tier,
                             series_id=series_id,
                             window_ts=window_ts,
+                            time_to_event=time_to_event,
                         ))
                         logger.debug("[RADAR→SE] entropy_z=%.2f market=%s queued", z_score[1], market_id)
                     else:
@@ -3063,7 +3124,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.38-D116"   # ← AGENT: bump on every change  # D116: extend T5 slug keywords + diagnostic log refinement
+    PROCESS_VERSION = "v1.1.39-D117"   # ← AGENT: bump on every change  # D117: fix _TIER5_MAX_END_SEC 48h→45d; root cause was championship markets settle >7d
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

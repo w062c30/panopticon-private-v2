@@ -150,6 +150,7 @@ class SignalEvent:
     market_tier: str = "t3"   # "t1"|"t2"|"t3"|"t5" — used for p_prior override
     series_id: str = ""      # e.g. "btc-updown-5m", "iran-peace-deal" — D21 metadata
     window_ts: int = 0      # Unix timestamp of T1 window start (0 if not T1)
+    time_to_event: float = 0.0  # seconds until market settlement (T5 weighting)
 
     @property
     def z(self) -> float:
