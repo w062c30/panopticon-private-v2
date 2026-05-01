@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.4.0-D120"
+PROCESS_VERSION = "v0.5.0-D121"   # ← AGENT: bump on every change  # D121-2: fee rate dynamic query with 300 bps filter
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -222,6 +222,92 @@ class ArbScanner:
     _ws: object = field(default=None, init=False, repr=False)
     _refresh_interval: int = field(default=60, init=False)
     _last_stats_log: float = field(default_factory=time.time, init=False)
+    # D121-2: Fee rate filter
+    _original_token_ids: list[str] = field(default_factory=list, init=False)
+    _fee_rates: dict[str, int] = field(default_factory=dict, init=False)
+    _http_session: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
+    _fee_semaphore: asyncio.Semaphore = field(init=False, repr=False)
+    _refresh_started: bool = field(default=False, init=False)
+
+    async def _fetch_fee_rates(self, token_ids: list[str]) -> dict[str, int]:
+        """
+        D121-2: Batch query fee rates for given token_ids.
+        Uses Semaphore(10) to limit concurrent requests.
+        Defaults to 0 bps on failure (don't exclude on error).
+        """
+        if not token_ids:
+            return {}
+        if self._fee_semaphore is None:
+            self._fee_semaphore = asyncio.Semaphore(10)
+
+        async def _query_one(tid: str) -> tuple[str, int]:
+            async with self._fee_semaphore:
+                try:
+                    url = f"https://clob.polymarket.com/fee-rate?token_id={tid}"
+                    resp = await self._http_session.get(url, timeout=5.0)
+                    try:
+                        if resp.status_code == 404:
+                            # CLOB V2: fee not explicitly set — use sports default (30 bps)
+                            return tid, 30
+                        if resp.status_code == 401:
+                            logger.warning(
+                                "[ARB_FEE] 401 on fee-rate for %s — need CLOB auth header?",
+                                tid[:20],
+                            )
+                            return tid, 30  # default to sports rate on auth error
+                        data = resp.json()
+                        # V2 format: {"base_fee": 30}, legacy: {"fee_rate_bps": 30}
+                        bps = int(data.get("base_fee") or data.get("fee_rate_bps") or 30)
+                        # Brief pause between batches to avoid rate limit
+                        await asyncio.sleep(0.1)
+                        return tid, bps
+                    finally:
+                        await resp.aclose()
+                except Exception as e:
+                    logger.debug("[ARB_FEE] query failed for %s: %s", tid[:20], e)
+                    return tid, 0
+
+        logger.info("[ARB_FEE] Querying fee rates for %d tokens", len(token_ids))
+        results = await asyncio.gather(*[_query_one(tid) for tid in token_ids])
+        rates = dict(results)
+        logger.info("[ARB_FEE] Got %d fee rates", len(rates))
+        return rates
+
+    async def _apply_fee_filter(self, token_ids: list[str]) -> list[str]:
+        """
+        D121-2: Filter out tokens with fee_rate_bps > 300.
+        Stores fee rates in self._fee_rates for observability.
+        """
+        rates = await self._fetch_fee_rates(token_ids)
+        self._fee_rates = rates
+
+        excluded = [tid for tid, bps in rates.items() if bps > 300]
+        if excluded:
+            logger.info(
+                "[ARB_FEE] Excluded %d tokens with fee_rate_bps > 300: %s",
+                len(excluded),
+                [tid[:20] for tid in excluded[:5]],
+            )
+
+        kept = [tid for tid in token_ids if rates.get(tid, 0) <= 300]
+        logger.info(
+            "[ARB_FEE_SUMMARY] total=%d kept=%d excluded=%d",
+            len(token_ids), len(kept), len(excluded),
+        )
+        return kept
+
+    async def _fee_rate_refresh_loop(self) -> None:
+        """
+        D121-2: Refresh fee rates every 6 hours and reapply filter.
+        Runs as a background task inside the main loop.
+        """
+        while True:
+            await asyncio.sleep(6 * 3600)
+            if self._original_token_ids:
+                logger.info("[ARB_FEE_REFRESH] Refreshing fee rates for %d tokens", len(self._original_token_ids))
+                filtered = await self._apply_fee_filter(self._original_token_ids)
+                self._original_token_ids = filtered
+                logger.info("[ARB_FEE_REFRESH] Done, active tokens: %d", len(filtered))
 
     async def run(self) -> None:
         """
@@ -231,6 +317,10 @@ class ArbScanner:
         """
         from panopticon_py.utils.process_guard import acquire_singleton
         acquire_singleton("arb_scanner", PROCESS_VERSION)
+
+        # D121-2: Create HTTP session for fee rate queries
+        self._http_session = httpx.AsyncClient(timeout=10.0)
+        self._fee_semaphore = asyncio.Semaphore(10)
 
         logger.info("[ARB] Starting ArbScanner paper_mode=%s auto_refresh=%ds",
                     PAPER_MODE, self._refresh_interval)
@@ -247,6 +337,25 @@ class ArbScanner:
                     current_market_ids = market_ids
                     logger.info("[ARB] Discovered %d T5 token_ids (%d markets) via Gamma API",
                                 len(current_token_ids), len(current_market_ids))
+                    # D121-2: Apply fee rate filter before subscribing
+                    try:
+                        current_token_ids = await self._apply_fee_filter(current_token_ids)
+                        if not current_token_ids:
+                            logger.warning("[ARB] All tokens filtered out by fee rate; retrying in 30s…")
+                            await asyncio.sleep(30)
+                            continue
+                        # D121-2: Store for 6h refresh loop
+                        self._original_token_ids = current_token_ids
+                        # Start background refresh loop (only once)
+                        if not hasattr(self, "_refresh_started") or not self._refresh_started:
+                            self._refresh_started = True
+                            asyncio.create_task(self._fee_rate_refresh_loop())
+                    except Exception as e:
+                        logger.warning("[ARB_FEE] Fee filter failed, using unfiltered list: %s", e)
+                        self._original_token_ids = current_token_ids
+                        if not hasattr(self, "_refresh_started") or not self._refresh_started:
+                            self._refresh_started = True
+                            asyncio.create_task(self._fee_rate_refresh_loop())
                     # D119-P0: [ARB_INIT] format validation
                     # Valid CLOB token_id = "0x" + 64 hex chars = 66 total chars
                     sample = current_token_ids[:3]
