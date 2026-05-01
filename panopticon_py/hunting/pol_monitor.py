@@ -108,14 +108,28 @@ def _process_market_record(
     if any(seg in slug for seg in _EXCLUDE_SLUG_SEGMENTS):
         return False
     try:
-        vol      = float(m.get("volume")  or 0)
+        # D110: use volume24hr (rolling 24h) instead of volume (all-time cumulative)
+        # Fall back to volumeNum, then volume — matching _refresh_tier2_tokens strategy
+        vol = float(
+            m.get("volume24hr")
+            if m.get("volume24hr") is not None
+            else (m.get("volumeNum") or m.get("volume") or 0)
+        )
         best_bid = float(m.get("bestBid") or 0.5)
     except (ValueError, TypeError):
         return False
     if vol < 5000 or best_bid >= 0.99 or best_bid <= 0.01:
+        logger.debug(
+            "[POL_FILTER] rejected slug=%s vol=%.0f vol24h=%s bid=%.3f",
+            slug[:40],
+            vol,
+            m.get("volume24hr"),
+            best_bid,
+        )
         return False
     matched_kw = [kw for kw in POL_KEYWORDS if kw in slug]
     if not matched_kw:
+        logger.debug("[POL_FILTER] no_keyword_match slug=%s", slug[:40])
         return False
     market_id = m.get("conditionId") or m.get("id") or ""
     if not market_id:

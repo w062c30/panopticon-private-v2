@@ -2986,7 +2986,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.32-D103"   # ← AGENT: bump on every change  # D103: diagnostic logs for POL/T5 watchlist + T5 market status logger
+    PROCESS_VERSION = "v1.1.34-D110"   # ← AGENT: bump on every change  # D110: volume24hr filter fix + filter debug logs
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
