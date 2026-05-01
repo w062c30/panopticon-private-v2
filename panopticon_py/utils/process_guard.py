@@ -107,14 +107,6 @@ def _kill(pid: int, timeout: float = 5.0) -> bool:
     return dead
 
 
-def is_process_alive(pid: int) -> bool:
-    """
-    Public wrapper for _is_alive().
-    Exposed for watchdog and other external consumers.
-    """
-    return _is_alive(pid)
-
-
 # ── Manifest helpers ────────────────────────────────────────────────────────────
 
 def _read_manifest() -> dict:
@@ -279,6 +271,9 @@ def update_heartbeat(name: str) -> None:
     """
     Update the last_heartbeat_ts field in process_manifest.json for the given process.
     Called periodically by each process to indicate liveness beyond start_time.
+
+    D115: If name not yet in manifest (e.g., watchdog just started), bootstrap a
+    minimal entry so the heartbeat update does not silently fail.
     """
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + 3.0
@@ -287,11 +282,19 @@ def update_heartbeat(name: str) -> None:
     _MANIFEST_LOCK.touch()
     try:
         manifest = _read_manifest()
-        if name in manifest:
-            manifest[name]["last_heartbeat_ts"] = datetime.now(timezone.utc).isoformat()
-            tmp = _MANIFEST.with_suffix(".tmp")
-            tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-            tmp.replace(_MANIFEST)
+        if name not in manifest:
+            # D115: Bootstrap entry so new processes can write heartbeat
+            manifest[name] = {
+                "pid": os.getpid(),
+                "version": "unknown",
+                "status": "running",
+            }
+            logger.debug("[guard] update_heartbeat: bootstrapped entry for %s", name)
+        manifest[name]["last_heartbeat_ts"] = datetime.now(timezone.utc).isoformat()
+        manifest[name]["pid"] = os.getpid()  # keep pid current
+        tmp = _MANIFEST.with_suffix(".tmp")
+        tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        tmp.replace(_MANIFEST)
     except Exception as exc:
         logger.error("[guard] update_heartbeat: failed to update %s: %s", name, exc)
     finally:
