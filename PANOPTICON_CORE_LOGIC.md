@@ -1,7 +1,7 @@
 # 👁️ Project Panopticon: Core Trading Logic & Architectural Invariants
-# Version: 2.8
-# Last Updated: 2026-04-30
-# Changelog: v2.8 — D101 T2-POL political market monitor (pol_monitor.py, pol_market_watchlist); signal_engine T2-POL logging; CORE_LOGIC Invariant 1.4 updated
+# Version: 2.9
+# Last Updated: 2026-05-01
+# Changelog: v2.9 — D107 execution_records.market_tier completeness fix (Invariant 7.1 added)
 # Changelog: v2.6 — D81 Identity Coverage Log + Transfer Entropy Cache; Invariant 4.2 修訂（背景計算白名單 + TE bool-only 約束）
 # Changelog: v2.4 — D29 WS snapshot staleness fix (mc.on_ws_message); T1 KeyError(token_id) fix; T1 prefetch 3->5; NTP sync (ntplib); subscription cache guard; whale_scanner CLOB depth + thin-book signal; D30 kyle_lambda pending-price root-cause fix; PANOPTICON_WHALE default on
 # Changelog: v2.3 — D26 hook wiring complete; D27 persistent WS (_ws_runner); D27 T1 startup init; D28 SKIP investigation (see notes); Phase 5 whale_scanner.py foundation added
@@ -132,6 +132,18 @@
     4. O(1) 讀取的背景快取確定值（如 ping_ms、fee_rate）
     
     任何違反以上條件的數值注入，均視為對本系統理論基礎的致命破壞。
+
+---
+
+## 🛡️ Invariant 7 — Data & Schema Integrity (D107)
+
+* **[Invariant 7.1] `execution_records.market_tier` completeness**：
+All `append_execution_record()` calls must include `market_tier` in the INSERT dict.
+When the field is absent, the DB silently writes DEFAULT `'t3'`, causing all tier-segmented
+queries (`fetch_active_markets_by_tier`, `fetch_t5_coverage_summary`, D103-FE WatchlistPanel)
+to return incorrect results.
+Verification: `scripts/verify_d107.py`
+Fix history: D107 (2026-05-01)
 
 ---
 

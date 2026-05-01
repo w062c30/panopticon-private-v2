@@ -75,6 +75,9 @@ MIN_ENTROPY_Z_THRESHOLD = float(os.getenv("MIN_ENTROPY_Z_THRESHOLD", "-4.0"))
 DEFAULT_CAPITAL = 100.0
 KELLY_FRACTION = 0.25
 
+# D108: Schema-sync constant — must match execution_records CHECK constraint
+_VALID_EXECUTION_SOURCES: frozenset[str] = frozenset({"radar", "ofi"})
+
 # ---------------------------------------------------------------------------
 # Shadow Mode Parameters (Phase 2 data collection acceleration)
 # ---------------------------------------------------------------------------
@@ -534,10 +537,9 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     z = event.z
     market_id = event.market_id
 
-    # D107-2: Source validation — must match execution_records CHECK constraint
-    _VALID_SOURCES = {"radar", "ofi"}  # Sync with SCHEMA_SQL CHECK constraint
-    safe_source = event.source if event.source in _VALID_SOURCES else "radar"
-    if event.source not in _VALID_SOURCES:
+    # D107-2/D108: Source validation — must match execution_records CHECK constraint
+    safe_source = event.source if event.source in _VALID_EXECUTION_SOURCES else "radar"
+    if event.source not in _VALID_EXECUTION_SOURCES:
         logger.warning(
             "[SE] Unknown source=%r for market=%s — defaulting to 'radar'",
             event.source, market_id
@@ -824,7 +826,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             reason=clob_result.reason if not clob_result.accepted else None,
         )
 
-    log_msg = (f"[SE][{event.source}] market={market_id} z={z:.2f} "
+    log_msg = (f"[SE][{safe_source}] market={market_id} z={z:.2f} "
                f"sources={len(sources)} posterior={posterior:.3f} "
                f"action={action} reason={reason}")
     if action == "BUY":
