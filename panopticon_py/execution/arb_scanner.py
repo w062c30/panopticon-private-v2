@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.3.0-D119"
+PROCESS_VERSION = "v0.4.0-D120"
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -170,10 +170,9 @@ async def fetch_t5_token_ids() -> tuple[list[str], list[str]]:
             # JSON parser may treat it as str if it overflows int precision.
             # Convert to 0x hex for CLOB WS subscription.
             if isinstance(tid_raw, int):
-                tid_str = "0x" + hex(tid_raw)[2:]
+                tid_str = "0x" + hex(tid_raw)[2:].zfill(64)
             elif isinstance(tid_raw, str) and tid_raw.isdigit():
-                # Large decimal string → convert via int then to 0x hex
-                tid_str = "0x" + hex(int(tid_raw))[2:]
+                tid_str = "0x" + hex(int(tid_raw))[2:].zfill(64)
             elif isinstance(tid_raw, str) and tid_raw.startswith("0x"):
                 tid_str = tid_raw  # already hex
             else:
@@ -218,8 +217,11 @@ class ArbScanner:
         default_factory=lambda: defaultdict(dict)
     )
     opportunities_log: list[ArbOpportunity] = field(default_factory=list)
+    # D120-P2: Track per-token book update frequency
+    _update_counter: dict[str, int] = field(default_factory=dict)
     _ws: object = field(default=None, init=False, repr=False)
     _refresh_interval: int = field(default=60, init=False)
+    _last_stats_log: float = field(default_factory=time.time, init=False)
 
     async def run(self) -> None:
         """
@@ -240,6 +242,7 @@ class ArbScanner:
                 # ── Step 1: Auto-discover T5 token_ids (CLOB WS format) ───────────
                 token_ids, market_ids = await fetch_t5_token_ids()
                 if token_ids:
+                    self._token_ids = token_ids  # store for stats tracking
                     current_token_ids = token_ids
                     current_market_ids = market_ids
                     logger.info("[ARB] Discovered %d T5 token_ids (%d markets) via Gamma API",
@@ -284,12 +287,24 @@ class ArbScanner:
                     data = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                await self._on_message(data)
+                # D120: Polymarket WS sends both dict messages and list batches
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            await self._on_message(item)
+                elif isinstance(data, dict):
+                    await self._on_message(data)
 
     async def _on_message(self, data: dict) -> None:
-        market_id = data.get("market_id")
-        if not market_id or not isinstance(data, dict):
+        # D120: Guard against missing market_id
+        market_id = data.get("market_id") if isinstance(data, dict) else None
+        if not market_id:
             return
+
+        # D120-P2: Track book update frequency per token
+        token_id = data.get("asset_id") or market_id
+        if token_id:
+            self._update_counter[token_id] = self._update_counter.get(token_id, 0) + 1
 
         if "best_ask" in data:
             outcome = data.get("outcome", "YES")
@@ -299,6 +314,19 @@ class ArbScanner:
             except (ValueError, TypeError):
                 return
             self.books[market_id][outcome] = PriceLevel(price=price, size=size)
+
+        # D120-P2: Log stats summary every 60 seconds
+        now = time.time()
+        if now - self._last_stats_log >= 60.0:
+            total_updates = sum(self._update_counter.values())
+            active_tokens = len([v for v in self._update_counter.values() if v > 0])
+            total_subscribed = getattr(self, "_token_ids", None)
+            n_subscribed = len(total_subscribed) if total_subscribed else 0
+            logger.info(
+                "[ARB_STATS] total_updates=%d active_tokens=%d/%d elapsed_s=%.0f",
+                total_updates, active_tokens, n_subscribed, now - self._last_stats_log,
+            )
+            self._last_stats_log = now
 
         await self._check_arb(market_id)
 

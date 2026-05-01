@@ -40,7 +40,7 @@ _VERSIONS_REF = _RUN_DIR / "versions_ref.json"
 _MANIFEST = _RUN_DIR / "process_manifest.json"
 _MANIFEST_LOCK = _RUN_DIR / ".manifest.lock"
 
-VALID_PROCESS_NAMES = frozenset({"radar", "orchestrator", "backend", "frontend", "analysis_worker", "watchdog"})
+VALID_PROCESS_NAMES = frozenset({"radar", "orchestrator", "backend", "frontend", "analysis_worker", "watchdog", "arb_scanner"})
 
 
 # ── PID file helpers ────────────────────────────────────────────────────────────
