@@ -156,21 +156,23 @@ def _restart_process(name: str, config: dict) -> None:
 
     log_path = Path(config["log"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_fh = open(log_path, "a")
 
+    # D114-1: Use context manager so log_fh is always closed, even on exception.
+    # Subprocess inherits a copy of this FD — closing it in parent does not affect child.
     try:
-        proc = subprocess.Popen(
-            config["cmd"],
-            cwd=config["cwd"],
-            stdout=log_fh,
-            stderr=log_fh,
-            close_fds=True,
-            start_new_session=True,  # detach from watchdog's SIGINT/SIGTERM
-        )
+        with open(log_path, "a") as log_fh:
+            proc = subprocess.Popen(
+                config["cmd"],
+                cwd=config["cwd"],
+                stdout=log_fh,
+                stderr=log_fh,
+                close_fds=True,
+                start_new_session=True,
+            )
+        # log_fh closed here; child still writes to its inherited copy
         logger.info("[WATCHDOG] %s restarted → PID=%d", name, proc.pid)
     except Exception as exc:
         logger.error("[WATCHDOG] Failed to restart %s: %s", name, exc)
-        log_fh.close()
 
 
 # ── DB maintenance ─────────────────────────────────────────────────────────────
@@ -235,12 +237,32 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.daemon and sys.platform != "win32":
-        if os.fork():
+        # First fork: parent exits, child continues as session leader
+        pid = os.fork()
+        if pid > 0:
             sys.exit(0)
-        # Second fork to fully daemonize
-        if os.fork():
-            sys.exit(0)
-        os.chdir("/")
+
+        # Child becomes session leader (detaches from controlling terminal)
         os.setsid()
+
+        # Second fork: prevent grandchild from re-acquiring a new terminal
+        pid = os.fork()
+        if pid > 0:
+            sys.exit(0)
+
+        # Grandchild: fully daemonized, change to safe directory
+        os.chdir("/")
+        # Redirect stdio to /dev/null so no unexpected file handle leaks
+        devnull = open(os.devnull, "r+")
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+        os.dup2(devnull.fileno(), sys.stdout.fileno())
+        os.dup2(devnull.fileno(), sys.stderr.fileno())
+        devnull.close()
+
+    # D114-3: Register as singleton in manifest so tooling can observe watchdog liveness.
+    # In daemon mode: runs in grandchild (after double-fork), so manifest PID is correct.
+    from panopticon_py.utils.process_guard import acquire_singleton
+    WATCHDOG_VERSION = "v1.0.0-D114"
+    acquire_singleton("watchdog", WATCHDOG_VERSION)
 
     run_watchdog()
