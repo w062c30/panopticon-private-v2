@@ -118,13 +118,40 @@ def _read_manifest() -> dict:
     return {}
 
 
+def _acquire_lock(timeout: float = 3.0) -> None:
+    """
+    D116: Acquire the manifest lock file, forcibly clearing if stale (>5s).
+    Stale locks occur when a process crashes while holding the lock.
+    """
+    deadline = time.monotonic() + timeout
+    while _MANIFEST_LOCK.exists() and time.monotonic() < deadline:
+        try:
+            lock_age = time.time() - _MANIFEST_LOCK.stat().st_mtime
+            if lock_age > 5.0:
+                logger.warning(
+                    "[guard] Stale manifest lock detected (age=%.1fs) — force clearing",
+                    lock_age,
+                )
+                _MANIFEST_LOCK.unlink(missing_ok=True)
+                break
+        except OSError:
+            break
+        time.sleep(0.05)
+    _MANIFEST_LOCK.touch()
+
+
+def _release_lock() -> None:
+    """Release the manifest lock file."""
+    try:
+        _MANIFEST_LOCK.unlink()
+    except OSError:
+        pass
+
+
 def _write_manifest(name: str, entry: dict) -> None:
     """Atomic write to process_manifest.json using a simple lock file."""
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 3.0
-    while _MANIFEST_LOCK.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    _MANIFEST_LOCK.touch()
+    _acquire_lock()
     try:
         manifest = _read_manifest()
         manifest[name] = entry
@@ -136,10 +163,7 @@ def _write_manifest(name: str, entry: dict) -> None:
         logger.error("[guard] _write_manifest: failed to write %s: %s", name, exc)
         raise
     finally:
-        try:
-            _MANIFEST_LOCK.unlink()
-        except OSError:
-            pass
+        _release_lock()
 
 
 def _clear_manifest_entry(name: str) -> None:
@@ -274,12 +298,10 @@ def update_heartbeat(name: str) -> None:
 
     D115: If name not yet in manifest (e.g., watchdog just started), bootstrap a
     minimal entry so the heartbeat update does not silently fail.
+    D116: Uses shared _acquire_lock / _release_lock with stale lock detection.
     """
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 3.0
-    while _MANIFEST_LOCK.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    _MANIFEST_LOCK.touch()
+    _acquire_lock()
     try:
         manifest = _read_manifest()
         if name not in manifest:
@@ -298,10 +320,7 @@ def update_heartbeat(name: str) -> None:
     except Exception as exc:
         logger.error("[guard] update_heartbeat: failed to update %s: %s", name, exc)
     finally:
-        try:
-            _MANIFEST_LOCK.unlink()
-        except OSError:
-            pass
+        _release_lock()
 
 
 def check_peer_version(name: str, required_base: Optional[str] = None) -> Optional[dict]:

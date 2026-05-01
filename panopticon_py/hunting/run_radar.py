@@ -599,12 +599,26 @@ _TIER5_EXCLUDE_SEASON_KEYWORDS = [
 ]
 
 # D113: Dual-strategy slug keywords for team-specific Gamma entries
+# D116: Extended with most-common match format "-vs-" and team-specific patterns
 # Must have trailing dash/prefix to avoid false matches (e.g. "nba-" not "nba")
 _TIER5_SLUG_SPORTS_KEYWORDS = [
+    # D113 original
     "nba-", "nfl-", "epl-", "premier-league-",
     "champions-league-", "fa-cup-", "bundesliga-",
     "will-win-the-match", "beats-", "wins-the-match",
     "match-winner", "score-more-goals",
+    # D116 additions
+    "-vs-",           # "arsenal-vs-man-city" (most common team match format)
+    "to-win-",        # "arsenal-to-win-the-match"
+    "total-goals-",   # total goals markets
+    "over-under-",    # O/U markets
+    "first-goal-",    # first goal markets
+    "half-time-",     # half-time result markets
+    "most-assists-",  # assists stat markets
+    "top-scorer-",    # top scorer markets
+    "handball-",      # handball leagues
+    "hockey-",        # ice hockey
+    "rugby-",         # rugby leagues
 ]
 
 # D113: Guard against POL/crypto markets caught by slug-only match
@@ -1357,8 +1371,11 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
             slug_match = any(kw in slug_lc for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
             if not (category_match or slug_match):
                 reason.append(f"no_sports({category_lc[:15]}|{slug_lc[:15]})")
-            elif slug_match and not category_match and any(g in slug_lc for g in _TIER5_SLUG_POL_GUARD):
-                reason.append("pol_guard")
+            elif slug_match and not category_match:
+                if any(g in slug_lc for g in _TIER5_SLUG_POL_GUARD):
+                    reason.append("pol_guard")
+                else:
+                    reason.append("slug_only")  # D116: slug matched but filter rejected
             if not active:
                 reason.append("inactive")
             if end_iso:
@@ -1382,6 +1399,18 @@ def _refresh_tier5_sports_tokens(db) -> list[str]:
     logger.info("[L1_TIER5_DIAG] raw=%d tier5=%d  rejects: %s",
                  raw_markets_count, tier5_count,
                  dict(sorted(diag_rejects.items(), key=lambda x: -x[1])[:5]))
+
+    # D116: Log when slug-match catches a market (useful for keyword validation)
+    slug_hits = sum(
+        1 for m in markets
+        if isinstance(m, dict)
+        and not _is_tier5_sports_market(m)
+        and any(kw in str(m.get("slug") or "").lower() for kw in _TIER5_SLUG_SPORTS_KEYWORDS)
+        and not any(s in str(m.get("groupItemTitle") or m.get("category") or "").lower()
+                   for s in _TIER5_SPORTS_CATEGORIES)
+    )
+    if slug_hits > 0:
+        logger.info("[L1_TIER5_DIAG] slug-match caught %d markets (POL-guard may filter some)", slug_hits)
 
     if tier5_count > 0:
         logger.info(
@@ -3034,7 +3063,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.37-D113"   # ← AGENT: bump on every change  # D113: T5 dual-strategy category filter + slug keywords + POL guard
+    PROCESS_VERSION = "v1.1.38-D116"   # ← AGENT: bump on every change  # D116: extend T5 slug keywords + diagnostic log refinement
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
