@@ -312,6 +312,18 @@ def update_heartbeat(name: str) -> None:
                 "status": "running",
             }
             logger.debug("[guard] update_heartbeat: bootstrapped entry for %s", name)
+        # D121 FIX: Preserve version/start_time from acquire_singleton call if already set.
+        # update_heartbeat and acquire_singleton both write the same PID, but update_heartbeat
+        # was overwriting version/start_time with defaults. Only set defaults for missing fields.
+        existing = manifest[name]
+        if "start_time" not in existing:
+            existing["start_time"] = datetime.now(timezone.utc).isoformat()
+        # D121 FIX: If version is still "unknown" but this PID has acquire_singleton'd (e.g., radar
+        # shadow task inside orchestrator), try to resolve from versions_ref.json to avoid "unknown".
+        if existing.get("version") == "unknown":
+            resolved = _read_expected_version(name)
+            if resolved:
+                existing["version"] = resolved
         manifest[name]["last_heartbeat_ts"] = datetime.now(timezone.utc).isoformat()
         manifest[name]["pid"] = os.getpid()  # keep pid current
         tmp = _MANIFEST.with_suffix(".tmp")

@@ -33,6 +33,7 @@ from panopticon_py.execution.constants import (
     REASON_INSUFFICIENT_CONSENSUS,
     REASON_KELLY_DEGRADED_PREFIX,
     REASON_NO_PRICE_DATA,
+    REASON_T1_SHORT_CIRCUIT,
 )
 from panopticon_py.fast_gate import FastSignalInput, GateDecision, fast_execution_gate
 from panopticon_py.friction_state import FrictionSnapshot
@@ -574,6 +575,26 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # D96-C: T1 short-circuit — T1 markets go to Kyle λ path only, not consensus
     if event.market_tier == "t1":
         logging.debug("[SE][T1_SKIP] market=%s z=%.2f — kyle_path only", market_id, z)
+        # D121 FIX: Write REJECT record so frontend can see T1 activity
+        decision_id = str(uuid4())
+        db.append_execution_record({
+            "execution_id": decision_id,
+            "decision_id": decision_id,
+            "accepted": 0,
+            "reason": REASON_T1_SHORT_CIRCUIT,
+            "mode": "PAPER",
+            "source": safe_source,
+            "gate_reason": REASON_T1_SHORT_CIRCUIT,
+            "latency_ms": 50.0,  # T1 is fast path
+            "posterior": 0.0,
+            "p_adj": 0.0,
+            "qty": 0.0,
+            "ev_net": 0.0,
+            "avg_entry_price": 0.0,
+            "created_ts_utc": _utc(),
+            "market_id": market_id,
+            "market_tier": event.market_tier,
+        })
         return
 
     # 3. OFI source: orchestrator already mapped HL → PM via OFI_MARKET_MAP

@@ -1,0 +1,18 @@
+2026-05-02 00:53:23,184 [INFO] panopticon_py.utils.process_guard - [guard] arb_scanner singleton acquired (PID=37944, version=v0.4.0-D120)
+2026-05-02 00:53:23,185 [INFO] panopticon_py.utils.process_guard - [guard] arb_scanner version OK: v0.4.0-D120 == v0.4.0-D120
+2026-05-02 00:53:23,197 [INFO] panopticon_py.utils.process_guard - [guard] _write_manifest: wrote arb_scanner to manifest, total keys=5
+2026-05-02 00:53:23,198 [INFO] __main__ - [ARB] Starting ArbScanner paper_mode=True auto_refresh=60s
+2026-05-02 00:53:23,617 [INFO] httpx - HTTP Request: GET https://gamma-api.polymarket.com/markets?closed=false&limit=500 "HTTP/1.1 200 OK"
+2026-05-02 00:53:23,656 [INFO] __main__ - [ARB] Discovered 155 T5 token_ids (155 markets) via Gamma API
+2026-05-02 00:53:23,657 [INFO] __main__ - [ARB_INIT] token_ids=155 sample=['0x6109928b514190796ac5146bb553ee96fcd636d44963b5ba49bfc29f905d0d1a', '0xa664f0788e0ccf2c4ad1e3a4ccb282bb3cded067c03262505fff5a88fd95178b', '0x811dce3bb21a740e244a61059649a149da1e57be36851cf9ab515bd2f7294883'] all_valid_format=True
+2026-05-02 00:53:24,184 [INFO] __main__ - [ARB] Subscribed to 155 token_ids via WebSocket (assets_ids format)
+2026-05-02 02:25:16,529 [WARNING] __main__ - [ARB] Error in run loop: no close frame received or sent; reconnecting in 10s¡K
+2026-05-02 02:25:26,852 [INFO] httpx - HTTP Request: GET https://gamma-api.polymarket.com/markets?closed=false&limit=500 "HTTP/1.1 200 OK"
+2026-05-02 02:25:26,900 [INFO] __main__ - [ARB] Discovered 155 T5 token_ids (155 markets) via Gamma API
+2026-05-02 02:25:26,900 [INFO] __main__ - [ARB_INIT] token_ids=155 sample=['0x6109928b514190796ac5146bb553ee96fcd636d44963b5ba49bfc29f905d0d1a', '0xa664f0788e0ccf2c4ad1e3a4ccb282bb3cded067c03262505fff5a88fd95178b', '0x811dce3bb21a740e244a61059649a149da1e57be36851cf9ab515bd2f7294883'] all_valid_format=True
+2026-05-02 02:25:27,394 [INFO] __main__ - [ARB] Subscribed to 155 token_ids via WebSocket (assets_ids format)
+2026-05-02 02:46:03,493 [WARNING] __main__ - [ARB] Error in run loop: no close frame received or sent; reconnecting in 10s¡K
+2026-05-02 02:46:13,810 [INFO] httpx - HTTP Request: GET https://gamma-api.polymarket.com/markets?closed=false&limit=500 "HTTP/1.1 200 OK"
+2026-05-02 02:46:13,843 [INFO] __main__ - [ARB] Discovered 155 T5 token_ids (155 markets) via Gamma API
+2026-05-02 02:46:13,843 [INFO] __main__ - [ARB_INIT] token_ids=155 sample=['0x6109928b514190796ac5146bb553ee96fcd636d44963b5ba49bfc29f905d0d1a', '0xa664f0788e0ccf2c4ad1e3a4ccb282bb3cded067c03262505fff5a88fd95178b', '0x811dce3bb21a740e244a61059649a149da1e57be36851cf9ab515bd2f7294883'] all_valid_format=True
+2026-05-02 02:46:14,341 [INFO] __main__ - [ARB] Subscribed to 155 token_ids via WebSocket (assets_ids format)
