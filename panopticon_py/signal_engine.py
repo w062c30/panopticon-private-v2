@@ -89,6 +89,24 @@ _SHADOW_KYLE_LAMBDA = 0.00001
 _SHADOW_SLIPPAGE_TOLERANCE = 0.05
 _SHADOW_ORDER_SIZE_USD = 10.0  # lowered from 25.0 to reduce theoretical slippage
 
+
+def _t5_time_decay_weight(end_time_ts: float) -> float:
+    """
+    D118: Time-to-event decay weight for T5 scoring.
+    Must match panopticon_py.hunting.run_radar._t5_time_decay_weight.
+    """
+    tte_hours = max(0.0, (end_time_ts - time.time()) / 3600.0)
+    if tte_hours < 6:
+        return 1.0
+    elif tte_hours < 24:
+        return 0.85
+    elif tte_hours < 72:
+        return 0.65
+    elif tte_hours < 168:
+        return 0.45
+    else:
+        return 0.30
+
 # ---------------------------------------------------------------------------
 # Diagnostic: Print static EV config once at startup
 # ---------------------------------------------------------------------------
@@ -694,9 +712,18 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
 
     # 7.5 T5 Sports override: no financial insider signal in sports markets
     # Use conservative 50/50 base rate (p_prior = 0.50) instead of Bayesian posterior
+    # D118: Apply time-to-event decay weighting — closer to event = stronger signal
     if event.market_tier == "t5":
-        posterior = 0.50
-        logger.info("[SE][T5_SPORTS] sports market=%s p_prior overridden to 0.50", market_id)
+        tte = event.time_to_event
+        if tte > 0:
+            weight = _t5_time_decay_weight(time.time() + tte)
+        else:
+            weight = 0.30  # unknown expiry → conservative minimum
+        posterior = 0.50 * weight
+        logger.info(
+            "[SE][T5_SPORTS] sports market=%s tte=%.0fs weight=%.2f p_prior=%.4f",
+            market_id, tte, weight, posterior,
+        )
 
     # 8. Build FastSignalInput
     # Shadow mode: lower order_size to reduce slippage while kyle_lambda is recalibrated

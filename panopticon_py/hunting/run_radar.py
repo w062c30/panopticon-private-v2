@@ -628,6 +628,8 @@ _TIER5_SLUG_SPORTS_KEYWORDS = [
 _TIER5_SLUG_POL_GUARD = [
     "trump", "election", "tariff", "senate", "btc", "eth", "crypto",
     "will-trump", "president", "government",
+    # D118: Preventive expansion — these names can appear in championship market slugs
+    "harris", "biden", "desantis", "pelosi", "zuckerberg", "musk",
 ]
 
 _TIER5_MAX_END_SEC = 3888000   # 45 days; D117: championship/semifinal markets settle in 1-6 weeks
@@ -3124,7 +3126,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.39-D117"   # ← AGENT: bump on every change  # D117: fix _TIER5_MAX_END_SEC 48h→45d; root cause was championship markets settle >7d
+    PROCESS_VERSION = "v1.1.40-D118"   # ← AGENT: bump on every change  # D118: POL guard expansion 6 keywords; time_decay p_prior闭环; arb_scanner auto-discover
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
