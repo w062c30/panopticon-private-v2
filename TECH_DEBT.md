@@ -63,7 +63,8 @@
 **File**: `run_radar.py`, `metrics_schema.py`, `RvfMetricsPanel.tsx`
 **Problem**: DR-D125-c records dual-channel double-count risk; field semantics do not yet meet API schema publication standard.
 **Non-blocking**: Log output only; dashboard unaffected.
-**Unlock condition**: Introduce deduplication key (e.g. `trade_id` or `(asset_id, trade_price, timestamp_ms)`) on `last_trade_price` to confirm no overlap with embedded book trades; run ≥24h baseline confirming `real_trade_ticks_60s / trade_ticks_60s` ratio is stable (~0.5–0.8); then update `metrics_schema.py` + `metrics_collector.py` + `RvfMetricsPanel.tsx` in one PR.
+**Known state**: `kyle_lambda_samples` shows `source='book_embedded'` = 0 across all runtime; `source='standalone'` accumulates normally (~70k rows). This is an architectural observation, not a regression: the `book_embedded` path requires `_pending_trade[asset]` with a valid `mid_before` from a prior `last_trade_price` event within TTL=30s. POL T2 market arrival rate (~1 trade/min) is too sparse to satisfy this within TTL → `mid_before` is usually None → `book_embedded` never fires. Kyle λ from the `standalone` path (direct `last_trade_price` computation) works correctly.
+**Unlock condition**: Run ≥24h baseline (collect ≥24 windows) confirming `real_trade_ticks_60s / trade_ticks_60s` ratio is stable in the 25%–50% range with no zero-real windows; then update `metrics_schema.py` + `metrics_collector.py` + `RvfMetricsPanel.tsx` in one PR. Deduplication key (trade_id or tuple) is optional but recommended.
 **Blocked by**: DR-D125-c
 
 ---
