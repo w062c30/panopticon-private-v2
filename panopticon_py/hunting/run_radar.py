@@ -2098,6 +2098,7 @@ def try_match_or_open(raw: dict, db) -> str:
 
 _ws_raw_msg_count = 0
 _ws_trade_count = 0
+_ws_real_trade_count = 0  # D125: embedded book trades + last_trade_price (may overlap same fill)
 _ws_entropy_fire_count = 0
 _ws_kyle_sample_count = 0  # D9: Kyle λ samples from book_embedded + standalone
 _ws_last_stream_msg_ts = 0.0  # D123: timestamp of last message from stream_json_messages
@@ -2110,6 +2111,7 @@ _FIRST_TRADE_TICK_LOGGED = False  # Task C: one-time TRADE_TICK diagnostic
 _live_loop_started = 0.0
 _d75_hb_last = 0.0
 _d75_hb_trade_base = 0
+_d75_hb_real_trade_base = 0
 _d75_hb_entropy_base = 0
 _d77_tick_last = 0.0
 _d77_tick_n = 0
@@ -2208,7 +2210,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
         nonlocal _entropy_z_below_threshold_count, _entropy_z_samples
 
         # P2 DIAG: WebSocket L1 counters — do NOT modify business logic
-        global _ws_raw_msg_count, _ws_trade_count, _ws_entropy_fire_count, _ws_kyle_sample_count
+        global _ws_raw_msg_count, _ws_trade_count, _ws_real_trade_count, _ws_entropy_fire_count, _ws_kyle_sample_count
 
         # Polymarket WS sends both dict messages and list batches (multiple market
         # updates in one frame).  Normalize to a list for uniform processing.
@@ -2312,6 +2314,9 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 # not just "real trades without a companion last_trade_price event".
                 global _ws_trade_count
                 _ws_trade_count += 1
+                # D125: Narrow counter — embedded trade field present (may overlap last_trade_price)
+                if embedded_trade_price is not None:
+                    _ws_real_trade_count += 1
 
                 # Step 3: Kyle λ calculation from embedded trade (D9 APPROVED)
                 # NOTE: book events may NOT contain last_trade_price in practice.
@@ -2454,6 +2459,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 if trade_size == 0:
                     continue
                 _ws_trade_count += 1
+                _ws_real_trade_count += 1
 
                 # Capture mid_before from snapshot BEFORE any update
                 asset_id = item.get("asset_id") or item.get("market") or ""
@@ -2890,6 +2896,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     _live_loop_started = time.monotonic()
     _d75_hb_last = _live_loop_started
     _d75_hb_trade_base = 0
+    _d75_hb_real_trade_base = 0
     _d75_hb_entropy_base = 0
     _d77_tick_last = _live_loop_started
     _d77_tick_n = 0
@@ -3020,16 +3027,20 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             _d77_tick_n += 1
         if now_loop - _d75_hb_last >= 60.0:
             trade_ticks_60s = max(0, _ws_trade_count - _d75_hb_trade_base)
+            real_trade_ticks_60s = max(0, _ws_real_trade_count - _d75_hb_real_trade_base)
             entropy_fires_60s = max(0, _ws_entropy_fire_count - _d75_hb_entropy_base)
             logger.info(
-                "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d entropy_fires_60s=%d pol_markets_active=%d",
+                "[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d real_trade_ticks_60s=%d "
+                "entropy_fires_60s=%d pol_markets_active=%d",
                 now_loop - _live_loop_started,
                 trade_ticks_60s,
+                real_trade_ticks_60s,
                 entropy_fires_60s,
                 _pol_active_count,
             )
             _d75_hb_last = now_loop
             _d75_hb_trade_base = _ws_trade_count
+            _d75_hb_real_trade_base = _ws_real_trade_count
             _d75_hb_entropy_base = _ws_entropy_fire_count
 
         # ── Heartbeat: refresh subscriptions every 10s ──────────────────────────
@@ -3297,7 +3308,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.46-D124"   # ← AGENT: bump on every change  # D124: fix trade_ticks_60s=0 — count ALL book events (Polymarket book events always carry embedded last_trade_price, so previous guard excluded all events)
+    PROCESS_VERSION = "v1.1.47-D125"   # ← AGENT: bump on every change  # D125: unify version + real_trade_ticks_60s heartbeat
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

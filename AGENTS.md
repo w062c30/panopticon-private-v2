@@ -208,13 +208,13 @@ else:               return None → NO_PRICE_DATA
 
 ---
 
-## Current System Status (as of D120)
+## Current System Status (as of D125)
 
 | Process | Version | Notes |
 |---------|---------|-------|
 | Orchestrator | v1.1.34-D120 | import json fix + utc_now_rfc3339_ms alignment |
 | Backend | v1.1.24-D120 | WS idiom cleanup |
-| Radar | v1.1.28-D101 | T2-POL political monitor |
+| Radar | v1.1.47-D125 | WS runner fix + book/real trade heartbeat counters |
 
 **Active Technical Debt:**
 | ID | 問題 | 優先級 | 目標 Sprint |
@@ -280,5 +280,6 @@ All agents should read `AGENTS.md` first for onboarding. This index points to ad
 |------|---------|
 | `TECH_DEBT.md` | Tech debt observations + completed sprint history + decision records |
 | `FUNCTION_STATUS.md` | Function runtime state index — blocked/active/logged_only status (D124 rule) |
+| `panopticon_py/hunting/INDEX.md` | `run_radar.py` function status markers (same rule; hunting-focused) |
 | `PANOPTICON_CORE_LOGIC.md` | System core logic — invariants, signal flow, risk controls |
 | `EXPERIENCE_PLAYBOOK.md` | Verified operational patterns — bug fixes, known failure modes |

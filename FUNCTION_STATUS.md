@@ -19,6 +19,8 @@
 
 ## panopticon_py/hunting/run_radar.py
 
+`run_radar.py` 完整列（含 ⚙️ STARTUP_ONLY）見 `panopticon_py/hunting/INDEX.md`。
+
 | Function | Status | Reason | Since |
 |---------|--------|--------|-------|
 | `_live_ticks()` | ✅ ACTIVE | Main WS event loop | D50 |
@@ -27,9 +29,8 @@
 | `_fetch_missing_event_names()` | ⏰ BACKGROUND_1H | Called by `metrics_json_loop` every 3600s | D65 |
 | `_batch_fill_link_map()` | ⏰ BACKGROUND_STARTUP | One-shot call during `_main_async` startup | D65 |
 | `_btc5m_resolve_loop()` | ⏰ BACKGROUND_5M | Resolves BTC 5m window tokens every 300s | D70 |
-| `_entropy_flush_on_reconnect()` | ✅ ACTIVE | Flushes entropy window and locks -4σ triggers on WS reconnect | D123 |
 | `_on_message()` | ✅ ACTIVE | Primary WS message handler; dispatches book/price_change/last_trade_price/best_bid_ask | D50 |
-| `_ws_runner()` | ✅ ACTIVE | WS connection manager with 1009 retry backoff | D50 |
+| `_ws_runner()` | ✅ ACTIVE | WS connection manager with 1009 retry backoff; `on_reconnect` calls `ew.mark_reconnect()` | D50 |
 
 ---
 

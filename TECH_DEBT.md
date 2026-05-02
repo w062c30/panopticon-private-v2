@@ -26,6 +26,7 @@
 | D122 | WS format cleanup, book counter guard (reverted in D124) | ✅ |
 | D123 | t1_market_clock token freshness, entropy window flush on reconnect | ✅ |
 | D124 | UnboundLocalError in _ws_runner, count ALL book events | ✅ |
+| D125 | Doc: TECH_DEBT + FUNCTION_STATUS + hunting INDEX; unified radar v1.1.47-D125; `real_trade_ticks_60s` heartbeat | ✅ |
 
 ---
 
@@ -54,8 +55,8 @@
 ### Debt-4: Blocked functions have no status marker
 **File**: `FUNCTION_STATUS.md` (index)
 **Problem**: Some functions are intentionally blocked in production but have no machine-readable status. Agent cannot distinguish "broken" from "intentionally disabled" without running code.
-**Rule (D124 user requirement)**: Any intentionally blocked function must have an entry in `FUNCTION_STATUS.md`.
-**See**: `FUNCTION_STATUS.md` for the live index.
+**Rule (D124 user requirement)**: Any intentionally blocked function must have an entry in `FUNCTION_STATUS.md` (cross-module) and, for `run_radar.py`, in `panopticon_py/hunting/INDEX.md`.
+**See**: `FUNCTION_STATUS.md`, `panopticon_py/hunting/INDEX.md`.
 
 ---
 
@@ -64,6 +65,16 @@
 ### DR-D125-a: Rename FEATURE_INDEX to TECH_DEBT
 - **Date**: 2026-05-02
 - **Decision**: Renamed root-level `FEATURE_INDEX.md` → `TECH_DEBT.md`. Name change reflects actual content (tech debt tracking + decision records), not a "feature list". Aligns with `AGENTS.md` naming convention (uppercase noun).
+
+### DR-D125-b: Unified radar `PROCESS_VERSION` after handoff drift
+- **Date**: 2026-05-02
+- **Decision**: Handoff referenced `v1.1.47-D124` while code stayed `v1.1.46-D124`. Canonical radar version unified to **`v1.1.47-D125`** with matching `run/versions_ref.json`.
+- **Code**: `panopticon_py/hunting/run_radar.py:L3311`
+
+### DR-D125-c: Dual WS heartbeat counters (`trade_ticks_60s` vs `real_trade_ticks_60s`)
+- **Date**: 2026-05-02
+- **Decision**: `_ws_trade_count` continues to measure broad WS activity (every `book` + every qualifying `last_trade_price`). Added `_ws_real_trade_count`: increments when `book` carries parsed `embedded_trade_price is not None`, and when `last_trade_price` fires with `trade_size > 0`. **Same physical fill may increment both paths** — acceptable for coverage telemetry; interpret `real_trade_ticks_60s` as an upper-bound proxy, not unique-trade cardinality.
+- **Code**: `panopticon_py/hunting/run_radar.py:L2099–L2115`, `L2317–L2319`, `L2460–L2462`, `L3028–L3044`
 
 ### DR-D124-a: Count ALL book events for `trade_ticks_60s`
 - **Date**: 2026-05-02
