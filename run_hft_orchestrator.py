@@ -67,7 +67,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.35-D121"   # ← AGENT: bump on every change  # D121: T1 short-circuit REJECT record + update_heartbeat version fix
+    PROCESS_VERSION = "v1.1.36-D126"   # ← AGENT: bump on every change  # D126: remove dead code graph_engine local assignment (Debt-3)
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -440,8 +440,10 @@ async def main_async() -> int:
     logger.info("[FRICTION] GlobalFrictionState worker started")
     await asyncio.sleep(0.3)
 
-    # ── Graph engine (shared across async tracks) ──────────────────────────
-    graph_engine = HiddenLinkGraphEngine(db=db)
+    # ── Graph engine — initialized in run_graph_linker() (L317–L318, global).
+    #   The local assignment below was dead code (Debt-3); the real engine is
+    #   the global _graph_engine set by run_graph_linker(), which runs concurrently.
+    # graph_engine = HiddenLinkGraphEngine(db=db)  # Debt-3: removed D126
 
     # ── AsyncDBWriter — async queue for non-trading DB writes (D119) ───────
     from panopticon_py.db import AsyncDBWriter

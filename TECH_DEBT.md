@@ -27,6 +27,7 @@
 | D123 | t1_market_clock token freshness, entropy window flush on reconnect | ✅ |
 | D124 | UnboundLocalError in _ws_runner, count ALL book events | ✅ |
 | D125 | Doc: TECH_DEBT + FUNCTION_STATUS + hunting INDEX; unified radar v1.1.47-D125; `real_trade_ticks_60s` heartbeat | ✅ |
+| D126 | Debt-3 graph_engine dead code removed; orchestrator v1.1.36-D126; entropy_fires_60s=0 diagnosis (undersupply, not a bug) | ✅ |
 
 ---
 
@@ -46,11 +47,11 @@
 
 ### Debt-3: `graph_engine` variable shadowing (dead code)
 **File**: `run_hft_orchestrator.py:L444`
-**Problem**: `main_async()` has two `graph_engine` definitions:
-- L442: `graph_engine = HiddenLinkGraphEngine(db=db)` — local variable, **never used**
+**Problem**: `main_async()` had two `graph_engine` definitions:
+- L444 (now commented out): `graph_engine = HiddenLinkGraphEngine(db=db)` — local variable, **never used**
 - L318 (`run_graph_linker`): `global _graph_engine = HiddenLinkGraphEngine(db=db)` — the real graph engine
-**Non-blocking**: Local `graph_engine` is dead code, no functional impact.
-**Suggestion**: Delete L442 assignment, or add `# noqa: F841` if kept for future timing use.
+**Status (D126)**: RESOLVED — dead-code line commented out with `# Debt-3: removed D126` note.
+**Code**: `run_hft_orchestrator.py:L443–L446`
 
 ### Debt-4: Blocked functions have no status marker
 **File**: `FUNCTION_STATUS.md` (index)
