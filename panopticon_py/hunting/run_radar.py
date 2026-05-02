@@ -2903,12 +2903,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     async def _ws_runner() -> None:
         nonlocal reconnect_now, sub
         global _ws_1009_last_failure
-        import sys as _sys
-        _sys.stderr.write(f"[RADAR_STDERR] _ws_runner ENTERING, sub={sub is not None}\n")
-        _sys.stderr.flush()
         while True:
-            _sys.stderr.write(f"[RADAR_STDERR] loop top, reconnect_now={reconnect_now}\n")
-            _sys.stderr.flush()
             now = time.monotonic()
             # D121: After 1009 FATAL error, wait 60s before rebuilding to avoid spin loop
             if _ws_1009_last_failure and (now - _ws_1009_last_failure) < 60.0:
@@ -2964,11 +2959,6 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 len(sub.get("assets_ids", [])) if sub else 0,
                 str(first_asset)[:20],
             )
-            import sys as _sys
-            _sys.stderr.write(
-                f"[RADAR_DIAG][PRE_WS] attempt={_ws_attempt_count} sub_assets={len(sub.get('assets_ids',[])) if sub else 0}\n"
-            )
-            _sys.stderr.flush()
             try:
                 await run_ws_loop(
                     _on_message,
@@ -2978,8 +2968,6 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     on_disconnect_cb=(lambda: (mc.on_ws_disconnected() if mc else None)) if mc else None,
                     close_event=_close_event,
                 )
-                _sys.stderr.write(f"[RADAR_DIAG][POST_WS] run_ws_loop returned normally\n")
-                _sys.stderr.flush()
                 # D121: run_ws_loop returned normally — reset 1009 flag so next attempt can proceed
                 _ws_1009_last_failure = 0.0
                 _ws_last_stream_msg_ts = time.monotonic()  # D123: reset on clean exit
@@ -3306,7 +3294,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.48-D127"   # ← AGENT: bump on every change  # D127: logger.debug for _msg_count RADAR DEBUG flood (Q1-A ruling)
+    PROCESS_VERSION = "v1.1.49-D129"   # ← AGENT: bump on every change  # D129: remove _sys.stderr diagnostics from _ws_runner (D128-4 noise reduction)
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
