@@ -2102,8 +2102,6 @@ _ws_real_trade_count = 0  # D125: embedded book trades + last_trade_price (may o
 _ws_entropy_fire_count = 0
 _ws_kyle_sample_count = 0  # D9: Kyle λ samples from book_embedded + standalone
 _ws_last_stream_msg_ts = 0.0  # D123: timestamp of last message from stream_json_messages
-_ws_entropy_fire_count = 0
-_ws_kyle_sample_count = 0  # D9: Kyle λ samples from book_embedded + standalone
 _last_ws_diag_log_ts = 0.0
 _WS_DIAG_LOG_INTERVAL_SEC = 60.0
 _FIRST_TRADE_TICK_LOGGED = False  # Task C: one-time TRADE_TICK diagnostic
@@ -2252,7 +2250,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 )
 
             if _msg_count <= 5:
-                logger.info(
+                logger.debug(
                     "[RADAR DEBUG] Msg #%d keys=%s event_type=%s",
                     _msg_count,
                     list(item.keys()),
@@ -3308,7 +3306,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.47-D125"   # ← AGENT: bump on every change  # D125: unify version + real_trade_ticks_60s heartbeat
+    PROCESS_VERSION = "v1.1.48-D127"   # ← AGENT: bump on every change  # D127: logger.debug for _msg_count RADAR DEBUG flood (Q1-A ruling)
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
