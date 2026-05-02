@@ -269,3 +269,16 @@ curl -s http://localhost:8001/api/versions | python -m json.tool
 # All version_match fields must be true
 # All status fields must be "running"
 ```
+
+---
+
+## Documentation Index
+
+All agents should read `AGENTS.md` first for onboarding. This index points to additional files:
+
+| File | Purpose |
+|------|---------|
+| `TECH_DEBT.md` | Tech debt observations + completed sprint history + decision records |
+| `FUNCTION_STATUS.md` | Function runtime state index — blocked/active/logged_only status (D124 rule) |
+| `PANOPTICON_CORE_LOGIC.md` | System core logic — invariants, signal flow, risk controls |
+| `EXPERIENCE_PLAYBOOK.md` | Verified operational patterns — bug fixes, known failure modes |
