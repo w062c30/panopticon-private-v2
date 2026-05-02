@@ -208,12 +208,12 @@ else:               return None → NO_PRICE_DATA
 
 ---
 
-## Current System Status (as of D125)
+## Current System Status (as of D126)
 
 | Process | Version | Notes |
 |---------|---------|-------|
-| Orchestrator | v1.1.34-D120 | import json fix + utc_now_rfc3339_ms alignment |
-| Backend | v1.1.24-D120 | WS idiom cleanup |
+| Orchestrator | v1.1.36-D126 | graph_engine dead code removed (Debt-3) |
+| Backend | v1.1.35-D116 | WS idiom cleanup |
 | Radar | v1.1.47-D125 | WS runner fix + book/real trade heartbeat counters |
 
 **Active Technical Debt:**

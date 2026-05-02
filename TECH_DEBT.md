@@ -108,4 +108,9 @@
 - **Date**: 2026-04-30
 - **Decision**: Added elapsed_ms timing in `AsyncDBWriter._dispatch()`; warn if >200ms to detect WAL contention.
 
+### DR-D126-a: EntropyWindow `window_sec=5.0` not adjusted for POL T2
+- **Date**: 2026-05-03
+- **Decision**: T2-POL market arrival rate < 1 trade/5s is insufficient to accumulate `min_history_for_z=12` samples in the 5s rolling window. Decision: do not adjust `window_sec`. T2 Smart Money signal relies on Kyle λ + insider score accumulation, not entropy fire triggers. EntropyWindow remains a high-frequency T1 signal generator. If per-tier EntropyWindow parameterization is needed in the future, open a separate DR.
+- **Code**: `panopticon_py/hunting/run_radar.py` (global shared `ew` + per-token `_entropy_windows` T1 path)
+
 ---
