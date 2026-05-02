@@ -58,6 +58,13 @@
 **Rule (D124 user requirement)**: Any intentionally blocked function must have an entry in `FUNCTION_STATUS.md` (cross-module) and, for `run_radar.py`, in `panopticon_py/hunting/INDEX.md`.
 **See**: `FUNCTION_STATUS.md`, `panopticon_py/hunting/INDEX.md`.
 
+### Debt-5: `real_trade_ticks_60s` semantics must stabilise before entering API schema
+**File**: `run_radar.py`, `metrics_schema.py`, `RvfMetricsPanel.tsx`
+**Problem**: DR-D125-c records dual-channel double-count risk; field semantics do not yet meet API schema publication standard.
+**Non-blocking**: Log output only; dashboard unaffected.
+**Unlock condition**: Introduce deduplication key (e.g. `trade_id` or `(asset_id, trade_price, timestamp_ms)`) on `last_trade_price` to confirm no overlap with embedded book trades; run ≥24h baseline confirming `real_trade_ticks_60s / trade_ticks_60s` ratio is stable (~0.5–0.8); then update `metrics_schema.py` + `metrics_collector.py` + `RvfMetricsPanel.tsx` in one PR.
+**Blocked by**: DR-D125-c
+
 ---
 
 ## Decision Records (DR)
