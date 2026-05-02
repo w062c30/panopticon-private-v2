@@ -1,6 +1,6 @@
 # TECH_DEBT — Panopticon Technical Debt & Decision Records
 
-> Last updated: D125 (2026-05-02)
+> Last updated: D131 (2026-05-03)
 > Source: https://github.com/w062c30/panopticon-private-v2
 
 ---
@@ -28,6 +28,10 @@
 | D124 | UnboundLocalError in _ws_runner, count ALL book events | ✅ |
 | D125 | Doc: TECH_DEBT + FUNCTION_STATUS + hunting INDEX; unified radar v1.1.47-D125; `real_trade_ticks_60s` heartbeat | ✅ |
 | D126 | Debt-3 graph_engine dead code removed; orchestrator v1.1.36-D126; entropy_fires_60s=0 diagnosis (undersupply, not a bug) | ✅ |
+| D127 | Kyle λ sample accumulation check; DR-D126-a update; `_ws_runner` stderr noise reduction planned | ✅ |
+| D128 | Safety verification D127 changes; radar version alignment v1.1.48-D127 | ✅ |
+| D129 | Final `_ws_runner` noise reduction (4 stderr→logger.debug); Debt-5 preliminary ratio analysis | ✅ |
+| D131 | watchdog startup in restart_all.ps1; Debt-5 API (`GET /api/metrics/real_trade_ticks_60s`) | ✅ |
 
 ---
 
@@ -60,11 +64,12 @@
 **See**: `FUNCTION_STATUS.md`, `panopticon_py/hunting/INDEX.md`.
 
 ### Debt-5: `real_trade_ticks_60s` semantics must stabilise before entering API schema
-**File**: `run_radar.py`, `metrics_schema.py`, `RvfMetricsPanel.tsx`
+**Files**: `run_radar.py`, `metrics_collector.py`, `panopticon_py/api/app.py`, `RvfMetricsPanel.tsx`
 **Problem**: DR-D125-c records dual-channel double-count risk; field semantics do not yet meet API schema publication standard.
 **Non-blocking**: Log output only; dashboard unaffected.
 **Known state**: `kyle_lambda_samples` shows `source='book_embedded'` = 0 across all runtime; `source='standalone'` accumulates normally (~70k rows). This is an architectural observation, not a regression: the `book_embedded` path requires `_pending_trade[asset]` with a valid `mid_before` from a prior `last_trade_price` event within TTL=30s. POL T2 market arrival rate (~1 trade/min) is too sparse to satisfy this within TTL → `mid_before` is usually None → `book_embedded` never fires. Kyle λ from the `standalone` path (direct `last_trade_price` computation) works correctly.
-**Unlock condition**: Run ≥24h baseline (collect ≥24 windows) confirming `real_trade_ticks_60s / trade_ticks_60s` ratio is stable in the 25%–50% range with no zero-real windows; then update `metrics_schema.py` + `metrics_collector.py` + `RvfMetricsPanel.tsx` in one PR. Deduplication key (trade_id or tuple) is optional but recommended.
+**D131 Update**: `GET /api/metrics/real_trade_ticks_60s` endpoint implemented in `panopticon_py/api/app.py` and wired to `MetricsCollector.on_real_trade_tick()` hook. Exposed as upper-bound coverage telemetry per DR-D125-c. **Baseline confirmation (n≥24, 24h runtime) still pending** — expected ~2026-05-04 05:38 CST.
+**Unlock condition**: Run ≥24h baseline (collect ≥24 windows) confirming `real_trade_ticks_60s / trade_ticks_60s` ratio is stable in the 25%–50% range with no zero-real windows; then update `RvfMetricsPanel.tsx` in one PR. Deduplication key (trade_id or tuple) is optional but recommended.
 **Blocked by**: DR-D125-c
 
 ---

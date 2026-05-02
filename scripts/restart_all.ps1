@@ -1,5 +1,5 @@
 # Panopticon - Singleton-Enforced Process Restart with Auto-Recovery
-# Version: v1.0.11-D79
+# Version: v1.0.12-D131
 # Run from: d:\Antigravity\Panopticon
 # MANDATORY: Use this script for ALL restarts.
 # OPTIONAL: Pass "-Continuous" for continuous monitoring with auto-recovery.
@@ -14,7 +14,7 @@ $projDir = "d:\Antigravity\Panopticon"
 $dashDir = "$projDir\dashboard"
 $runDir = "$projDir\run"
 $manifestPath = "$runDir\process_manifest.json"
-$restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker = 0 }
+$restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker = 0; watchdog = 0 }
 
 function Get-ProcessStatus {
     $status = @{}
@@ -31,6 +31,7 @@ function Get-ProcessStatus {
     $status.radar = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.hunting\.run_radar" }).Count
     $status.orchestrator = ($pythonProcs | Where-Object { $_.CommandLine -match "run_hft_orchestrator" }).Count
     $status.analysis_worker = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker" }).Count
+    $status.watchdog = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.utils\.watchdog" }).Count
     $status.frontend = (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Measure-Object).Count
     $status.frontendPort = $null -ne (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
         $cmd = $_.CommandLine;
@@ -74,6 +75,17 @@ function Start-Orchestrator {
 
 function Start-AnalysisWorker {
     Start-Process python -ArgumentList "-m panopticon_py.ingestion.analysis_worker" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+}
+
+function Start-Watchdog {
+    # D131: watchdog runs as standalone supervisor process.
+    # It reads process_manifest.json, checks PID liveness + heartbeat freshness,
+    # and restarts crashed processes with circuit-breaker protection.
+    $watchdogLog = "$runDir\watchdog.log"
+    Start-Process python -ArgumentList "-m panopticon_py.utils.watchdog" `
+        -WorkingDirectory $projDir -WindowStyle Hidden `
+        -RedirectStandardOutput $watchdogLog `
+        -RedirectStandardError $watchdogLog -PassThru
 }
 
 function Start-Frontend {
@@ -126,7 +138,8 @@ function Kill-All {
         "panopticon_py\.hunting\.run_radar",       # radar
         "run_hft_orchestrator",                     # orchestrator (script file)
         "uvicorn.*--port 8001",                     # backend uvicorn (port-specific)
-        "panopticon_py\.ingestion\.analysis_worker" # analysis_worker
+        "panopticon_py\.ingestion\.analysis_worker", # analysis_worker
+        "panopticon_py\.utils\.watchdog"           # watchdog (D131)
     )
     foreach ($t in $pythonTargets) {
         $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
@@ -214,6 +227,10 @@ function Full-Restart {
     $analysisWorker = Start-AnalysisWorker
     Write-Host ("  AnalysisWorker started PID=" + $analysisWorker.Id)
     Start-Sleep -Seconds 2
+
+    $watchdog = Start-Watchdog
+    Write-Host ("  Watchdog started PID=" + $watchdog.Id)
+    Start-Sleep -Seconds 2
     
     $frontendVersion = "v1.1.1-D62"
     # Read from versions_ref.json (single source of truth) — avoids hardcoded drift
@@ -235,7 +252,8 @@ function Full-Restart {
         $m = Get-Content $manifest | ConvertFrom-Json -ErrorAction Stop
         
         # D79: Verify backend, orchestrator, analysis_worker as independent processes
-        foreach ($svc in @("backend","orchestrator","analysis_worker")) {
+        # D131: Also verify watchdog
+        foreach ($svc in @("backend","orchestrator","analysis_worker","watchdog")) {
             $entry = $m.PSObject.Properties[$svc].Value
             if ($null -ne $entry) {
                 $svcPid = $entry.pid
@@ -363,6 +381,20 @@ function Monitor-Loop {
         } else {
             $restartAttempts.analysis_worker = 0
         }
+
+        # D131: Watchdog monitoring
+        if ($status.watchdog -eq 0) {
+            if ($restartAttempts.watchdog -lt $MaxRestartAttempts) {
+                Write-Host "[$timestamp] Watchdog DOWN, restarting (attempt $($restartAttempts.watchdog + 1)/$MaxRestartAttempts)..." -ForegroundColor Yellow
+                Start-Watchdog | Out-Null
+                $restartAttempts.watchdog++
+                $changes += "watchdog"
+            } else {
+                Write-Host "[$timestamp] Watchdog DOWN, max attempts reached!" -ForegroundColor Red
+            }
+        } else {
+            $restartAttempts.watchdog = 0
+        }
         
         if (-not $status.frontendPort -and $nodeProc -ne $null) {
             Write-Host "[$timestamp] Frontend DOWN, restarting..." -ForegroundColor Yellow
@@ -373,7 +405,7 @@ function Monitor-Loop {
         }
         
         if ($changes.Count -eq 0) {
-            Write-Host "[$timestamp] OK - backend:$($status.backend) radar:$($status.radar) orch:$($status.orchestrator) frontend:$($status.frontendPort)" -ForegroundColor DarkGreen
+            Write-Host "[$timestamp] OK - backend:$($status.backend) radar:$($status.radar) orch:$($status.orchestrator) frontend:$($status.frontendPort) watchdog:$($status.watchdog)" -ForegroundColor DarkGreen
         } else {
             Write-Host "[$timestamp] RESTARTED: $($changes -join ', ')" -ForegroundColor Yellow
         }

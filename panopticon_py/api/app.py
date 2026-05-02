@@ -28,7 +28,8 @@ load_repo_env()
 
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
-PROCESS_VERSION = "v1.1.35-D116"   # ← AGENT: bump on every change  # D116: /api/system_health/watchdog_status endpoint
+from panopticon_py.time_utils import utc_now_rfc3339_ms
+PROCESS_VERSION = "v1.1.36-D131"   # ← AGENT: bump on every change  # D131: +real_trade_ticks_60s endpoint
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -358,4 +359,25 @@ async def get_versions() -> dict:
     Used by verification agents and dashboard.
     """
     return get_all_versions()
+
+
+@app.get("/api/metrics/real_trade_ticks_60s")
+def get_real_trade_ticks_60s_endpoint() -> dict:
+    """
+    D131: Debt-5 upper-bound proxy endpoint.
+    DR-D125-c: real_trade_ticks_60s has dual increment paths
+    (book_embedded + standalone last_trade_price). Same physical fill
+    may increment both — exposed as coverage telemetry, not cardinality.
+    """
+    from panopticon_py.metrics import get_collector
+    mc = get_collector()
+    total = mc.get_trade_ticks_60s()
+    real = mc.get_real_trade_ticks_60s()
+    return {
+        "real_trade_ticks_60s": real,
+        "trade_ticks_60s": total,
+        "ratio": round(real / total, 4) if total > 0 else 0.0,
+        "note": "upper_bound_proxy_DR-D125-c",
+        "ts": utc_now_rfc3339_ms(),
+    }
 

@@ -2315,6 +2315,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 # D125: Narrow counter — embedded trade field present (may overlap last_trade_price)
                 if embedded_trade_price is not None:
                     _ws_real_trade_count += 1
+                    try:
+                        mc.on_real_trade_tick()
+                    except Exception:
+                        pass
 
                 # Step 3: Kyle λ calculation from embedded trade (D9 APPROVED)
                 # NOTE: book events may NOT contain last_trade_price in practice.
@@ -2458,6 +2462,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     continue
                 _ws_trade_count += 1
                 _ws_real_trade_count += 1
+                try:
+                    mc.on_real_trade_tick()
+                except Exception:
+                    pass
 
                 # Capture mid_before from snapshot BEFORE any update
                 asset_id = item.get("asset_id") or item.get("market") or ""
@@ -3294,7 +3302,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.49-D129"   # ← AGENT: bump on every change  # D129: remove _sys.stderr diagnostics from _ws_runner (D128-4 noise reduction)
+    PROCESS_VERSION = "v1.1.50-D131"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

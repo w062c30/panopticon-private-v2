@@ -208,13 +208,13 @@ else:               return None → NO_PRICE_DATA
 
 ---
 
-## Current System Status (as of D126)
+## Current System Status (as of D131)
 
 | Process | Version | Notes |
 |---------|---------|-------|
 | Orchestrator | v1.1.36-D126 | graph_engine dead code removed (Debt-3) |
-| Backend | v1.1.35-D116 | WS idiom cleanup |
-| Radar | v1.1.48-D127 | logger.debug for RADAR DEBUG flood; duplicate variable cleanup |
+| Backend | v1.1.36-D131 | Debt-5 API: real_trade_ticks_60s endpoint |
+| Radar | v1.1.50-D131 | Debt-5: on_real_trade_tick hook wired to mc |
 
 **Active Technical Debt:**
 | ID | 問題 | 優先級 | 目標 Sprint |

@@ -98,6 +98,7 @@ class MetricsCollector:
         self._ws_connected = False
         self._t1 = self._t2 = self._t3 = self._t5 = 0
         self._trade_ticks_60s = _RateCounter(60.0)
+        self._real_trade_ticks_60s = _RateCounter(60.0)  # D131: Debt-5 upper-bound proxy
         self._book_events_60s = _RateCounter(60.0)
         self._current_t1_window_start = 0
         self._current_t1_window_end = 0
@@ -199,6 +200,10 @@ class MetricsCollector:
 
     def on_trade_tick(self) -> None:
         self._trade_ticks_60s.add()
+
+    def on_real_trade_tick(self) -> None:
+        """D131: Debt-5 — real trade event from embedded price or standalone last_trade_price."""
+        self._real_trade_ticks_60s.add()
 
     def on_book_event(self) -> None:
         self._book_events_60s.add()
@@ -677,3 +682,10 @@ class MetricsCollector:
                 return json.load(f)
         except Exception:
             return {}
+
+    # D131: Debt-5 — getter for real_trade_ticks_60s upper-bound proxy
+    def get_real_trade_ticks_60s(self) -> int:
+        return self._real_trade_ticks_60s.count()
+
+    def get_trade_ticks_60s(self) -> int:
+        return self._trade_ticks_60s.count()
