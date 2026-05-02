@@ -214,7 +214,7 @@ else:               return None → NO_PRICE_DATA
 |---------|---------|-------|
 | Orchestrator | v1.1.36-D126 | graph_engine dead code removed (Debt-3) |
 | Backend | v1.1.35-D116 | WS idiom cleanup |
-| Radar | v1.1.47-D125 | WS runner fix + book/real trade heartbeat counters |
+| Radar | v1.1.48-D127 | logger.debug for RADAR DEBUG flood; duplicate variable cleanup |
 
 **Active Technical Debt:**
 | ID | 問題 | 優先級 | 目標 Sprint |
