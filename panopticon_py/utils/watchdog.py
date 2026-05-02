@@ -47,13 +47,14 @@ logger = logging.getLogger(__name__)
 # ── Configuration ───────────────────────────────────────────────────────────────
 
 WATCHED_PROCESSES: dict[str, dict] = {
-    "radar": {
-        # D113: radar normally runs inside orchestrator as asyncio task.
-        # Standalone radar entry for standalone mode / manual testing.
-        "cmd": [sys.executable, "-m", "panopticon_py.hunting.run_radar"],
+    # D132: radar runs inside orchestrator as asyncio task (D79 architecture).
+    # Watchdog monitors orchestrator as the process that hosts radar.
+    # Radar itself does not have a standalone PID — monitoring orchestrator covers radar health.
+    "orchestrator": {
+        "cmd": [sys.executable, "run_hft_orchestrator.py"],
         "cwd": str(Path(__file__).resolve().parents[3]),
-        "log": "run/radar.log",
-        "heartbeat_stale_sec": 90,   # radar writes HB every 5s; 90s = 18x margin
+        "log": "run/orchestrator.log",
+        "heartbeat_stale_sec": 90,   # orchestrator writes HB every 5s; 90s = 18x margin
     },
     "backend": {
         # D113: uvicorn runs on port 8001 (not 8000 — matches restart_all.ps1)
@@ -62,7 +63,7 @@ WATCHED_PROCESSES: dict[str, dict] = {
                 "--host", "0.0.0.0", "--port", "8001"],
         "cwd": str(Path(__file__).resolve().parents[3]),
         "log": "run/backend.log",
-        "heartbeat_stale_sec": 120,  # backend HB cadence is 30s
+        "heartbeat_stale_sec": 60,  # backend writes HB every 30s; 60s = 2x margin
     },
 }
 
@@ -262,7 +263,7 @@ if __name__ == "__main__":
     # D114-3: Register as singleton in manifest so tooling can observe watchdog liveness.
     # In daemon mode: runs in grandchild (after double-fork), so manifest PID is correct.
     from panopticon_py.utils.process_guard import acquire_singleton
-    WATCHDOG_VERSION = "v1.0.0-D114"
+    WATCHDOG_VERSION = "v1.0.1-D132"
     acquire_singleton("watchdog", WATCHDOG_VERSION)
 
     run_watchdog()

@@ -6,7 +6,7 @@
   "backend": "v1.1.36-D131",
   "frontend": "v1.1.11-D111",
   "analysis_worker": "v1.1.13-D90",
-  "watchdog": "v1.0.0-D131",
+  "watchdog": "v1.0.1-D132",
   "arb_scanner": "v0.5.0-D121",
   "last_updated": "2026-05-03T05:55:00Z",
   "updated_by_sprint": "D131",
