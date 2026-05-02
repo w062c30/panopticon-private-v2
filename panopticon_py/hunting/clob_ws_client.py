@@ -49,12 +49,17 @@ async def stream_json_messages(
     except ImportError as e:
         raise RuntimeError("pip install websockets") from e
 
+    import sys as _sys
     u = url or default_clob_ws_url()
+    _sys.stderr.write(f"[WS_DIAG] connecting to {u}\n")
+    _sys.stderr.flush()
     async with websockets.connect(u, ping_interval=20, ping_timeout=20) as ws:
         ping_task = asyncio.create_task(_ws_heartbeat(ws, interval=10.0))
         try:
             if subscribe_payload:
                 payload_str = json.dumps(subscribe_payload)
+                _sys.stderr.write(f"[WS_DIAG] sending payload ({len(payload_str)} bytes)\n")
+                _sys.stderr.flush()
                 logger.info("[WS] Sending subscribe payload: %s", payload_str[:200])
                 await ws.send(payload_str)
             # Fire on_open callback after connection + subscription are established
@@ -66,12 +71,27 @@ async def stream_json_messages(
                 except Exception as exc:
                     logger.warning("[WS] on_open callback error: %s", exc)
 
+            # D123-2: First-message timer — detect silent subscription rejections
+            _first_msg_received = False
+            _subscribe_sent_ts = asyncio.get_event_loop().time()
             while True:
                 if close_event is not None and close_event.is_set():
                     break
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
                 except asyncio.TimeoutError:
+                    # D123-2: 15s without a message — likely silent rejection
+                    if not _first_msg_received:
+                        waited = asyncio.get_event_loop().time() - _subscribe_sent_ts
+                        if waited > 15.0:
+                            _sys.stderr.write(f"[WS_DIAG] 15s silent reject after subscribe\n")
+                            _sys.stderr.flush()
+                            logger.error(
+                                "[WS] No message received %.0fs after subscribe "
+                                "(silent reject?). Forcing reconnect.",
+                                waited,
+                            )
+                            raise Exception(f"ws_silent_after_subscribe_{waited:.0f}s")
                     continue  # Normal: no message yet
                 except asyncio.CancelledError:
                     raise
@@ -82,6 +102,13 @@ async def stream_json_messages(
                 except json.JSONDecodeError:
                     logger.debug("[WS] non-JSON frame dropped: %s", raw[:100])
                     continue
+                # D123-2: First non-PONG, non-error message — log and mark received
+                if not _first_msg_received:
+                    _first_msg_received = True
+                    logger.info(
+                        "[WS] First message received +%.2fs after subscribe",
+                        asyncio.get_event_loop().time() - _subscribe_sent_ts,
+                    )
                 if isinstance(msg, dict):
                     # Per Polymarket WS spec: server responds to PING with PONG.
                     # Filter it out — it carries no market data.
@@ -140,10 +167,27 @@ async def run_ws_loop(
         except Exception as exc:
             if close_event is not None and close_event.is_set():
                 break
+            # D121: Detect 1009 payload-too-large — backoff won't help; signal caller
+            exc_str = str(exc)
+            if "1009" in exc_str or "message too big" in exc_str.lower():
+                token_count = (
+                    len(subscribe_payload.get("assets_ids", []))
+                    if subscribe_payload else -1
+                )
+                logger.error(
+                    "[WS] FATAL: payload too large (1009). "
+                    "tokens=%d — returning to let caller reduce list. "
+                    "DO NOT retry with same payload.",
+                    token_count,
+                )
+                if on_disconnect_cb:
+                    try:
+                        on_disconnect_cb()
+                    except Exception:
+                        pass
+                return  # let _ws_runner rebuild subscription with smaller payload
             backoff = min(30.0, float(os.getenv("HUNT_WS_BACKOFF_SEC", "3")))
-            import traceback as _tb
-            tb_str = _tb.format_exc()
-            logger.warning("[WS] Connection error\n%s", tb_str[:500])
+            logger.warning("[WS] Connection error: %s: %s", type(exc).__name__, exc)
             if on_disconnect_cb:
                 try:
                     on_disconnect_cb()

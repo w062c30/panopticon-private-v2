@@ -1,0 +1,452 @@
+{
+  "test_ts_utc": "2026-05-02T09:58:28Z",
+  "tokens": {
+    "T1": "10079228578089197738",
+    "T2": "46262647079875063382"
+  },
+  "all_results": [
+    {
+      "label": "F_CURRENT",
+      "msgs": [
+        {
+          "id": "2139281",
+          "question": "Solana Up or Down - May 3, 5:45AM-5:50AM ET",
+          "market": "0x88f38c6670b45b4559d2887a1471b3049a707b769827264e7f68db77efb2ca06",
+          "slug": "sol-updown-5m-1777801500",
+          "description": "This market will resolve to \"Up\" if the Solana price at the end of the time range specified in the title is greater than or equal to the price at the beginning of that range. Otherwise, it will resolve to \"Down\".\nThe resolution source for this market is information from Chainlink, specifically the SOL/USD data stream available at https://data.chain.link/streams/sol-usd.\nPlease note that this market is about the price according to Chainlink data stream SOL/USD, not according to other sources or spot markets.",
+          "assets_ids": [
+            "16232574809793623398767563219771186682877199208040046030017457286460650112465",
+            "74740759235190079633021649073529995761245201682507444982071077516731730823243"
+          ],
+          "outcomes": [
+            "Up",
+            "Down"
+          ],
+          "event_message": {
+            "id": "440764",
+            "ticker": "sol-updown-5m-1777801500",
+            "slug": "sol-updown-5m-1777801500",
+            "title": "Solana Up or Down - May 3, 5:45AM-5:50AM ET",
+            "description": "This market will resolve to \"Up\" if the Solana price at the end of the time range specified in the title is greater than or equal to the price at the beginning of that range. Otherwise, it will resolve to \"Down\".\nThe resolution source for this market is information from Chainlink, specifically the SOL/USD data stream available at https://data.chain.link/streams/sol-usd.\nPlease note that this market is about the price according to Chainlink data stream SOL/USD, not according to other sources or spot markets."
+          },
+          "timestamp": "1777715754004",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0x88f38c6670b45b4559d2887a1471b3049a707b769827264e7f68db77efb2ca06",
+          "active": false,
+          "clob_token_ids": [
+            "16232574809793623398767563219771186682877199208040046030017457286460650112465",
+            "74740759235190079633021649073529995761245201682507444982071077516731730823243"
+          ],
+          "sports_market_type": "",
+          "line": "",
+          "game_start_time": "",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.072",
+            "taker_only": true,
+            "rebate_rate": "0.2"
+          }
+        },
+        {
+          "id": "2139255",
+          "question": "Game 3: Any Player Penta Kill?",
+          "market": "0x380af72ff206cc37643cd25fe8b9bef10a1cb688dc4e15acb4bb81cb0e8c1d40",
+          "slug": "lol-khk-big1-2026-05-07-game3-any-player-penta-kill",
+          "description": "This market is about whether any player achieves a Penta Kill during Game 3. In League of Legends, a Penta Kill occurs when a single player kills all 5 enemy champions in rapid succession.\n\nThis market will resolve to \"Yes\" if any player on either team achieves a Penta Kill during Game 3. This market will resolve to \"No\" if no player achieves a Penta Kill.\n\nIf the match is canceled (not played at all) or is delayed beyond 7 days from the scheduled date, this market will resolve to 50-50.\n\nIf Game 3 is never played due to forfeit, disqualification, or walkover, this market will resolve to 50-50.\n\nIf Game 3 is not played because the series result has already been determined (e.g., a team clinches the series before Game 3 is needed), this market will resolve to 50-50.\n\nIf Game 3 begins but is not completed and ends via surrender, this market will resolve based on whether a Penta Kill occurred prior to stoppage. If no Penta Kill occurred, this market will resolve to \"No\".\n\nIf Game 3 is remade, resolution will be based on the remade game only.\n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event's conclusion, a consensus of credible reporting may be used instead including video evidence.",
+          "assets_ids": [
+            "100704382928476829365370253581642782660238637672085005118022137126526280470438",
+            "35064707662233058973399345783119946779638187788738257635003169620429492950599"
+          ],
+          "outcomes": [
+            "Yes",
+            "No"
+          ],
+          "event_message": {
+            "id": "440743",
+            "ticker": "lol-khk-big1-2026-05-07",
+            "slug": "lol-khk-big1-2026-05-07",
+            "title": "LoL: Kaufland Hangry Knights vs BIG (BO3) - Prime League 1st Division Group A",
+            "description": "This market refers to the LoL match between Kaufland Hangry Knights and BIG in the Prime League 1st Division Group A, initially scheduled for May 7 at 1:00PM ET.\n\nThis market will resolve to \"Kaufland Hangry Knights\" if Kaufland Hangry Knights win the match against BIG.\n\nThis market will resolve to \"BIG\" if BIG win the match against Kaufland Hangry Knights.\n\nIf the match is canceled (not played at all), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's forfeiture, disqualification, or walkover, this market will resolve to the team who wins. \n\nIf the match ends in a forfeit, disqualification, or walkover (team withdraws before the start and the other wins automatically), this market will resolve to 50-50. \n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.\n\nIn cases where a team\u2019s listed name includes minor discrepancies from the resolution source, this market will resolve based on the underlying real-world match rather than exact name matching. Recognizable abbreviations, alternate or erroneous spellings, sponsor tags, affiliate or academy designations, regional identifiers, and minor formatting differences will be treated as referring to the same team, provided the intended team can be clearly and uniquely identified within the relevant competition. If a listed team name has no reasonable connection to any participating team, or if it matches or could reasonably refer to another team in the same competition such that the intended team cannot be unambiguously determined, this market will resolve 50-50."
+          },
+          "timestamp": "1777715760125",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0x380af72ff206cc37643cd25fe8b9bef10a1cb688dc4e15acb4bb81cb0e8c1d40",
+          "active": false,
+          "clob_token_ids": [
+            "100704382928476829365370253581642782660238637672085005118022137126526280470438",
+            "35064707662233058973399345783119946779638187788738257635003169620429492950599"
+          ],
+          "sports_market_type": "lol_penta_kill",
+          "line": "",
+          "game_start_time": "2026-05-07 17:00:00+00",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "Any Player Penta Kill",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.03",
+            "taker_only": true,
+            "rebate_rate": "0.25"
+          }
+        },
+        {
+          "id": "2138977",
+          "question": "Ethereum above 2,365 on May 2, 7AM ET?",
+          "market": "0x378929ee60c07d16a5caa04c08038724cb621db5a26823ca23c66c7208afda26",
+          "slug": "ethereum-above-2365-on-may-2-2026-7am-et",
+          "description": "This market will resolve to \"Yes\" if the \"Close\" price for the ETH/USDT 1 hour candle that ends on the time and date specified in the title is higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the ETH/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/ETH_USDT with \"1h\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance ETH/USDT, not according to other exchanges or trading pairs.\n\nPrice precision is determined by the number of decimal places in the source.",
+          "assets_ids": [
+            "91236691707985742136548399123341112925137902797242264830172224225936803850927",
+            "2199052168472977872045066198821195013459768403965642292726800395380142655392"
+          ],
+          "outcomes": [
+            "Yes",
+            "No"
+          ],
+          "event_message": {
+            "id": "440728",
+            "ticker": "ethereum-above-on-may-2-2026-7am-et",
+            "slug": "ethereum-above-on-may-2-2026-7am-et",
+            "title": "Ethereum above ___ on May 2, 7AM ET?",
+            "description": "This market will resolve to \"Yes\" if the \"Close\" price for the ETH/USDT 1 hour candle that ends on the time and date specified in the title is higher than the price specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe resolution source for this market is Binance, specifically the ETH/USDT \"Close\" prices currently available at https://www.binance.com/en/trade/ETH_USDT with \"1h\" and \"Candles\" selected on the top bar.\n\nPlease note that this market is about the price according to Binance ETH/USDT, not according to other exchanges or trading pairs.\n\nPrice precision is determined by the number of decimal places in the source."
+          },
+          "timestamp": "1777715762112",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0x378929ee60c07d16a5caa04c08038724cb621db5a26823ca23c66c7208afda26",
+          "active": false,
+          "clob_token_ids": [
+            "91236691707985742136548399123341112925137902797242264830172224225936803850927",
+            "2199052168472977872045066198821195013459768403965642292726800395380142655392"
+          ],
+          "sports_market_type": "",
+          "line": "",
+          "game_start_time": "",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "2,365",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.072",
+            "taker_only": true,
+            "rebate_rate": "0.2"
+          }
+        },
+        {
+          "id": "2139056",
+          "question": "Game 3: Any Player Quadra Kill?",
+          "market": "0x702d4c3f74ea30e49305035a9e33653a8b6e8db19d2423051bab90a9911cc22e",
+          "slug": "lol-kt-fox1-2026-05-05-game3-any-player-quadra-kill",
+          "description": "This market is about whether any player achieves a Quadra Kill during Game 3. In League of Legends, a Quadra Kill occurs when a single player kills 4 enemy champions in rapid succession.\n\nThis market will resolve to \"Yes\" if any player on either team achieves a Quadra Kill during Game 3. This market will resolve to \"No\" if no player achieves a Quadra Kill. A Penta Kill (5 kills in rapid succession) also counts as a Quadra Kill having occurred for the purposes of this market.\n\nIf the match is canceled (not played at all) or is delayed beyond 7 days from the scheduled date, this market will resolve to 50-50.\n\nIf Game 3 is never played due to forfeit, disqualification, or walkover, this market will resolve to 50-50.\n\nIf Game 3 is not played because the series result has already been determined (e.g., a team clinches the series before Game 3 is needed), this market will resolve to 50-50.\n\nIf Game 3 begins but is not completed and ends via surrender, this market will resolve based on whether a Quadra Kill occurred prior to stoppage. If no Quadra Kill occurred, this market will resolve to \"No\".\n\nIf Game 3 is remade, resolution will be based on the remade game only.\n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event's conclusion, a consensus of credible reporting may be used instead including video evidence.",
+          "assets_ids": [
+            "3507726974504140836217996557962780104717486929122056021271918284356482858030",
+            "87098464564988932875994228005780206903849011392036978702955181346161048866242"
+          ],
+          "outcomes": [
+            "Yes",
+            "No"
+          ],
+          "event_message": {
+            "id": "440732",
+            "ticker": "lol-kt-fox1-2026-05-05",
+            "slug": "lol-kt-fox1-2026-05-05",
+            "title": "LoL: KT Rolster vs BNK FEARX (BO3) - Esports World Cup Korea Qualifier Playoffs",
+            "description": "This market refers to the LoL Upper bracket quarterfinal 3 match between KT Rolster and BNK FEARX in the Esports World Cup Korea Qualifier Playoffs, initially scheduled for May 5 at 4:00AM ET.\n\nThis market will resolve to \"KT Rolster\" if KT Rolster win the match against BNK FEARX.\n\nThis market will resolve to \"BNK FEARX\" if BNK FEARX win the match against KT Rolster.\n\nIf the match is canceled (not played at all), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's forfeiture, disqualification, or walkover, this market will resolve to the team who wins. \n\nIf the match ends in a forfeit, disqualification, or walkover (team withdraws before the start and the other wins automatically), this market will resolve to 50-50. \n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.\n\nIn cases where a team\u2019s listed name includes minor discrepancies from the resolution source, this market will resolve based on the underlying real-world match rather than exact name matching. Recognizable abbreviations, alternate or erroneous spellings, sponsor tags, affiliate or academy designations, regional identifiers, and minor formatting differences will be treated as referring to the same team, provided the intended team can be clearly and uniquely identified within the relevant competition. If a listed team name has no reasonable connection to any participating team, or if it matches or could reasonably refer to another team in the same competition such that the intended team cannot be unambiguously determined, this market will resolve 50-50."
+          },
+          "timestamp": "1777715764344",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0x702d4c3f74ea30e49305035a9e33653a8b6e8db19d2423051bab90a9911cc22e",
+          "active": false,
+          "clob_token_ids": [
+            "3507726974504140836217996557962780104717486929122056021271918284356482858030",
+            "87098464564988932875994228005780206903849011392036978702955181346161048866242"
+          ],
+          "sports_market_type": "lol_quadra_kill",
+          "line": "",
+          "game_start_time": "2026-05-05 08:00:00+00",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "Any Player Quadra Kill",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.03",
+            "taker_only": true,
+            "rebate_rate": "0.25"
+          }
+        },
+        {
+          "id": "2138984",
+          "question": "Counter-Strike: NRG vs FUT Esports - Map 2 Winner",
+          "market": "0x7af3ca46bc21033bb40a795c74419ca9f4b18f57cfcfd15470d127ee7aa4a083",
+          "slug": "cs2-nrg-fut-2026-05-11-game2",
+          "description": "This market refers to the Counter-Strike Upper bracket quarterfinal 4 match between NRG and FUT Esports in the IEM Atlanta Group A, initially scheduled for May 11 at 11:30AM ET.\n\nThis market will resolve to \"NRG\" if NRG win Map 2 against FUT Esports.\n\nThis market will resolve to \"FUT Esports\" if FUT Esports win Map 2 against NRG.\n\nIf the match begins but is not completed, and Map 2 is concluded with a winner determined, this market will resolve based on the completed Map 2. \n\nIf Map 2 is not completed for any reason, this market will resolve 50-50. \n\nIf the match is canceled (not played at all) or is delayed beyond 7 days from the scheduled date without play beginning, this market will resolve 50-50. \n\nThe resolution source for this market will be official information from https://hltv.org. However, if https://hltv.org has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.",
+          "assets_ids": [
+            "108822502321495190278427817340638578520787404169563364938074158684103947896288",
+            "14414907678303683568872183355138115872216490324344017396254168846432130565660"
+          ],
+          "outcomes": [
+            "NRG",
+            "FUT Esports"
+          ],
+          "event_message": {
+            "id": "440730",
+            "ticker": "cs2-nrg-fut-2026-05-11",
+            "slug": "cs2-nrg-fut-2026-05-11",
+            "title": "Counter-Strike: NRG vs FUT Esports (BO3) - IEM Atlanta Group A",
+            "description": "This market refers to the Counter-Strike Upper bracket quarterfinal 4 match between NRG and FUT Esports in the IEM Atlanta Group A, initially scheduled for May 11 at 11:30AM ET.\n\nThis market will resolve to \"NRG\" if NRG win the match against FUT Esports.\n\nThis market will resolve to \"FUT Esports\" if FUT Esports win the match against NRG.\n\nIf the match is canceled (not played at all), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's forfeiture, disqualification, or walkover, this market will resolve to the team who wins. \n\nIf the match ends in a forfeit, disqualification, or walkover (team withdraws before the start and the other wins automatically), this market will resolve to 50-50. \n\nThe resolution source for this market will be official information from https://hltv.org. However, if https://hltv.org has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.\n\nIn cases where a team\u2019s listed name includes minor discrepancies from the resolution source, this market will resolve based on the underlying real-world match rather than exact name matching. Recognizable abbreviations, alternate or erroneous spellings, sponsor tags, affiliate or academy designations, regional identifiers, and minor formatting differences will be treated as referring to the same team, provided the intended team can be clearly and uniquely identified within the relevant competition. If a listed team name has no reasonable connection to any participating team, or if it matches or could reasonably refer to another team in the same competition such that the intended team cannot be unambiguously determined, this market will resolve 50-50."
+          },
+          "timestamp": "1777715764596",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0x7af3ca46bc21033bb40a795c74419ca9f4b18f57cfcfd15470d127ee7aa4a083",
+          "active": false,
+          "clob_token_ids": [
+            "108822502321495190278427817340638578520787404169563364938074158684103947896288",
+            "14414907678303683568872183355138115872216490324344017396254168846432130565660"
+          ],
+          "sports_market_type": "child_moneyline",
+          "line": "",
+          "game_start_time": "2026-05-11 15:30:00+00",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "Map 2 Winner",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.03",
+            "taker_only": true,
+            "rebate_rate": "0.25"
+          }
+        },
+        {
+          "id": "2139288",
+          "question": "Dogecoin Up or Down - May 3, 5:45AM-5:50AM ET",
+          "market": "0xda36b3ba3748a3f24e642a243bbd624d877d76ba3787a989a21d9308611cc686",
+          "slug": "doge-updown-5m-1777801500",
+          "description": "This market will resolve to \"Up\" if the Dogecoin price at the end of the time range specified in the title is greater than or equal to the price at the beginning of that range. Otherwise, it will resolve to \"Down\".\nThe resolution source for this market is information from Chainlink, specifically the DOGE/USD data stream available at https://data.chain.link/streams/doge-usd.\nPlease note that this market is about the price according to Chainlink data stream DOGE/USD, not according to other sources or spot markets.",
+          "assets_ids": [
+            "93006531778405770750724952062221424722822945859619163457444581543854086555312",
+            "64133061922338349597151786157759193525179104433121246859344105625559427580345"
+          ],
+          "outcomes": [
+            "Up",
+            "Down"
+          ],
+          "event_message": {
+            "id": "440771",
+            "ticker": "doge-updown-5m-1777801500",
+            "slug": "doge-updown-5m-1777801500",
+            "title": "Dogecoin Up or Down - May 3, 5:45AM-5:50AM ET",
+            "description": "This market will resolve to \"Up\" if the Dogecoin price at the end of the time range specified in the title is greater than or equal to the price at the beginning of that range. Otherwise, it will resolve to \"Down\".\nThe resolution source for this market is information from Chainlink, specifically the DOGE/USD data stream available at https://data.chain.link/streams/doge-usd.\nPlease note that this market is about the price according to Chainlink data stream DOGE/USD, not according to other sources or spot markets."
+          },
+          "timestamp": "1777715767434",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0xda36b3ba3748a3f24e642a243bbd624d877d76ba3787a989a21d9308611cc686",
+          "active": false,
+          "clob_token_ids": [
+            "93006531778405770750724952062221424722822945859619163457444581543854086555312",
+            "64133061922338349597151786157759193525179104433121246859344105625559427580345"
+          ],
+          "sports_market_type": "",
+          "line": "",
+          "game_start_time": "",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.072",
+            "taker_only": true,
+            "rebate_rate": "0.2"
+          }
+        }
+      ],
+      "event_types": [
+        "new_market"
+      ],
+      "error": null
+    },
+    {
+      "label": "F_NO_S",
+      "msgs": [
+        {
+          "id": "2138931",
+          "question": "Game Handicap: KRX (-1.5) vs DN SOOPers (+1.5)",
+          "market": "0xee5672da36fdd771891a6a8432a78252db9b1c173cc0c52e5ce2a4c7e8a0b7c5",
+          "slug": "lol-drx-dnf-2026-05-04-game-handicap-away-1pt5",
+          "description": "This market refers to the LoL Upper bracket round 1 match between Kiwoom DRX and DN SOOPers in the Esports World Cup Korea Qualifier Playoffs, initially scheduled for May 4 at 3:00AM ET.\n\nThis market will resolve to \"Kiwoom DRX\" if Kiwoom DRX wins 2 or more games than DN SOOPers in this match.\n\nOtherwise, this market will resolve to \"DN SOOPers\". \n\nGames won by forfeit, disqualification, walkover, or default are counted towards the handicap, provided that the match is completed.\n\nIf the match is canceled (not played at all for any reason), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's match forfeiture, disqualification, or walkover, this market will resolve to 50-50. \n\nIf the match ends due to the clinching game being forfeited this will count as a completed match.\n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.",
+          "assets_ids": [
+            "93294620742581734005226674055321905459821362547028641398967276155058589778468",
+            "59928625389931764116747873821083069226111259434595286708568707271195564165362"
+          ],
+          "outcomes": [
+            "Kiwoom DRX",
+            "DN SOOPers"
+          ],
+          "event_message": {
+            "id": "440726",
+            "ticker": "lol-drx-dnf-2026-05-04",
+            "slug": "lol-drx-dnf-2026-05-04",
+            "title": "LoL: Kiwoom DRX vs DN SOOPers (BO3) - Esports World Cup Korea Qualifier Playoffs",
+            "description": "This market refers to the LoL Upper bracket round 1 match between Kiwoom DRX and DN SOOPers in the Esports World Cup Korea Qualifier Playoffs, initially scheduled for May 4 at 3:00AM ET.\n\nThis market will resolve to \"Kiwoom DRX\" if Kiwoom DRX win the match against DN SOOPers.\n\nThis market will resolve to \"DN SOOPers\" if DN SOOPers win the match against Kiwoom DRX.\n\nIf the match is canceled (not played at all), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's forfeiture, disqualification, or walkover, this market will resolve to the team who wins. \n\nIf the match ends in a forfeit, disqualification, or walkover (team withdraws before the start and the other wins automatically), this market will resolve to 50-50. \n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.\n\nIn cases where a team\u2019s listed name includes minor discrepancies from the resolution source, this market will resolve based on the underlying real-world match rather than exact name matching. Recognizable abbreviations, alternate or erroneous spellings, sponsor tags, affiliate or academy designations, regional identifiers, and minor formatting differences will be treated as referring to the same team, provided the intended team can be clearly and uniquely identified within the relevant competition. If a listed team name has no reasonable connection to any participating team, or if it matches or could reasonably refer to another team in the same competition such that the intended team cannot be unambiguously determined, this market will resolve 50-50."
+          },
+          "timestamp": "1777715778526",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0xee5672da36fdd771891a6a8432a78252db9b1c173cc0c52e5ce2a4c7e8a0b7c5",
+          "active": false,
+          "clob_token_ids": [
+            "93294620742581734005226674055321905459821362547028641398967276155058589778468",
+            "59928625389931764116747873821083069226111259434595286708568707271195564165362"
+          ],
+          "sports_market_type": "map_handicap",
+          "line": "-1.5",
+          "game_start_time": "2026-05-04 07:00:00+00",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "Game Handicap: KRX (-1.5) vs DN SOOPers (+1.5)",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.03",
+            "taker_only": true,
+            "rebate_rate": "0.25"
+          }
+        }
+      ],
+      "event_types": [
+        "new_market"
+      ],
+      "error": null
+    },
+    {
+      "label": "F_SUBSCRIBE",
+      "msgs": [
+        {
+          "id": "2139218",
+          "question": "Game 1: Both Teams Destroy Inhibitors?",
+          "market": "0xfa71d9a6e00478b59335003ae9c7f867da3e2188b1113af2e5d000eafa168838",
+          "slug": "lol-sge-es1-2026-05-07-game1-both-teams-destroy-inhibitors",
+          "description": "This market is about whether both teams destroy at least one enemy inhibitor during Game 1. In League of Legends, each team has three inhibitors (one in each lane), located behind the inner turrets.\n\nThis market will resolve to \"Yes\" if both Eintracht Frankfurt and Eintracht Spandau each destroy at least one enemy inhibitor during Game 1. This market will resolve to \"No\" if either team (or both teams) do not destroy any enemy inhibitors.\n\nIf the match is canceled (not played at all) or is delayed beyond 7 days from the scheduled date, this market will resolve to 50-50.\n\nIf Game 1 is never played due to forfeit, disqualification, or walkover, this market will resolve to 50-50.\n\nIf Game 1 is not played because the series result has already been determined (e.g., a team clinches the series before Game 1 is needed), this market will resolve to 50-50.\n\nIf Game 1 begins but is not completed and ends via surrender, this market will resolve based on whether both teams destroyed at least one inhibitor prior to stoppage. If the condition was not met, this market will resolve to \"No\".\n\nIf Game 1 is remade, resolution will be based on the remade game only.\n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event's conclusion, a consensus of credible reporting may be used instead including video evidence.",
+          "assets_ids": [
+            "54037369920619658726743584336639648450741031975721168388640661127579342238758",
+            "7024752532375019812320723438860992756268430915654733578578683264367183185578"
+          ],
+          "outcomes": [
+            "Yes",
+            "No"
+          ],
+          "event_message": {
+            "id": "440742",
+            "ticker": "lol-sge-es1-2026-05-07",
+            "slug": "lol-sge-es1-2026-05-07",
+            "title": "LoL: Eintracht Frankfurt vs Eintracht Spandau (BO3) - Prime League 1st Division Group B",
+            "description": "This market refers to the LoL match between Eintracht Frankfurt and Eintracht Spandau in the Prime League 1st Division Group B, initially scheduled for May 7 at 11:00AM ET.\n\nThis market will resolve to \"Eintracht Frankfurt\" if Eintracht Frankfurt win the match against Eintracht Spandau.\n\nThis market will resolve to \"Eintracht Spandau\" if Eintracht Spandau win the match against Eintracht Frankfurt.\n\nIf the match is canceled (not played at all), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's forfeiture, disqualification, or walkover, this market will resolve to the team who wins. \n\nIf the match ends in a forfeit, disqualification, or walkover (team withdraws before the start and the other wins automatically), this market will resolve to 50-50. \n\nThe resolution source for this market will be official information from https://gol.gg/esports/home. However, if https://gol.gg/esports/home has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.\n\nIn cases where a team\u2019s listed name includes minor discrepancies from the resolution source, this market will resolve based on the underlying real-world match rather than exact name matching. Recognizable abbreviations, alternate or erroneous spellings, sponsor tags, affiliate or academy designations, regional identifiers, and minor formatting differences will be treated as referring to the same team, provided the intended team can be clearly and uniquely identified within the relevant competition. If a listed team name has no reasonable connection to any participating team, or if it matches or could reasonably refer to another team in the same competition such that the intended team cannot be unambiguously determined, this market will resolve 50-50."
+          },
+          "timestamp": "1777715811828",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0xfa71d9a6e00478b59335003ae9c7f867da3e2188b1113af2e5d000eafa168838",
+          "active": false,
+          "clob_token_ids": [
+            "54037369920619658726743584336639648450741031975721168388640661127579342238758",
+            "7024752532375019812320723438860992756268430915654733578578683264367183185578"
+          ],
+          "sports_market_type": "lol_both_teams_inhibitors",
+          "line": "",
+          "game_start_time": "2026-05-07 15:00:00+00",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "Both Teams Destroy Inhibitors",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.03",
+            "taker_only": true,
+            "rebate_rate": "0.25"
+          }
+        },
+        {
+          "id": "2139034",
+          "question": "Counter-Strike: Natus Vincere vs Passion UA - Map 2 Winner",
+          "market": "0x8ea7a4d7e6e2647da57a99d982dd88c4181cb4b82ff58f7ab2bc93fe081b45b3",
+          "slug": "cs2-navi-pssnua-2026-05-11-game2",
+          "description": "This market refers to the Counter-Strike Upper bracket quarterfinal 1 match between Natus Vincere and Passion UA in the IEM Atlanta Group B, initially scheduled for May 11 at 11:30AM ET.\n\nThis market will resolve to \"Natus Vincere\" if Natus Vincere win Map 2 against Passion UA.\n\nThis market will resolve to \"Passion UA\" if Passion UA win Map 2 against Natus Vincere.\n\nIf the match begins but is not completed, and Map 2 is concluded with a winner determined, this market will resolve based on the completed Map 2. \n\nIf Map 2 is not completed for any reason, this market will resolve 50-50. \n\nIf the match is canceled (not played at all) or is delayed beyond 7 days from the scheduled date without play beginning, this market will resolve 50-50. \n\nThe resolution source for this market will be official information from https://hltv.org. However, if https://hltv.org has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.",
+          "assets_ids": [
+            "62235143465116556599236909149871967109050002241210556919203060834592429327712",
+            "103822135518975982097288750541849545636727855834157670538902894597438535198823"
+          ],
+          "outcomes": [
+            "Natus Vincere",
+            "Passion UA"
+          ],
+          "event_message": {
+            "id": "440733",
+            "ticker": "cs2-navi-pssnua-2026-05-11",
+            "slug": "cs2-navi-pssnua-2026-05-11",
+            "title": "Counter-Strike: Natus Vincere vs Passion UA (BO3) - IEM Atlanta Group B",
+            "description": "This market refers to the Counter-Strike Upper bracket quarterfinal 1 match between Natus Vincere and Passion UA in the IEM Atlanta Group B, initially scheduled for May 11 at 11:30AM ET.\n\nThis market will resolve to \"Natus Vincere\" if Natus Vincere win the match against Passion UA.\n\nThis market will resolve to \"Passion UA\" if Passion UA win the match against Natus Vincere.\n\nIf the match is canceled (not played at all), ends in a tie, or is delayed beyond 7 days from the scheduled date without a winner determined, this market will resolve to 50-50. \n\nIf the match begins but is not completed, and one team wins due to the opponent's forfeiture, disqualification, or walkover, this market will resolve to the team who wins. \n\nIf the match ends in a forfeit, disqualification, or walkover (team withdraws before the start and the other wins automatically), this market will resolve to 50-50. \n\nThe resolution source for this market will be official information from https://hltv.org. However, if https://hltv.org has not published final results within 2 hours after the event\u2019s conclusion, a consensus of credible reporting may be used instead including video evidence.\n\nIn cases where a team\u2019s listed name includes minor discrepancies from the resolution source, this market will resolve based on the underlying real-world match rather than exact name matching. Recognizable abbreviations, alternate or erroneous spellings, sponsor tags, affiliate or academy designations, regional identifiers, and minor formatting differences will be treated as referring to the same team, provided the intended team can be clearly and uniquely identified within the relevant competition. If a listed team name has no reasonable connection to any participating team, or if it matches or could reasonably refer to another team in the same competition such that the intended team cannot be unambiguously determined, this market will resolve 50-50."
+          },
+          "timestamp": "1777715817741",
+          "event_type": "new_market",
+          "tags": [],
+          "condition_id": "0x8ea7a4d7e6e2647da57a99d982dd88c4181cb4b82ff58f7ab2bc93fe081b45b3",
+          "active": false,
+          "clob_token_ids": [
+            "62235143465116556599236909149871967109050002241210556919203060834592429327712",
+            "103822135518975982097288750541849545636727855834157670538902894597438535198823"
+          ],
+          "sports_market_type": "child_moneyline",
+          "line": "",
+          "game_start_time": "2026-05-11 15:30:00+00",
+          "order_price_min_tick_size": "0.01",
+          "group_item_title": "Map 2 Winner",
+          "taker_base_fee": "1000",
+          "fees_enabled": true,
+          "fee_schedule": {
+            "exponent": "1",
+            "rate": "0.03",
+            "taker_only": true,
+            "rebate_rate": "0.25"
+          }
+        }
+      ],
+      "event_types": [
+        "new_market"
+      ],
+      "error": null
+    },
+    {
+      "label": "F_SUBSCRIBE_NO_S",
+      "msgs": [],
+      "event_types": [],
+      "error": null
+    },
+    {
+      "label": "F_ARRAY",
+      "msgs": [],
+      "event_types": [],
+      "error": "no close frame received or sent"
+    },
+    {
+      "label": "F_BARE",
+      "msgs": [],
+      "event_types": [],
+      "error": null
+    }
+  ],
+  "winners": [],
+  "winning_format": null
+}

@@ -1,0 +1,32 @@
+{
+  "slug": "btc-updown-5m-1777716000",
+  "T1": "68455739293437037284",
+  "T2": "55053282030492462795",
+  "active": true,
+  "results": [
+    {
+      "label": "F_CURRENT",
+      "msgs": 17661,
+      "types": [
+        "book",
+        "price_change",
+        "best_bid_ask",
+        "last_trade_price",
+        "new_market"
+      ],
+      "winner": true
+    },
+    {
+      "label": "F_SUBSCRIBE",
+      "msgs": 10320,
+      "types": [
+        "book",
+        "price_change",
+        "last_trade_price",
+        "best_bid_ask",
+        "new_market"
+      ],
+      "winner": true
+    }
+  ]
+}

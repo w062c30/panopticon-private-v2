@@ -535,12 +535,67 @@ _refresh_interval_sec: float = 60.0
 _TIER1_REFRESH_INTERVAL_SEC = 60.0  # Tier 1 refreshes every 60s (5-min markets expire frequently)
 _POL_REFRESH_INTERVAL_SEC = 1800.0  # D101: T2-POL refreshes every 30 minutes
 
+# D121: WS subscription token limit (stay under 1MB Polymarket payload limit)
+_WS_TOKEN_LIMIT = 200  # 200 tokens × ~66 bytes/addr ≈ 13KB, well under 1MB
+# D121: Timestamp of last 1009 error — used to prevent immediate rebuild after FATAL payload error
+_ws_1009_last_failure: float = 0.0
+
 # D30: preserve last successful tier token sets to avoid subscription flapping
 # when a refresh call is rate-limited and returns [].
 _cached_t1_tokens: list[str] = []
 _cached_t2_tokens: list[str] = []
 _cached_t5_tokens: list[str] = []
 _cached_t3_tokens: list[str] = []
+
+# D121: Build WS subscription token list within payload size limit.
+# Priority: T1 (BTC 5m) > POL T2 > general T2. T3/T5 excluded — REST polling sufficient.
+# Extracts POL tokens directly from _token_tier_map (avoids threading pol_tokens through call chain).
+def _build_ws_token_list(
+    t1_tokens: list[str],
+    t2_tokens: list[str],
+    limit: int = _WS_TOKEN_LIMIT,
+) -> list[str]:
+    """
+    D121: Build WS subscription token list within payload size limit.
+    Priority: T1 > POL (T2-POL) > T2 general.
+    T3/T5 excluded from WS entirely — REST polling sufficient for those tiers.
+    POL tokens are derived from _token_tier_map at call time (global state, set by refresh loop).
+    """
+    ws_tokens: list[str] = []
+    seen: set[str] = set()
+
+    # Derive POL tokens from _token_tier_map at call time
+    pol_tokens = [tok for tok, tier in _token_tier_map.items() if tier == "t2_pol"]
+
+    # Priority 1: All T1 tokens (~30, includes BTC 5m)
+    for tok in t1_tokens:
+        if tok not in seen and len(ws_tokens) < limit:
+            ws_tokens.append(tok)
+            seen.add(tok)
+
+    # Priority 2: POL tokens (~50-100, YES+NO)
+    for tok in pol_tokens:
+        if tok not in seen and len(ws_tokens) < limit:
+            ws_tokens.append(tok)
+            seen.add(tok)
+
+    # Priority 3: T2 general (fill remaining budget)
+    remaining = limit - len(ws_tokens)
+    for tok in t2_tokens:
+        if tok not in seen and remaining > 0:
+            ws_tokens.append(tok)
+            seen.add(tok)
+            remaining -= 1
+
+    logger.info(
+        "[WS_BUILD] ws_tokens=%d (t1=%d pol=%d t2_fill=%d) limit=%d",
+        len(ws_tokens),
+        len([t for t in t1_tokens if t in seen]),
+        len([t for t in pol_tokens if t in seen]),
+        len(ws_tokens) - len([t for t in t1_tokens if t in seen]) - len([t for t in pol_tokens if t in seen]),
+        limit,
+    )
+    return ws_tokens
 
 # ── Module-level DB reference ──────────────────────────────────────────────────
 # Set once in _main_async() before any async tasks that need DB access.
@@ -2045,6 +2100,9 @@ _ws_raw_msg_count = 0
 _ws_trade_count = 0
 _ws_entropy_fire_count = 0
 _ws_kyle_sample_count = 0  # D9: Kyle λ samples from book_embedded + standalone
+_ws_last_stream_msg_ts = 0.0  # D123: timestamp of last message from stream_json_messages
+_ws_entropy_fire_count = 0
+_ws_kyle_sample_count = 0  # D9: Kyle λ samples from book_embedded + standalone
 _last_ws_diag_log_ts = 0.0
 _WS_DIAG_LOG_INTERVAL_SEC = 60.0
 _FIRST_TRADE_TICK_LOGGED = False  # Task C: one-time TRADE_TICK diagnostic
@@ -2183,7 +2241,8 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             asset_id_top = item.get("asset_id") or item.get("market") or ""
             tier_top = _token_tier_map.get(asset_id_top, "unknown")
             if tier_top == "t1":
-                logger.debug(
+                # D122-3: INFO level so we can see actual event types in production logs
+                logger.info(
                     "[DIAG][WS_EVENT_RAW] type=%s asset=%s keys=%s",
                     event_type,
                     asset_id_top[:20] if asset_id_top else "None",
@@ -2245,6 +2304,14 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     mc.on_trade_tick()
                 except Exception:
                     pass
+
+                # D122 (REVERTED D124): Count ALL book events in _ws_trade_count.
+                # BTC 5m book events ALWAYS carry embedded last_trade_price.
+                # The original "if not embedded_trade_price" guard caused trade_ticks_60s=0.
+                # D124: Count every book event — heartbeat should reflect WS activity,
+                # not just "real trades without a companion last_trade_price event".
+                global _ws_trade_count
+                _ws_trade_count += 1
 
                 # Step 3: Kyle λ calculation from embedded trade (D9 APPROVED)
                 # NOTE: book events may NOT contain last_trade_price in practice.
@@ -2787,8 +2854,33 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     )
 
     if _current_tokens:
-        sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
-        logger.info("[RADAR] Initial subscription: %d tokens", len(_current_tokens))
+        # D121: Build WS token list within payload size limit for initial subscription
+        ws_tokens = _build_ws_token_list(
+            _cached_t1_tokens,
+            _cached_t2_tokens,
+            limit=_WS_TOKEN_LIMIT,
+        )
+        sub = {"assets_ids": ws_tokens, "type": "market", "custom_feature_enabled": True}
+        # D121-3: Payload size pre-check for initial subscription
+        import json as _json
+        payload_bytes = len(_json.dumps(sub).encode("utf-8"))
+        safe_flag = "YES" if payload_bytes < 900_000 else "NO"
+        logger.info(
+            "[WS_PAYLOAD][INIT] tokens=%d estimated_bytes=%d limit=1048576 safe=%s",
+            len(ws_tokens), payload_bytes, safe_flag,
+        )
+        if payload_bytes >= 1_000_000:
+            logger.error(
+                "[WS_PAYLOAD][INIT] OVERSIZED — truncating to T1 only. "
+                "tokens=%d bytes=%d",
+                len(ws_tokens), payload_bytes,
+            )
+            ws_tokens = list(_cached_t1_tokens)
+            sub = {"assets_ids": ws_tokens, "type": "market", "custom_feature_enabled": True}
+        logger.info("[RADAR] Initial subscription: %d tokens (ws_only, %d total)", len(ws_tokens), len(_current_tokens))
+        # D121-4: Update WS subscription metrics for initial subscription
+        if mc:
+            mc.on_ws_subscription_update(len(ws_tokens), len(_current_tokens), payload_bytes)
     else:
         sub = None
         logger.warning("[RADAR] No active tokens found, WS may receive no data")
@@ -2805,15 +2897,73 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     # ── Run WS persistently (restarts when reconnect_now is set) ──────────
     async def _ws_runner() -> None:
         nonlocal reconnect_now, sub
+        global _ws_1009_last_failure
+        import sys as _sys
+        _sys.stderr.write(f"[RADAR_STDERR] _ws_runner ENTERING, sub={sub is not None}\n")
+        _sys.stderr.flush()
         while True:
+            _sys.stderr.write(f"[RADAR_STDERR] loop top, reconnect_now={reconnect_now}\n")
+            _sys.stderr.flush()
+            now = time.monotonic()
+            # D121: After 1009 FATAL error, wait 60s before rebuilding to avoid spin loop
+            if _ws_1009_last_failure and (now - _ws_1009_last_failure) < 60.0:
+                await asyncio.sleep(5.0)
+                continue
             if reconnect_now or _current_tokens != (sub or {}).get("assets_ids", []):
                 reconnect_now = False
                 if not _current_tokens:
                     await asyncio.sleep(1.0)
                     continue
-                sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
-                logger.info("[RADAR] WS reconnecting with %d tokens...", len(_current_tokens))
+                # D121: Build WS token list within payload size limit
+                # Priority: T1 (BTC 5m) > POL T2 > general T2. T3/T5 excluded.
+                ws_tokens = _build_ws_token_list(
+                    _cached_t1_tokens,
+                    _cached_t2_tokens,
+                    limit=_WS_TOKEN_LIMIT,
+                )
+                sub = {"assets_ids": ws_tokens, "type": "market", "custom_feature_enabled": True}
+                # D121-3: Payload size pre-check log — before sending to WS layer
+                import json as _json
+                payload_bytes = len(_json.dumps(sub).encode("utf-8"))
+                safe_flag = "YES" if payload_bytes < 900_000 else "NO"
+                logger.info(
+                    "[WS_PAYLOAD] tokens=%d estimated_bytes=%d limit=1048576 safe=%s",
+                    len(ws_tokens), payload_bytes, safe_flag,
+                )
+                if payload_bytes >= 1_000_000:
+                    logger.error(
+                        "[WS_PAYLOAD] OVERSIZED — truncating to T1 only. "
+                        "tokens=%d bytes=%d",
+                        len(ws_tokens), payload_bytes,
+                    )
+                    # Emergency truncation: keep only T1 tokens
+                    ws_tokens = list(_cached_t1_tokens)
+                    sub = {"assets_ids": ws_tokens, "type": "market", "custom_feature_enabled": True}
+                logger.info(
+                    "[RADAR] WS reconnecting with %d tokens (ws_only, %d total in tier_map)...",
+                    len(ws_tokens), len(_current_tokens),
+                )
+                # D121-4: Update WS subscription metrics
+                if mc:
+                    mc.on_ws_subscription_update(
+                        len(ws_tokens), len(_current_tokens), payload_bytes
+                    )
             _close_event.clear()
+            # D123-1: Lifecycle log — every entry to run_ws_loop
+            _ws_attempt_count = getattr(_ws_runner, "_attempt_count", 0) + 1
+            _ws_runner._attempt_count = _ws_attempt_count  # type: ignore[attr-defined]
+            first_asset = (sub.get("assets_ids") or ["(none)"])[0] if sub else "(none)"
+            logger.info(
+                "[WS_RUNNER][ENTER] attempt=%d assets_count=%d first_asset=%s",
+                _ws_attempt_count,
+                len(sub.get("assets_ids", [])) if sub else 0,
+                str(first_asset)[:20],
+            )
+            import sys as _sys
+            _sys.stderr.write(
+                f"[RADAR_DIAG][PRE_WS] attempt={_ws_attempt_count} sub_assets={len(sub.get('assets_ids',[])) if sub else 0}\n"
+            )
+            _sys.stderr.flush()
             try:
                 await run_ws_loop(
                     _on_message,
@@ -2823,11 +2973,32 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     on_disconnect_cb=(lambda: (mc.on_ws_disconnected() if mc else None)) if mc else None,
                     close_event=_close_event,
                 )
+                _sys.stderr.write(f"[RADAR_DIAG][POST_WS] run_ws_loop returned normally\n")
+                _sys.stderr.flush()
+                # D121: run_ws_loop returned normally — reset 1009 flag so next attempt can proceed
+                _ws_1009_last_failure = 0.0
+                _ws_last_stream_msg_ts = time.monotonic()  # D123: reset on clean exit
+                logger.info("[WS_RUNNER][EXIT_CLEAN] run_ws_loop returned normally")
             except asyncio.CancelledError:
                 # Expected on reconnect signal — loop continues
-                pass
+                logger.warning("[WS_RUNNER][CANCELLED] task cancelled externally")
+                raise
             except Exception as exc:
-                logger.warning("[RADAR] WS error: %s, will retry after backoff", exc)
+                import traceback as _tb
+                tok_count = len(sub.get("assets_ids", [])) if sub else -1
+                logger.error(
+                    "[WS_RUNNER][EXCEPTION] %s tokens=%d\n%s",
+                    exc, tok_count, _tb.format_exc()[:1000],
+                )
+                if "1009" in str(exc) or "message too big" in str(exc).lower():
+                    _ws_1009_last_failure = time.monotonic()
+                    logger.warning(
+                        "[RADAR] WS 1009 received (payload still too large). "
+                        "Will retry in 60s. tokens=%d",
+                        tok_count,
+                    )
+                else:
+                    logger.warning("[RADAR] WS error: %s, will retry after backoff", exc)
                 await asyncio.sleep(5)
 
     ws_task = asyncio.create_task(_ws_runner())
@@ -3126,7 +3297,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.41-D119"   # ← AGENT: bump on every change  # D119: fix arb_scanner CLOB token_id fetch + assets_ids WS format
+    PROCESS_VERSION = "v1.1.46-D124"   # ← AGENT: bump on every change  # D124: fix trade_ticks_60s=0 — count ALL book events (Polymarket book events always carry embedded last_trade_price, so previous guard excluded all events)
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

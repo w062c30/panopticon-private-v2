@@ -20,6 +20,10 @@ class WsStats:
     secs_remaining_in_window: float = 0.0
     t1_rollover_count_today: int = 0
     elapsed_since_last_ws_msg: float = 0.0
+    # D121: WS subscription token tracking
+    ws_subscribed_tokens: int = 0  # tokens actually sent to WS (ws_only subset)
+    ws_total_tokens: int = 0  # total tokens in all tiers (includes REST-polled T3/T5)
+    ws_last_payload_bytes: int = 0  # bytes of last WS subscription payload
 
 
 @dataclass

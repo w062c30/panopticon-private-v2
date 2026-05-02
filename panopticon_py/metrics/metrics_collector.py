@@ -106,6 +106,11 @@ class MetricsCollector:
         self._last_rollover_log_ts = 0.0
         self._last_ws_msg_ts = 0.0
 
+        # D121: WS subscription token tracking
+        self._ws_subscribed_tokens = 0
+        self._ws_total_tokens = 0
+        self._ws_last_payload_bytes = 0
+
         # ── Kyle stats ─────────────────────────────────────────────────────────
         self._kyle_samples: deque[tuple[float, str, float]] = deque()  # (ts, asset_id, lambda)
         self._kyle_compute_rc = _RateCounter(60.0)
@@ -174,6 +179,12 @@ class MetricsCollector:
 
     def on_ws_disconnected(self) -> None:
         self._ws_connected = False
+
+    def on_ws_subscription_update(self, ws_tokens: int, total_tokens: int, payload_bytes: int) -> None:
+        """D121: Track WS subscription token counts and payload size."""
+        self._ws_subscribed_tokens = ws_tokens
+        self._ws_total_tokens = total_tokens
+        self._ws_last_payload_bytes = payload_bytes
 
     def on_ws_message(self) -> None:
         self._last_ws_msg_ts = time.time()
@@ -537,6 +548,10 @@ class MetricsCollector:
                 secs_remaining_in_window=self._secs_remaining,
                 t1_rollover_count_today=self._t1_rollover_count,
                 elapsed_since_last_ws_msg=now - self._last_ws_msg_ts if self._last_ws_msg_ts > 0 else 9999.0,
+                # D121: WS subscription token tracking
+                ws_subscribed_tokens=self._ws_subscribed_tokens,
+                ws_total_tokens=self._ws_total_tokens,
+                ws_last_payload_bytes=self._ws_last_payload_bytes,
             ),
             kyle=KyleStats(
                 sample_count=len(recent),
