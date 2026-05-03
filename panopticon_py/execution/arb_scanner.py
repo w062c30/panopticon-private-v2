@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.10-D149"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters  # D149-1: _token_ids dataclass field explicit init  # D149-2: reconnect_count excludes first connection  # D149-4: opportunities_log deque(maxlen=10000)
+PROCESS_VERSION = "v0.5.11-D150"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters  # D149-1: _token_ids dataclass field explicit init  # D149-2: reconnect_count excludes first connection  # D149-4: opportunities_log deque(maxlen=10000)  # D150-2: books memory cap via _book_last_update stale cleanup
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -256,6 +256,8 @@ class ArbScanner:
     _reconnect_count: int = field(default=0, init=False)
     _opp_count_total: int = field(default=0, init=False)
     _last_flush_ts: float = field(default_factory=time.time, init=False)
+    # D150-2: Track market book last update time for stale cleanup
+    _book_last_update: dict[str, float] = field(default_factory=dict, init=False)
 
     # D137-1: 30s fixed heartbeat — independent of WS message frequency
     def _heartbeat_loop(self) -> None:
@@ -382,6 +384,15 @@ class ArbScanner:
             return
 
         try:
+            # D150-2: Clean up stale market books (>24h without update)
+            cutoff = time.time() - 86400
+            stale = [mid for mid, ts in self._book_last_update.items() if ts < cutoff]
+            if stale:
+                for mid in stale:
+                    self.books.pop(mid, None)
+                    self._book_last_update.pop(mid, None)
+                logger.info("[ARB_STATS] Cleaned %d stale market books (>24h)", len(stale))
+
             now_iso = datetime.now(timezone.utc).isoformat()
             total_updates = sum(self._update_counter.values())
             active_tokens = len([v for v in self._update_counter.values() if v > 0])
@@ -605,6 +616,7 @@ class ArbScanner:
             except (ValueError, TypeError):
                 return
             self.books[market_id][outcome] = PriceLevel(price=price, size=size)
+            self._book_last_update[market_id] = time.time()  # D150-2: track last update for stale cleanup
 
         # D120-P2: Log stats summary every 60 seconds
         now = time.time()

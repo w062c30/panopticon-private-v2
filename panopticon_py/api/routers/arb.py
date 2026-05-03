@@ -1,5 +1,5 @@
 """
-D148-3: Arb Scanner API router.
+D150-1: Arb Scanner API router.
 Provides /api/arb/health and /api/arb/stats endpoints.
 """
 from __future__ import annotations
@@ -80,7 +80,9 @@ def arb_health() -> dict[str, Any]:
         "heartbeat_bootstrapping": age_sec is None and pid_alive,
         "crash_reason": entry.get("crash_reason"),
         # D149-3: reconnect_warning flags excessive WS reconnects
+        # D150-1: reconnect_critical flags sustained instability
         "reconnect_warning": reconnect_count > 3,
+        "reconnect_critical": reconnect_count > 10,
         "reconnect_count": reconnect_count,
         "ts": utc_now_rfc3339_ms(),
     }

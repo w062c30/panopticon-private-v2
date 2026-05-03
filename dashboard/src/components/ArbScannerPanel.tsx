@@ -19,6 +19,7 @@ interface ArbHealth {
   heartbeat_bootstrapping: boolean;
   crash_reason: string | null;
   reconnect_warning: boolean;  // D149-3
+  reconnect_critical: boolean;  // D150-1
   reconnect_count: number;   // D149-3
   ts: string;
 }
@@ -103,8 +104,8 @@ export function ArbScannerPanel() {
     ? "STALE"
     : "LIVE";
 
-  // D149-3: reconnect warning
-  const reconnectWarn = health?.reconnect_count > 10
+  // D149-3: reconnect warning — D150-1: use backend-provided flags
+  const reconnectWarn = health?.reconnect_critical
     ? "severe"
     : health?.reconnect_warning
     ? "mild"
