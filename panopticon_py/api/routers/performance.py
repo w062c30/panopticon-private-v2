@@ -100,9 +100,15 @@ def get_async_writer_health(request: Request) -> dict:
 @router.get("/watchlist", response_model=WatchlistResponse)
 def get_watchlist() -> WatchlistResponse:
     """
-    D103-FE: Combined political + T1-T5 market watchlist.
-    Returns which markets are currently being monitored, along with
-    availability flags so the frontend can display "no data" states cleanly.
+    D103-FE: Market execution watchlist — 48h window.
+
+    IMPORTANT: This endpoint reads ``execution_records`` table only.
+    It shows markets with signals/trades in the past 48h, NOT the
+    current radar subscription list.
+
+    For radar's active subscription list, use:
+        GET /api/radar/active-markets   <- reads radar_active_markets.json
+        GET /api/watchlist              <- reads execution_records (this endpoint)
 
     NOTE: Relies on lifespan bootstrap() for table initialization (see app.py:48).
     """

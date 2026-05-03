@@ -1,4 +1,7 @@
 // D103-FE: Watchlist API types
+// D144: Split into two data sources:
+//   - Radar subscription list  → /api/radar/active-markets  (live token discovery)
+//   - Execution records        → /api/watchlist              (DB signals/trades)
 
 export interface PolMarketEntry {
   market_id: string;
@@ -49,4 +52,21 @@ export interface MarketDebugStats {
 export interface DebugStatsResponse {
   enabled: boolean;
   markets: Record<string, MarketDebugStats>;
+}
+
+// D144: Radar subscription snapshot (reads data/radar_active_markets.json)
+export interface RadarTierSnapshot {
+  token_ids: string[];
+  slugs: Record<string, string>;
+  count: number;
+  updated_ts: string;
+}
+
+export interface RadarActiveMarkets {
+  t1: RadarTierSnapshot;
+  t2: RadarTierSnapshot;
+  t3: RadarTierSnapshot;
+  t4: RadarTierSnapshot;
+  t5: RadarTierSnapshot;
+  error?: string;
 }

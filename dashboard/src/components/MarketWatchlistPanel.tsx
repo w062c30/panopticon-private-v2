@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import type {
   WatchlistResponse, DebugStatsResponse,
   TierKey, PolMarketEntry, TierMarketEntry,
+  RadarActiveMarkets, RadarTierSnapshot,
 } from "../types/watchlist";
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -24,12 +25,13 @@ const TIER_COLORS: Record<TierKey, string> = {
   t5:     "bg-cyan-500/20   text-cyan-300   border-cyan-500/40",
 };
 
-const ALL_TIERS: TierKey[] = ["t1", "t2", "t2_pol", "t3", "t4", "t5"];
+const RADAR_TIER_ORDER: TierKey[] = ["t1", "t2", "t3", "t4", "t5"];
+const EXEC_TIER_ORDER: TierKey[] = ["t1", "t2", "t2_pol", "t3", "t4", "t5"];
 const POLYMARKET_BASE = "https://polymarket.com/event/";
-const REFRESH_MS       = 30_000;
+const REFRESH_MS        = 30_000;
 const DEBUG_REFRESH_MS = 60_000;
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────
 
 function formatRelativeTime(ts: string): string {
   if (!ts) return "—";
@@ -54,42 +56,64 @@ function getTierCount(data: WatchlistResponse, tier: TierKey): number {
   return (markets as unknown[])?.length ?? 0;
 }
 
-// ── Main Component ───────────────────────────────────────────────────────
+function getRadarTier(
+  radar: RadarActiveMarkets, tier: TierKey
+): RadarTierSnapshot | null {
+  const snap = (radar as unknown as Record<string, RadarTierSnapshot>)[tier];
+  if (!snap || typeof snap !== "object") return null;
+  return snap;
+}
+
+// ── Main Component ─────────────────────────────────────────────────────
 
 interface Props { apiBaseUrl: string; }
 
 export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
-  const [data,       setData]       = useState<WatchlistResponse | null>(null);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState<string | null>(null);
+  const [execData,   setExecData]   = useState<WatchlistResponse | null>(null);
+  const [radarData,  setRadarData]  = useState<RadarActiveMarkets | null>(null);
+  const [loading,     setLoading]    = useState(true);
+  const [execError,  setExecError]  = useState<string | null>(null);
+  const [radarError, setRadarError] = useState<string | null>(null);
   const [debugStats, setDebugStats] = useState<DebugStatsResponse>({
     enabled: false, markets: {},
   });
   const [enabledTiers, setEnabledTiers] = useState<Set<TierKey>>(
-    new Set(ALL_TIERS)
+    new Set(EXEC_TIER_ORDER)
   );
 
-  // ── Main watchlist fetch (30s) ─────────────────────────────────────
-  const fetchData = useCallback(async () => {
+  // ── Execution records fetch (30s) ────────────────────────────────
+  const fetchExec = useCallback(async () => {
     try {
       const res = await fetch(`${apiBaseUrl}/api/watchlist`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData(await res.json());
-      setError(null);
+      setExecData(await res.json());
+      setExecError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "fetch failed");
-    } finally {
-      setLoading(false);
+      setExecError(e instanceof Error ? e.message : "fetch failed");
+    }
+  }, [apiBaseUrl]);
+
+  // ── Radar subscription snapshot fetch (30s) ────────────────────
+  const fetchRadar = useCallback(async () => {
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/radar/active-markets`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setRadarData(json);
+      setRadarError(null);
+    } catch (e) {
+      setRadarError(e instanceof Error ? e.message : "fetch failed");
     }
   }, [apiBaseUrl]);
 
   useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, REFRESH_MS);
+    fetchExec();
+    fetchRadar();
+    const id = setInterval(() => { fetchExec(); fetchRadar(); }, REFRESH_MS);
     return () => clearInterval(id);
-  }, [fetchData]);
+  }, [fetchExec, fetchRadar]);
 
-  // ── Debug stats fetch (60s, independent, silent on failure) ───────
+  // ── Debug stats fetch (60s, silent) ─────────────────────────────
   useEffect(() => {
     const fetchDebug = async () => {
       try {
@@ -98,9 +122,7 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
         );
         if (!res.ok) return;
         setDebugStats(await res.json());
-      } catch {
-        // Silently ignore — debug endpoint is optional
-      }
+      } catch { /* silent */ }
     };
     fetchDebug();
     const id = setInterval(fetchDebug, DEBUG_REFRESH_MS);
@@ -115,10 +137,13 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
     });
   }
 
-  // ── Render ───────────────────────────────────────────────────────────
+  const loaded = execData !== null || radarData !== null;
+
+  // ── Render ───────────────────────────────────────────────────────
   return (
     <div className="rounded-xl border border-slate-700 bg-panPanel p-4 flex flex-col"
          style={{ maxHeight: "calc(100vh - 8rem)", overflow: "hidden" }}>
+
       {/* Header */}
       <div className="mb-3 flex items-center gap-3 shrink-0">
         <h2 className="text-base font-semibold text-slate-100">
@@ -133,56 +158,155 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
         <span className="ml-auto text-xs text-slate-500">每 30 秒更新</span>
       </div>
 
-      {/* Tier Filter Toggles */}
-      <div className="mb-4 flex flex-wrap gap-2 shrink-0">
-        {ALL_TIERS.map((tier) => {
-          const active = enabledTiers.has(tier);
-          return (
-            <button
-              key={tier}
-              onClick={() => toggleTier(tier)}
-              className={`rounded-md border px-3 py-1 text-xs font-medium
-                          transition-opacity ${TIER_COLORS[tier]}
-                          ${active ? "opacity-100" : "opacity-30"}`}
-            >
-              {TIER_LABELS[tier]}
-              {data && (
-                <span className="ml-1.5 opacity-70">
-                  ({getTierCount(data, tier)})
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* States */}
-      {loading && (
+      {/* Loading */}
+      {loading && !loaded && (
         <p className="text-sm text-slate-400 shrink-0">載入中...</p>
       )}
-      {error && (
-        <p className="text-sm text-red-400 shrink-0">⚠ API 無回應：{error}</p>
-      )}
 
-      {/* Scrollable content area */}
-      <div className="flex-1 overflow-y-auto space-y-4 min-h-0">
-        {/* Tier Sections */}
-        {data &&
-          ALL_TIERS.filter((t) => enabledTiers.has(t)).map((tier) => (
+      {/* Scrollable two-column layout */}
+      <div className="flex-1 overflow-y-auto min-h-0 gap-4">
+
+        {/* ── Left column: Radar subscription list ──────────────────── */}
+        <div className="mb-4">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              Radar 訂閱清單
+            </span>
+            <span className="text-xs text-slate-600">
+              資料來源：radar 動態發現
+            </span>
+          </div>
+
+          {radarError && (
+            <p className="text-xs text-red-400 mb-2">
+              ⚠ Radar 快照無法讀取：{radarError}
+            </p>
+          )}
+
+          {radarData?.error && (
+            <p className="text-xs text-amber-400 mb-2">
+              ⚠ {radarData.error}
+            </p>
+          )}
+
+          {!radarData || radarData.error ? (
+            <p className="text-xs text-slate-500">
+              Radar 目前無監聽市場 — 請確認 radar 進程狀態
+            </p>
+          ) : (
+            RADAR_TIER_ORDER.map((tier) => {
+              const snap = getRadarTier(radarData, tier);
+              if (!snap) return null;
+              return (
+                <RadarTierRow
+                  key={tier}
+                  tier={tier}
+                  snap={snap}
+                />
+              );
+            })
+          )}
+        </div>
+
+        {/* ── Right column: Execution records (existing watchlist) ──── */}
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              執行記錄
+            </span>
+            <span className="text-xs text-slate-600">
+              資料來源：execution_records（48h 內有交易/信號）
+            </span>
+          </div>
+
+          {/* Tier filter toggles */}
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {EXEC_TIER_ORDER.map((tier) => {
+              const active = enabledTiers.has(tier);
+              return (
+                <button
+                  key={tier}
+                  onClick={() => toggleTier(tier)}
+                  className={`rounded border px-2 py-0.5 text-xs transition-opacity
+                              ${TIER_COLORS[tier]}
+                              ${active ? "opacity-100" : "opacity-30"}`}
+                >
+                  {TIER_LABELS[tier]}
+                  {execData && (
+                    <span className="ml-1 opacity-70">
+                      ({getTierCount(execData, tier)})
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {execError && (
+            <p className="text-xs text-red-400 mb-2">
+              ⚠ API 無回應：{execError}
+            </p>
+          )}
+
+          {execData && EXEC_TIER_ORDER.filter((t) => enabledTiers.has(t)).map((tier) => (
             <TierSection
               key={tier}
               tier={tier}
-              data={data}
-              available={data.tier_available[tier]}
+              data={execData}
+              available={execData.tier_available[tier]}
               debugStats={debugStats}
             />
           ))}
+        </div>
       </div>
     </div>
   );
 }
 
-// ── TierSection ───────────────────────────────────────────────────────────
+// ── Radar subscription row ─────────────────────────────────────────────────
+
+function RadarTierRow({
+  tier, snap,
+}: {
+  tier: TierKey;
+  snap: RadarTierSnapshot;
+}) {
+  const slugCount = Object.keys(snap.slugs).length;
+  // Strip any millisecond formatting like %03dZ before parsing
+  const cleanTs = snap.updated_ts?.replace(/%03dZ$/, "Z") ?? "";
+  const updatedAgo = cleanTs ? formatRelativeTime(cleanTs) : "—";
+
+  return (
+    <div className="mb-2 rounded border border-slate-700/60 p-2">
+      <div className={`mb-1 inline-block rounded border px-2 py-0.5
+                       text-xs font-semibold ${TIER_COLORS[tier]}`}>
+        {TIER_LABELS[tier]}
+        <span className="ml-1.5 font-normal text-slate-400">
+          {snap.count} 個代幣
+        </span>
+      </div>
+      <div className="text-xs text-slate-500">
+        {slugCount > 0
+          ? <span className="text-slate-400">{slugCount} 個市場視窗</span>
+          : <span className="text-amber-400/70">無 slug（結算市場）</span>}
+        {" · "}
+        更新 {updatedAgo}
+      </div>
+      {snap.token_ids.slice(0, 5).map((tid) => (
+        <div key={tid} className="mt-0.5 truncate font-mono text-[10px] text-slate-600">
+          {tid.slice(0, 20)}…
+        </div>
+      ))}
+      {snap.token_ids.length > 5 && (
+        <div className="text-[10px] text-slate-600">
+          …+{snap.token_ids.length - 5} more
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TierSection (existing execution records) ─────────────────────────────────
 
 function TierSection({
   tier, data, available, debugStats,
@@ -196,14 +320,14 @@ function TierSection({
 
   if (!available) {
     return (
-      <div className="mb-3 rounded-lg border border-slate-700/50 p-3">
+      <div className="mb-2 rounded-lg border border-slate-700/50 p-2">
         <span className={`text-xs font-semibold ${textColor}`}>
           {TIER_LABELS[tier]}
         </span>
-        <p className="mt-1 text-xs text-slate-500">
-          ⚠ 過去 48h 無監控數據
+        <p className="mt-0.5 text-xs text-slate-500">
+          ⚠ 過去 48h 無執行記錄
           {tier === "t2_pol"
-            ? "（Gamma API 尚未掃描或無符合條件市場）"
+            ? "（Paper mode 下預期如此）"
             : ""}
         </p>
       </div>
@@ -213,13 +337,13 @@ function TierSection({
   const markets = getTierMarkets(data, tier);
 
   return (
-    <div className="mb-4">
-      <div className={`mb-1.5 inline-block rounded border px-2 py-0.5
+    <div className="mb-3">
+      <div className={`mb-1 inline-block rounded border px-2 py-0.5
                        text-xs font-semibold ${TIER_COLORS[tier]}`}>
         {TIER_LABELS[tier]} — {markets.length} 個市場
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-xs text-slate-300">
+        <table className="w-full min-w-[560px] text-xs text-slate-300">
           <thead>
             <tr className="border-b border-slate-700 text-slate-500">
               <th className="pb-1 text-left">市場</th>
@@ -239,7 +363,6 @@ function TierSection({
                 </>
               )}
               <th className="pb-1 text-right">最後信號</th>
-              {/* Debug columns — only when enabled, 3 columns */}
               {debugStats.enabled && (
                 <>
                   <th className="pb-1 text-right text-amber-500/70">Kyle樣本</th>
@@ -252,18 +375,10 @@ function TierSection({
           <tbody>
             {tier === "t2_pol"
               ? (markets as PolMarketEntry[]).map((m) => (
-                  <PolRow
-                    key={m.market_id}
-                    m={m}
-                    debugStats={debugStats}
-                  />
+                  <PolRow key={m.market_id} m={m} debugStats={debugStats} />
                 ))
               : (markets as TierMarketEntry[]).map((m) => (
-                  <TierRow
-                    key={m.market_id}
-                    m={m}
-                    debugStats={debugStats}
-                  />
+                  <TierRow key={m.market_id} m={m} debugStats={debugStats} />
                 ))}
           </tbody>
         </table>
@@ -272,17 +387,14 @@ function TierSection({
   );
 }
 
-// ── Row Components ────────────────────────────────────────────────────────
+// ── Row Components ─────────────────────────────────────────────────────────────
 
-function DebugCells({
-  marketId, debugStats,
-}: {
-  marketId: string;
-  debugStats: DebugStatsResponse;
+function DebugCells({ marketId, debugStats }: {
+  marketId: string; debugStats: DebugStatsResponse;
 }) {
   if (!debugStats.enabled) return null;
   const s = debugStats.markets[marketId];
-  if (!s) return <><td /><td /><td /></>;    // 3 empty cells, keeps column alignment
+  if (!s) return <><td /><td /><td /></>;
   return (
     <>
       <td className="py-1 text-right text-amber-400/60">{s.kyle_samples}</td>
@@ -294,11 +406,8 @@ function DebugCells({
   );
 }
 
-function PolRow({
-  m, debugStats,
-}: {
-  m: PolMarketEntry;
-  debugStats: DebugStatsResponse;
+function PolRow({ m, debugStats }: {
+  m: PolMarketEntry; debugStats: DebugStatsResponse;
 }) {
   const slug = m.event_slug ?? m.market_id.slice(0, 20);
   const url  = m.event_slug ? `${POLYMARKET_BASE}${m.event_slug}` : null;
@@ -328,18 +437,13 @@ function PolRow({
       <td className="py-1 text-right text-slate-500">
         {formatRelativeTime(m.last_signal_ts ?? "")}
       </td>
-      {/* Placeholder cells when debug is disabled — keeps column alignment with TierRow */}
-      {!debugStats.enabled && <><td /><td /><td /></>}
       <DebugCells marketId={m.market_id} debugStats={debugStats} />
     </tr>
   );
 }
 
-function TierRow({
-  m, debugStats,
-}: {
-  m: TierMarketEntry;
-  debugStats: DebugStatsResponse;
+function TierRow({ m, debugStats }: {
+  m: TierMarketEntry; debugStats: DebugStatsResponse;
 }) {
   const evColor =
     m.avg_ev == null ? "text-slate-500"
@@ -360,8 +464,6 @@ function TierRow({
       <td className="py-1 text-right text-slate-500">
         {formatRelativeTime(m.last_signal_ts ?? "")}
       </td>
-      {/* Placeholder cells when debug is disabled — keeps column alignment with PolRow */}
-      {!debugStats.enabled && <><td /><td /><td /></>}
       <DebugCells marketId={m.market_id} debugStats={debugStats} />
     </tr>
   );
