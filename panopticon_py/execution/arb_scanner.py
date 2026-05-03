@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.5-D140"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())
+PROCESS_VERSION = "v0.5.6-D141"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -406,23 +406,26 @@ class ArbScanner:
     async def _connect_and_listen(self, token_ids: list[str]) -> None:
         """
         D139: Wraps WS connection with exponential-backoff reconnection loop.
+        D141: On each reconnect, re-fetches token_ids from Gamma API to stay current
+        with market state changes (new markets, settled markets).
         Disconnection is normal (server-side close, network drop), not a crash.
         """
         import websockets
 
         backoff = 5.0
         max_backoff = 120.0
+        current_token_ids = token_ids  # initial list; updated on each reconnect
 
         while not self._stop_event.is_set():
             try:
-                sub_msg = {"type": "subscribe", "assets_ids": token_ids}
+                sub_msg = {"type": "subscribe", "assets_ids": current_token_ids}
                 async with websockets.connect(ARB_WS_URL, ping_interval=20) as ws:
                     self._ws = ws
                     await ws.send(json.dumps(sub_msg))
                     backoff = 5.0  # reset on successful connect
                     logger.info(
                         "[ARB] WS connected, subscribed to %d token_ids",
-                        len(token_ids),
+                        len(current_token_ids),
                     )
 
                     async for raw in ws:
@@ -445,11 +448,34 @@ class ArbScanner:
                 if self._stop_event.is_set():
                     raise
                 logger.warning(
-                    "[ARB_WS] Disconnected: %s — reconnecting in %.0fs (backoff=%.0f)",
-                    exc, backoff, backoff,
+                    "[ARB_WS] Disconnected: %s — reconnecting in %.0fs",
+                    exc, backoff,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
+
+                # D141: Re-fetch and re-filter token_ids on every reconnect so the
+                # subscription stays aligned with current market state.  If this fails,
+                # fall back to the previous list — WS reconnection is more important
+                # than refreshing the market list.
+                try:
+                    fresh_ids, fresh_markets = await fetch_t5_token_ids()
+                    if fresh_ids:
+                        filtered = await self._apply_fee_filter(fresh_ids)
+                        if filtered:
+                            old_count = len(current_token_ids)
+                            current_token_ids = filtered
+                            self._original_token_ids = filtered
+                            logger.info(
+                                "[ARB_WS] Token refresh on reconnect: %d → %d",
+                                old_count, len(current_token_ids),
+                            )
+                except Exception as refresh_exc:
+                    logger.debug(
+                        "[ARB_WS] Token refresh on reconnect failed: %s — "
+                        "using previous token list (%d tokens)",
+                        refresh_exc, len(current_token_ids),
+                    )
 
     async def _on_message(self, data: dict) -> None:
         # D120: Guard against missing market_id

@@ -7,8 +7,8 @@
   "frontend": "v1.1.12-D112",
   "analysis_worker": "v1.1.13-D90",
   "watchdog": "v1.0.3-D139",
-  "arb_scanner": "v0.5.5-D140",
-  "last_updated": "2026-05-03T09:58:00Z",
-  "updated_by_sprint": "D140",
-  "updated_by_agent": "D140-coding-agent"
+  "arb_scanner": "v0.5.6-D141",
+  "last_updated": "2026-05-03T10:19:00Z",
+  "updated_by_sprint": "D141",
+  "updated_by_agent": "D141-coding-agent"
 }
