@@ -169,6 +169,10 @@ def _restart_process(name: str, config: dict) -> None:
 
     _restart_attempts[name] = recent + [now]
 
+    # D143: Let Windows reclaim handles from the dead PID before spawning a replacement
+    # that calls acquire_singleton() against the same PID file (reduces zombie false-positives).
+    time.sleep(2.0)
+
     # D139: Use absolute paths based on _PROJECT_ROOT so log writing is reliable
     # regardless of watchdog's current working directory
     config_cwd = config.get("cwd", str(_PROJECT_ROOT))
@@ -284,7 +288,7 @@ if __name__ == "__main__":
     # D114-3: Register as singleton in manifest so tooling can observe watchdog liveness.
     # In daemon mode: runs in grandchild (after double-fork), so manifest PID is correct.
     from panopticon_py.utils.process_guard import acquire_singleton
-    WATCHDOG_VERSION = "v1.0.3-D139"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES  # D139: parents[2] + PYTHONPATH env
+    WATCHDOG_VERSION = "v1.0.4-D143"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES  # D139: parents[2] + PYTHONPATH env  # D143: restart grace sleep before Popen
     acquire_singleton("watchdog", WATCHDOG_VERSION)
 
     run_watchdog()

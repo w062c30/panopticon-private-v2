@@ -6,9 +6,10 @@
   "backend": "v1.1.39-D137",
   "frontend": "v1.1.12-D112",
   "analysis_worker": "v1.1.13-D90",
-  "watchdog": "v1.0.3-D139",
+  "watchdog": "v1.0.4-D143",
   "arb_scanner": "v0.5.7-D142",
-  "last_updated": "2026-05-03T10:25:00Z",
-  "updated_by_sprint": "D142",
-  "updated_by_agent": "D142-coding-agent"
+  "process_guard": "v1.1.0-D143",
+  "last_updated": "2026-05-03T10:50:00Z",
+  "updated_by_sprint": "D143",
+  "updated_by_agent": "D143-coding-agent"
 }

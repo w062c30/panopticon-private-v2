@@ -34,6 +34,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Library identity for versions_ref.json (shared by all acquire_singleton callers).
+PROCESS_GUARD_VERSION = "v1.1.0-D143"
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _RUN_DIR = _PROJECT_ROOT / "run"
 _VERSIONS_REF = _RUN_DIR / "versions_ref.json"
@@ -55,13 +58,21 @@ def _is_alive(pid: int) -> bool:
     try:
         if sys.platform == "win32":
             import ctypes
-            SYNCHRONIZE = 0x00100000
-            handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            # D143: WaitForSingleObject+SYNCHRONIZE can false-positive on defunct handles.
+            # GetExitCodeProcess: STILL_ACTIVE (259) means the process has not exited.
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
             if not handle:
                 return False
-            result = ctypes.windll.kernel32.WaitForSingleObject(handle, 0)
+            exit_code = ctypes.c_ulong(0)
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
             ctypes.windll.kernel32.CloseHandle(handle)
-            return result == 258  # WAIT_TIMEOUT = still alive
+            if not ok:
+                return False
+            return exit_code.value == STILL_ACTIVE
         else:
             os.kill(pid, 0)
             return True
@@ -242,6 +253,9 @@ def acquire_singleton(name: str, version: str = "v0.0.0-D0") -> None:
 
     # Step 2: Write PID file
     pid_path.write_text(str(current_pid))
+    # D143: Brief pause so Windows can release kernel handles after a stale kill before
+    # manifest/heartbeat paths run (pairs with watchdog restart grace period).
+    time.sleep(0.1)
     logger.info(
         "[guard] %s singleton acquired (PID=%d, version=%s)",
         name, current_pid, version
