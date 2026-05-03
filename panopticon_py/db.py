@@ -389,6 +389,24 @@ CREATE TABLE IF NOT EXISTS insider_pattern_flags (
 CREATE INDEX IF NOT EXISTS idx_ipf_wallet ON insider_pattern_flags(wallet_address);
 CREATE INDEX IF NOT EXISTS idx_ipf_score  ON insider_pattern_flags(pattern_score DESC);
 CREATE INDEX IF NOT EXISTS idx_ipf_ts     ON insider_pattern_flags(detected_ts_utc);
+
+-- D148-1: Arb Scanner statistics (1 row per 60s flush, rolling 1440 rows = 24h)
+CREATE TABLE IF NOT EXISTS arb_stats (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_utc              TEXT    NOT NULL,
+    ws_connected        INTEGER NOT NULL DEFAULT 0,
+    tokens_subscribed   INTEGER NOT NULL DEFAULT 0,
+    active_tokens       INTEGER NOT NULL DEFAULT 0,
+    total_updates       INTEGER NOT NULL DEFAULT 0,
+    reconnect_count     INTEGER NOT NULL DEFAULT 0,
+    opp_count_total     INTEGER NOT NULL DEFAULT 0,
+    opp_count_1h        INTEGER NOT NULL DEFAULT 0,
+    best_profit         REAL    NOT NULL DEFAULT 0.0,
+    tokens_total        INTEGER NOT NULL DEFAULT 0,
+    tokens_kept         INTEGER NOT NULL DEFAULT 0,
+    tokens_excluded      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_arb_stats_ts ON arb_stats(ts_utc DESC);
 """
 
 
@@ -3912,6 +3930,17 @@ class AsyncDBWriter:
                         )
             except Exception as exc:
                 logger.warning("[AsyncDBWriter] dispatch error kind=%s: %s", kind, exc)
+                return  # D148-5: no probe needed after exception
+            # D148-5: C-layer sqlite3 silent errors ("error return without exception set")
+            # don't raise — probe to confirm the statement actually succeeded.
+            if kind not in ("raw",):
+                try:
+                    self.db.conn.execute("SELECT 1")
+                except Exception as probe_err:
+                    logger.warning(
+                        "[AsyncDBWriter] C-layer silent dispatch failure kind=%s: probe=%s",
+                        kind, probe_err,
+                    )
             finally:
                 self._q.task_done()
 

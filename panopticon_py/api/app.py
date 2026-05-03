@@ -22,6 +22,7 @@ from panopticon_py.api.routers.recommendations import router as recommendations_
 from panopticon_py.api.routers.system_health import router as system_health_router
 from panopticon_py.api.routers.wallet_graph import router as wallet_graph_router
 from panopticon_py.api.routers.watchlist import router as watchlist_router
+from panopticon_py.api.routers.arb import router as arb_router  # D148-3
 from panopticon_py.load_env import load_repo_env
 
 load_repo_env()
@@ -29,7 +30,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.40-D146"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets  # D146-P1: /api/arb/health os.kill → is_process_alive()
+PROCESS_VERSION = "v1.1.41-D148"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets  # D146-P1: /api/arb/health os.kill → is_process_alive()  # D148-3: +arb_router (/api/arb/health, /api/arb/stats)
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -157,6 +158,7 @@ app.include_router(report_router)
 app.include_router(system_health_router)
 app.include_router(wallet_graph_router)
 app.include_router(watchlist_router)
+app.include_router(arb_router)  # D148-3
 
 
 # Serve built dashboard from disk
@@ -378,59 +380,6 @@ def get_real_trade_ticks_60s_endpoint() -> dict:
         "trade_ticks_60s": total,
         "ratio": round(real / total, 4) if total > 0 else 0.0,
         "note": "upper_bound_proxy_DR-D125-c",
-        "ts": utc_now_rfc3339_ms(),
-    }
-
-
-@app.get("/api/arb/health")
-async def get_arb_health() -> dict:
-    """
-    D134: Arb scanner health snapshot — read-only, zero arb_scanner overhead.
-    Data sources:
-      1. process_manifest.json → process liveness + heartbeat age
-      2. arb_scanner.py in-memory state (via manifest version drift check)
-    Note: arb_scanner stores opportunities in-memory only (no DB write).
-    Health is determined by PID liveness + heartbeat freshness.
-    """
-    import json as _json
-    from pathlib import Path
-
-    manifest_path = Path("run/process_manifest.json")
-    arb_entry: dict = {}
-    heartbeat_age_s: float | None = None
-    pid_alive = False
-
-    if manifest_path.exists():
-        try:
-            manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
-            arb_entry = manifest.get("arb_scanner", {})
-            hb_ts_str = arb_entry.get("last_heartbeat_ts")
-            if hb_ts_str:
-                try:
-                    hb_dt = datetime.fromisoformat(hb_ts_str)
-                    if hb_dt.tzinfo is None:
-                        hb_dt = hb_dt.replace(tzinfo=timezone.utc)
-                    heartbeat_age_s = (datetime.now(timezone.utc) - hb_dt).total_seconds()
-                except Exception:
-                    heartbeat_age_s = None
-        except Exception:
-            pass
-
-    pid = arb_entry.get("pid")
-    if pid:
-        # D146-P1-1: Use is_process_alive() — Windows-safe (GetExitCodeProcess).
-        # os.kill(pid, 0) raises OSError(WinError 5) on Windows even for live processes.
-        from panopticon_py.utils.process_guard import is_process_alive
-        pid_alive = is_process_alive(int(pid))
-
-    return {
-        "pid": pid,
-        "pid_alive": pid_alive,
-        "version": arb_entry.get("version"),
-        "heartbeat_age_s": round(heartbeat_age_s, 1) if heartbeat_age_s is not None else None,
-        "heartbeat_stale": (heartbeat_age_s or 9999) > 300,
-        # D136-2: pid_alive but heartbeat not yet written = bootstrapping
-        "heartbeat_bootstrapping": heartbeat_age_s is None and pid_alive,
         "ts": utc_now_rfc3339_ms(),
     }
 

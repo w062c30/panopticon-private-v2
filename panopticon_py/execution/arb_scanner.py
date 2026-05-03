@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.8-D146"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)
+PROCESS_VERSION = "v0.5.9-D148"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters + process_guard import in _on_message
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -247,6 +247,11 @@ class ArbScanner:
     _fee_semaphore: asyncio.Semaphore = field(init=False, repr=False)
     _refresh_started: bool = field(default=False, init=False)
     _stop_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    # D148-2: Stats persistence
+    _db: object = field(default=None, init=False, repr=False)
+    _reconnect_count: int = field(default=0, init=False)
+    _opp_count_total: int = field(default=0, init=False)
+    _last_flush_ts: float = field(default_factory=time.time, init=False)
 
     # D137-1: 30s fixed heartbeat — independent of WS message frequency
     def _heartbeat_loop(self) -> None:
@@ -360,6 +365,54 @@ class ArbScanner:
                 self._original_token_ids = filtered
                 logger.info("[ARB_FEE_REFRESH] Done, active tokens: %d", len(filtered))
 
+    # D148-2: _flush_stats is called from _on_message on 60s tick.
+    # DB write is fire-and-forget — failure must never impact WS loop.
+    async def _flush_stats(self) -> None:
+        """Persist current stats snapshot to arb_stats DB table. Silent fail."""
+        try:
+            if self._db is None:
+                from panopticon_py.db import ShadowDB
+                self._db = ShadowDB()
+        except Exception as e:
+            logger.debug("[ARB_STATS] DB init failed: %s", e)
+            return
+
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            total_updates = sum(self._update_counter.values())
+            active_tokens = len([v for v in self._update_counter.values() if v > 0])
+            n_subscribed = len(self._token_ids) if hasattr(self, "_token_ids") and self._token_ids else 0
+            opp_count_1h = sum(
+                1 for o in self.opportunities_log
+                if (time.time() - o.ts) < 3600
+            )
+            best_profit = max(
+                (o.locked_profit_per_100 for o in self.opportunities_log),
+                default=0.0,
+            )
+            tokens_excluded = len([tid for tid, bps in self._fee_rates.items() if bps > 300])
+            tokens_total = len(self._original_token_ids)
+
+            self._db.conn.execute(
+                """INSERT INTO arb_stats
+                   (ts_utc, ws_connected, tokens_subscribed, active_tokens,
+                    total_updates, reconnect_count, opp_count_total, opp_count_1h,
+                    best_profit, tokens_total, tokens_kept, tokens_excluded)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (now_iso, 1, n_subscribed, active_tokens,
+                 total_updates, self._reconnect_count, self._opp_count_total,
+                 opp_count_1h, best_profit, tokens_total,
+                 tokens_total - tokens_excluded, tokens_excluded),
+            )
+            self._db.conn.execute(
+                "DELETE FROM arb_stats WHERE id NOT IN "
+                "(SELECT id FROM arb_stats ORDER BY ts_utc DESC LIMIT 1440)"
+            )
+            self._db.conn.commit()
+            self._last_flush_ts = time.time()
+        except Exception as e:
+            logger.debug("[ARB_STATS] write failed: %s", e)
+
     async def run(self) -> None:
         """
         D119-P0: Main entry point.
@@ -444,6 +497,7 @@ class ArbScanner:
         current_token_ids = token_ids  # initial list; updated on each reconnect
 
         while not self._stop_event.is_set():
+            self._reconnect_count += 1   # D148-2: track reconnects
             try:
                 sub_msg = {"type": "subscribe", "assets_ids": current_token_ids}
                 async with websockets.connect(
@@ -547,6 +601,8 @@ class ArbScanner:
                 total_updates, active_tokens, n_subscribed, now - self._last_stats_log,
             )
             self._last_stats_log = now
+            # D148-2: persist stats snapshot to DB
+            await self._flush_stats()
 
         await self._check_arb(market_id)
 
@@ -573,6 +629,7 @@ class ArbScanner:
                 paper_mode=self.paper_mode,
             )
             self.opportunities_log.append(opp)
+            self._opp_count_total += 1   # D148-2: track total opportunities
             mode_str = "[PAPER]" if self.paper_mode else "[LIVE]"
             logger.info(
                 "[ARB_OPP] %s | YES=%.3f NO=%.3f total=%.3f profit/100shares=+$%.2f depth=%d %s",
