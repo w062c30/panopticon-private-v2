@@ -1,6 +1,6 @@
 {
   "name": "panopticon-dashboard",
-  "version": "v1.1.13-D144",
+  "version": "v1.1.14-D145",
   "private": true,
   "type": "module",
   "scripts": {

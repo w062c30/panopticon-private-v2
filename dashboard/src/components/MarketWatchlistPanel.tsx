@@ -164,10 +164,11 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
       )}
 
       {/* Scrollable two-column layout */}
-      <div className="flex-1 overflow-y-auto min-h-0 gap-4">
+      <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* ── Left column: Radar subscription list ──────────────────── */}
-        <div className="mb-4">
+        <div>
           <div className="mb-2 flex items-center gap-2">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
               Radar 訂閱清單
@@ -258,6 +259,7 @@ export function MarketWatchlistPanel({ apiBaseUrl }: Props) {
             />
           ))}
         </div>
+        </div>
       </div>
     </div>
   );
@@ -272,8 +274,7 @@ function RadarTierRow({
   snap: RadarTierSnapshot;
 }) {
   const slugCount = Object.keys(snap.slugs).length;
-  // Strip any millisecond formatting like %03dZ before parsing
-  const cleanTs = snap.updated_ts?.replace(/%03dZ$/, "Z") ?? "";
+  const cleanTs = snap.updated_ts ?? "";
   const updatedAgo = cleanTs ? formatRelativeTime(cleanTs) : "—";
 
   return (

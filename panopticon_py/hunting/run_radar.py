@@ -568,7 +568,7 @@ def _write_active_market_snapshot(tier: str, token_ids: list[str], slugs: dict[s
             "token_ids": token_ids,
             "slugs": slugs,
             "count": len(token_ids),
-            "updated_ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%%03dZ"),
+            "updated_ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{(datetime.now(timezone.utc).microsecond // 1000):03d}Z",
         }
         snap_path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
     except Exception:
@@ -3334,7 +3334,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.50-D131"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner
+    PROCESS_VERSION = "v1.1.51-D145"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
