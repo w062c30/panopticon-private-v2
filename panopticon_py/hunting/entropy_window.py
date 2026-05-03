@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging as _logging
 import math
 import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque
+
+_logger = _logging.getLogger(__name__)
 
 
 def _shannon_H(counts: dict[str, float]) -> float:
@@ -50,8 +53,17 @@ class EntropyWindow:
         if shadow_override is not None:
             self.min_history_for_z = int(shadow_override)
 
-    def mark_reconnect(self) -> None:
-        self._flush("ws_reconnect")
+    # D154: reason parameter added for diagnostic differentiation
+    # (subscription_refresh vs ws_disconnect, etc.)
+    def mark_reconnect(self, reason: str = "ws_reconnect") -> None:
+        """
+        Called on WS reconnection (both real disconnect and subscription refresh).
+        D154: _h_history intentionally NOT cleared — H distribution is market-level
+        state that survives subscription refreshes. Only _events (tick buffer) is
+        cleared because the tick sequence is discontinuous across reconnects.
+        _trigger_locked is still set to ensure 30-event warm-up before next signal.
+        """
+        self._flush(reason)
 
     def _flush(self, reason: str) -> None:
         self._events.clear()
@@ -59,6 +71,10 @@ class EntropyWindow:
         self._healthy_span = 0.0
         self._last_recv_mono = None
         self._last_reason = reason
+        _logger.debug(
+            "[EW][D154] mark_reconnect reason=%s h_hist_preserved=%d",
+            reason, len(self._h_history),
+        )
 
     def push(self, recv_mono: float, buy_vol: float, sell_vol: float) -> str | None:
         """

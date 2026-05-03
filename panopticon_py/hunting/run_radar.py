@@ -2921,7 +2921,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     )
     _current_tokens = combined_tokens
     _close_event.clear()
-    ew.mark_reconnect()
+    ew.mark_reconnect(reason="subscription_refresh")  # D154: preserve _h_history
 
     logger.info(
         "[L1_MARKET_TIER] tier1=%d tier2_event=%d tier5_sports=%d tier3_long=%d total=%d",
@@ -3035,7 +3035,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 await run_ws_loop(
                     _on_message,
                     subscribe_payload=sub,
-                    on_reconnect=lambda: ew.mark_reconnect(),
+                    on_reconnect=lambda: ew.mark_reconnect(reason="ws_disconnect"),  # D154: reason for diagnostic
                     on_connect_cb=(lambda: (mc.on_ws_connected() if mc else None)) if mc else None,
                     on_disconnect_cb=(lambda: (mc.on_ws_disconnected() if mc else None)) if mc else None,
                     close_event=_close_event,
@@ -3124,7 +3124,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                             existing.add(t)
                     sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
                     reconnect_now = True
-                    ew.mark_reconnect()
+                    ew.mark_reconnect(reason="subscription_refresh")  # D154: preserve _h_history
 
             # D103: Log T5 sports market status after POL refresh cycle
             await asyncio.to_thread(_log_t5_market_status, db)
@@ -3138,7 +3138,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         existing.add(t)
                 sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
                 reconnect_now = True
-                ew.mark_reconnect()
+                ew.mark_reconnect(reason="subscription_refresh")  # D154: preserve _h_history
 
             # Task 4: T1 window boundary trigger — refresh just before 5-min roll-over
             # This ensures new T1 market is subscribed the moment it goes live,
@@ -3366,7 +3366,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.52-D151"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path
+    PROCESS_VERSION = "v1.1.53-D154"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

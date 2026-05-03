@@ -1,0 +1,8 @@
+D140: Move acquire_singleton to __main__ + P0 singleton fix
+
+- arb_scanner.py: Remove acquire_singleton() from run() — run() is now pure
+  business logic, testable in isolation
+- arb_scanner.py __main__: acquire_singleton() called BEFORE asyncio.run(),
+  so singleton conflicts exit cleanly (sys.exit(0)) before event loop starts
+- arb_scanner.py: Version v0.5.4-D139 -> v0.5.5-D140
+- versions_ref.json: arb_scanner v0.5.5-D140

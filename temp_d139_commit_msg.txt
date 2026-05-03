@@ -1,0 +1,11 @@
+D139: Fix watchdog restart PYTHONPATH + WS reconnection loop
+
+- watchdog.py: Fix _PROJECT_ROOT from parents[3] -> parents[2]
+  (watchdog.py at panopticon_py/utils/; project root is parents[2])
+- watchdog.py: Add PYTHONPATH env injection in _restart_process()
+  so subprocess always finds panopticon_py regardless of watchdog cwd
+- watchdog.py: Use absolute log paths (_PROJECT_ROOT / config["log"])
+  so log files are written to correct location even if cwd differs
+- arb_scanner.py: Add exponential-backoff reconnection loop (5s->120s)
+  to _connect_and_listen() -- disconnection is normal, not a crash
+- Version bumps: watchdog v1.0.3-D139, arb_scanner v0.5.4-D139

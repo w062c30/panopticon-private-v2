@@ -1,0 +1,8 @@
+D148: arb_stats DB + arb_scanner flush + arb router + dashboard panel
+
+- arb_scanner v0.5.8-D146 -> v0.5.9-D148: _flush_stats() writes arb_stats every 60s (ws_connected, tokens, opp counters, best_profit, fee filter summary); lazy ShadowDB init; reconnect/opp counters tracked
+- db.py: arb_stats table added to SCHEMA_SQL (1440-row rolling window); D148-5: AsyncDBWriter C-layer silent-error probe after dispatch
+- app.py v1.1.40-D146 -> v1.1.41-D148: replaced inline /api/arb/health with arb_router include; old endpoint removed (router has full superset)
+- new panopticon_py/api/routers/arb.py: GET /api/arb/health (pid_alive, crash_reason, heartbeat_bootstrapping) + GET /api/arb/stats (DB rows)
+- dashboard: new ArbScannerPanel.tsx replaces old ArbHealthPanel in App.tsx layout; shows WS status, token counts, opp stats, sparkline bar chart, fee filter breakdown; polls every 30s
+- versions_ref.json: arb_scanner v0.5.9-D148, backend v1.1.41-D148

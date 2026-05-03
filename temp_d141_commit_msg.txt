@@ -1,0 +1,9 @@
+D141: Re-fetch token_ids on every WS reconnect
+
+- arb_scanner.py: On each disconnect, after backoff sleep, re-fetches
+  token_ids from Gamma API and re-applies fee filter before re-subscribing.
+  Keeps the subscription current with Polymarket market state changes
+  (new markets, settled markets) without waiting for the outer 60s refresh.
+- Fallback to previous token list if refresh fails (WS reconnect takes priority).
+- Version: v0.5.5-D140 -> v0.5.6-D141
+- versions_ref.json: arb_scanner v0.5.6-D141
