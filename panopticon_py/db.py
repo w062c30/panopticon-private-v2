@@ -3930,9 +3930,9 @@ class AsyncDBWriter:
                         )
             except Exception as exc:
                 logger.warning("[AsyncDBWriter] dispatch error kind=%s: %s", kind, exc)
-                return  # D148-5: no probe needed after exception
             # D148-5: C-layer sqlite3 silent errors ("error return without exception set")
             # don't raise — probe to confirm the statement actually succeeded.
+            # This runs after a successful dispatch (no exception raised).
             if kind not in ("raw",):
                 try:
                     self.db.conn.execute("SELECT 1")

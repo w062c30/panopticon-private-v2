@@ -1,8 +1,21 @@
-2026-05-03 16:13:09,652 [INFO] panopticon_py.utils.process_guard [guard] watchdog singleton acquired (PID=31068, version=v1.0.1-D132)
-2026-05-03 16:13:09,653 [INFO] panopticon_py.utils.process_guard [guard] watchdog version OK: v1.0.1-D132 == v1.0.1-D132
-2026-05-03 16:13:09,662 [INFO] panopticon_py.utils.process_guard [guard] _write_manifest: wrote watchdog to manifest, total keys=6
-2026-05-03 16:13:09,663 [INFO] __main__ [WATCHDOG] Starting ¡X watching: orchestrator, backend
-2026-05-03 16:13:09,707 [INFO] panopticon_py.db [DB_MAINT] Starting SQLite ANALYZE...
-2026-05-03 16:13:09,900 [INFO] panopticon_py.db [DB_MAINT] WAL checkpoint: busy=0 log=0 checkpointed=0
-2026-05-03 16:13:13,748 [ERROR] panopticon_py.db [DB_MAINT] INTEGRITY CHECK FAILED: [<sqlite3.Row object at 0x0000020843488610>]
-2026-05-03 16:13:13,750 [INFO] __main__ [WATCHDOG] DB maintenance complete
+2026-05-04 00:04:47,379 [INFO] panopticon_py.utils.process_guard [guard] watchdog singleton acquired (PID=48772, version=v1.0.5-D146)
+2026-05-04 00:04:47,380 [INFO] panopticon_py.utils.process_guard [guard] watchdog version OK: v1.0.5-D146 == v1.0.5-D146
+2026-05-04 00:04:47,390 [INFO] panopticon_py.utils.process_guard [guard] _write_manifest: wrote watchdog to manifest, total keys=6
+2026-05-04 00:04:47,391 [INFO] __main__ [WATCHDOG] Starting ¡X watching: orchestrator, backend, arb_scanner
+2026-05-04 00:04:47,405 [WARNING] __main__ [WATCHDOG] orchestrator unhealthy: pid_dead(pid=49220) ¡÷ restarting
+2026-05-04 00:04:49,412 [INFO] __main__ [WATCHDOG] orchestrator restarted ¡÷ PID=49596
+2026-05-04 00:04:49,413 [WARNING] __main__ [WATCHDOG] backend unhealthy: pid_dead(pid=42976) ¡÷ restarting
+2026-05-04 00:04:51,418 [INFO] __main__ [WATCHDOG] backend restarted ¡÷ PID=38860
+2026-05-04 00:04:51,460 [WARNING] __main__ [WATCHDOG] DB maintenance failed: invalid syntax (db.py, line 3944)
+2026-05-04 00:05:21,470 [WARNING] __main__ [WATCHDOG] orchestrator unhealthy: pid_dead(pid=49220) ¡÷ restarting
+2026-05-04 00:05:23,475 [INFO] __main__ [WATCHDOG] orchestrator restarted ¡÷ PID=4112
+2026-05-04 00:05:23,477 [WARNING] __main__ [WATCHDOG] backend unhealthy: pid_dead(pid=42976), hb_stale(age=64s > 60s) ¡÷ restarting
+2026-05-04 00:05:25,481 [INFO] __main__ [WATCHDOG] backend restarted ¡÷ PID=43012
+2026-05-04 00:05:55,492 [WARNING] __main__ [WATCHDOG] orchestrator unhealthy: pid_dead(pid=49220) ¡÷ restarting
+2026-05-04 00:05:57,498 [INFO] __main__ [WATCHDOG] orchestrator restarted ¡÷ PID=45592
+2026-05-04 00:05:57,500 [WARNING] __main__ [WATCHDOG] backend unhealthy: pid_dead(pid=42976), hb_stale(age=98s > 60s) ¡÷ restarting
+2026-05-04 00:05:59,503 [INFO] __main__ [WATCHDOG] backend restarted ¡÷ PID=28668
+2026-05-04 00:06:29,516 [WARNING] __main__ [WATCHDOG] orchestrator unhealthy: pid_dead(pid=49220), hb_stale(age=118s > 90s) ¡÷ restarting
+2026-05-04 00:06:29,517 [ERROR] __main__ [WATCHDOG] CIRCUIT_OPEN: orchestrator restarted 3 times in 300s ¡X manual intervention required. Skipping restart.
+2026-05-04 00:06:29,518 [WARNING] __main__ [WATCHDOG] backend unhealthy: pid_dead(pid=42976), hb_stale(age=130s > 60s) ¡÷ restarting
+2026-05-04 00:06:29,518 [ERROR] __main__ [WATCHDOG] CIRCUIT_OPEN: backend restarted 3 times in 300s ¡X manual intervention required. Skipping restart.
