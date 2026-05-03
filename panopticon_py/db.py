@@ -3916,7 +3916,6 @@ class AsyncDBWriter:
             try:
                 if kind == "_stop_sentinel":
                     break
-                # D117: Time the dispatch to detect WAL contention (>200ms = warning)
                 t0 = time.monotonic()
                 try:
                     self._dispatch(kind, payload)
@@ -3930,17 +3929,17 @@ class AsyncDBWriter:
                         )
             except Exception as exc:
                 logger.warning("[AsyncDBWriter] dispatch error kind=%s: %s", kind, exc)
-            # D148-5: C-layer sqlite3 silent errors ("error return without exception set")
-            # don't raise — probe to confirm the statement actually succeeded.
-            # This runs after a successful dispatch (no exception raised).
-            if kind not in ("raw",):
-                try:
-                    self.db.conn.execute("SELECT 1")
-                except Exception as probe_err:
-                    logger.warning(
-                        "[AsyncDBWriter] C-layer silent dispatch failure kind=%s: probe=%s",
-                        kind, probe_err,
-                    )
+            else:
+                # D148-5: C-layer sqlite3 silent errors ("error return without exception set")
+                # don't raise — probe to confirm the statement actually succeeded.
+                if kind not in ("raw",):
+                    try:
+                        self.db.conn.execute("SELECT 1")
+                    except Exception as probe_err:
+                        logger.warning(
+                            "[AsyncDBWriter] C-layer silent dispatch failure kind=%s: probe=%s",
+                            kind, probe_err,
+                        )
             finally:
                 self._q.task_done()
 
