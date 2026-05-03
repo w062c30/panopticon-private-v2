@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.6-D141"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect
+PROCESS_VERSION = "v0.5.7-D142"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -120,9 +120,14 @@ def _is_tier5_sports_market(m: dict) -> bool:
     return True
 
 
-async def fetch_t5_token_ids() -> tuple[list[str], list[str]]:
+async def fetch_t5_token_ids(
+    session: httpx.AsyncClient | None = None,
+) -> tuple[list[str], list[str]]:
     """
     D119-P0: Fetch active T5 sports CLOB token_ids from Gamma API.
+
+    D142-P2: Uses AsyncClient when ``session`` is provided (reuse ArbScanner pool).
+    Otherwise creates a temporary client — avoids blocking the asyncio event loop.
 
     Returns:
         (token_ids, market_ids) — both lists of strings.
@@ -136,16 +141,28 @@ async def fetch_t5_token_ids() -> tuple[list[str], list[str]]:
     market_ids: list[str] = []
     seen_tokens: set[str] = set()
     seen_markets: set[str] = set()
+    own_session = session is None
+    if own_session:
+        session = httpx.AsyncClient(timeout=15.0)
+    assert session is not None  # for type checker
+
+    markets: object | None = None
     try:
         base = os.getenv("GAMMA_PUBLIC_API_BASE", "https://gamma-api.polymarket.com").strip()
         path = os.getenv("GAMMA_PUBLIC_MARKETS_PATH", "/markets").strip()
         url = f"{base}{path}?closed=false&limit=500"
-        resp = httpx.get(url, timeout=15.0)
-        resp.raise_for_status()
-        markets = resp.json()
+        resp = await session.get(url)
+        try:
+            resp.raise_for_status()
+            markets = resp.json()
+        finally:
+            await resp.aclose()
     except Exception as e:
         logger.warning("[ARB] Failed to fetch T5 markets from Gamma: %s", e)
         return [], []
+    finally:
+        if own_session:
+            await session.aclose()
 
     if not isinstance(markets, list):
         return [], []
@@ -352,7 +369,7 @@ class ArbScanner:
         while True:
             try:
                 # ── Step 1: Auto-discover T5 token_ids (CLOB WS format) ───────────
-                token_ids, market_ids = await fetch_t5_token_ids()
+                token_ids, market_ids = await fetch_t5_token_ids(session=self._http_session)
                 if token_ids:
                     self._token_ids = token_ids  # store for stats tracking
                     current_token_ids = token_ids
@@ -459,13 +476,14 @@ class ArbScanner:
                 # fall back to the previous list — WS reconnection is more important
                 # than refreshing the market list.
                 try:
-                    fresh_ids, fresh_markets = await fetch_t5_token_ids()
+                    fresh_ids, fresh_markets = await fetch_t5_token_ids(session=self._http_session)
                     if fresh_ids:
                         filtered = await self._apply_fee_filter(fresh_ids)
                         if filtered:
                             old_count = len(current_token_ids)
                             current_token_ids = filtered
                             self._original_token_ids = filtered
+                            self._token_ids = filtered   # D142: keep stats counter in sync
                             logger.info(
                                 "[ARB_WS] Token refresh on reconnect: %d → %d",
                                 old_count, len(current_token_ids),
