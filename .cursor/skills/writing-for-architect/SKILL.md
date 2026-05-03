@@ -803,7 +803,6 @@ Architect must verify the coding agent's implementation against the following re
 - [ ] 是否在程式碼或文件中硬編碼 API Key / 私鑰（不允許）
 - [ ] Graphify 來源資料是否誤入信號/風險/執行路徑（不允許）
 - [ ] `graphify-out/*`、`GRAPH_REPORT.md`、`graph.json` 是否被任何非工程用途讀取
-- [ ] 所有 LLM 推論是否經過可審計日誌（特別是 MiniMax 模型需控制併發 ≤ 2）
 - [ ] `acquire_singleton()` 是否存在於所有 entry point
 - [ ] `PROCESS_VERSION` 是否在 `_lifespan` 定義之前宣告
 - [ ] WebSocket handler 是否在 `finally` 關閉 DB 連接

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.2-D137"   # ← AGENT: bump on every change  # D137-1: +30s fixed heartbeat thread
+PROCESS_VERSION = "v0.5.3-D138"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -234,12 +234,14 @@ class ArbScanner:
     # D137-1: 30s fixed heartbeat — independent of WS message frequency
     def _heartbeat_loop(self) -> None:
         """D137: Writes heartbeat every 30s regardless of WS message rate."""
+        _hb_logger = logging.getLogger("arb_scanner.heartbeat")
         while not self._stop_event.is_set():
             try:
                 from panopticon_py.utils.process_guard import update_heartbeat
                 update_heartbeat("arb_scanner")
-            except Exception:
-                pass
+            except Exception as exc:
+                # D138: log instead of silent pass — unknown errors must be visible
+                _hb_logger.warning("[ARB_HB] update_heartbeat failed: %s", exc)
             self._stop_event.wait(timeout=30)
 
     def _start_heartbeat(self) -> None:
@@ -513,9 +515,25 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     )
+    _main_logger = logging.getLogger("arb_scanner.main")
+    _main_logger.info("[ARB_MAIN] arb_scanner %s starting", PROCESS_VERSION)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("[ARB_EXIT] KeyboardInterrupt")
-    except Exception as e:
-        logger.error("[ARB_FATAL] %s", e)
+        _main_logger.info("[ARB_EXIT] Interrupted by user (KeyboardInterrupt)")
+    except Exception as exc:
+        # D138-P0: Capture all unhandled exceptions to ensure crash has trace
+        _main_logger.exception("[ARB_CRASH] Unhandled exception in main(): %s", exc)
+        try:
+            from panopticon_py.utils.process_guard import _read_manifest, _write_manifest
+            manifest = _read_manifest()
+            if "arb_scanner" in manifest:
+                manifest["arb_scanner"]["status"] = "crashed"
+                manifest["arb_scanner"]["crash_reason"] = str(exc)
+                _write_manifest("arb_scanner", manifest["arb_scanner"])
+        except Exception:
+            pass
+        import sys
+        sys.exit(1)
+    finally:
+        _main_logger.info("[ARB_EXIT] arb_scanner main() exited cleanly")

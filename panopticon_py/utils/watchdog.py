@@ -65,6 +65,13 @@ WATCHED_PROCESSES: dict[str, dict] = {
         "log": "run/backend.log",
         "heartbeat_stale_sec": 60,  # backend writes HB every 30s; 60s = 2x margin
     },
+    "arb_scanner": {
+        # D138: arb_scanner runs as standalone process with 30s fixed heartbeat
+        "cmd": [sys.executable, "-m", "panopticon_py.execution.arb_scanner"],
+        "cwd": str(Path(__file__).resolve().parents[3]),
+        "log": "run/arb_scanner.log",
+        "heartbeat_stale_sec": 120,  # 30s fixed HB × 4 = safe margin
+    },
 }
 
 _POLL_INTERVAL_SEC = 30            # main loop cadence
@@ -263,7 +270,7 @@ if __name__ == "__main__":
     # D114-3: Register as singleton in manifest so tooling can observe watchdog liveness.
     # In daemon mode: runs in grandchild (after double-fork), so manifest PID is correct.
     from panopticon_py.utils.process_guard import acquire_singleton
-    WATCHDOG_VERSION = "v1.0.1-D132"
+    WATCHDOG_VERSION = "v1.0.2-D138"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES
     acquire_singleton("watchdog", WATCHDOG_VERSION)
 
     run_watchdog()

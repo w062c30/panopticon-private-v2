@@ -255,13 +255,23 @@ function Full-Restart {
     Write-Host ("  Watchdog started PID=" + $watchdog.Id)
     Start-Sleep -Seconds 2
     
-    $frontendVersion = "v1.1.1-D62"
+    $frontendVersion = $null
     # Read from versions_ref.json (single source of truth) — avoids hardcoded drift
     if (Test-Path "$projDir\versions_ref.json") {
         try {
-            $vref = Get-Content "$projDir\versions_ref.json" | ConvertFrom-Json
-            $frontendVersion = $vref.frontend
+            $vref = Get-Content "$projDir\versions_ref.json" -Raw | ConvertFrom-Json
+            $frontendVersion = if ($vref.frontend) { $vref.frontend } else { $null }
         } catch {}
+    }
+    if (-not $frontendVersion) {
+        # Fallback to reading package.json directly
+        $pkgPath = "$projDir\dashboard\package.json"
+        if (Test-Path $pkgPath) {
+            try {
+                $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+                $frontendVersion = $pkg.version
+            } catch {}
+        }
     }
     $nodeProc = Start-Frontend
     Write-Host ("  Frontend started PID=" + $nodeProc.Id + " version=" + $frontendVersion)
