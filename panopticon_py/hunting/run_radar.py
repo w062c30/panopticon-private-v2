@@ -267,6 +267,7 @@ def _fetch_missing_event_names(db, batch_size: int = 20, lookback_days: int = 30
           AND (plm.token_id IS NULL
                OR plm.source IS NULL
                OR plm.source = 'fallback'
+               OR plm.source = 'url_stale'   -- D151-3: retry rows with stale /markets/ URL
                OR plm.event_slug IS NULL
                OR plm.event_slug = ''
                OR plm.event_slug LIKE '%...')
@@ -335,7 +336,14 @@ def _gamma_batch_fetch_event_names(db, token_ids: list[str]) -> int:
             if not isinstance(clob_ids, list):
                 clob_ids = [clob_ids]
 
-            slug = m.get("slug") or m.get("event_slug") or ""
+            # D151-1: groupSlug is the event-level slug — use it for canonical_event_url
+            # market_slug keeps the market-level slug for audit
+            slug = (
+                m.get("groupSlug")
+                or m.get("event_slug")
+                or m.get("slug")
+                or ""
+            )
             question = m.get("question") or m.get("title") or ""
 
             for tid in clob_ids:
@@ -344,6 +352,15 @@ def _gamma_batch_fetch_event_names(db, token_ids: list[str]) -> int:
                 if tid_str not in [str(t) for t in token_ids]:
                     continue
                 if question and len(question) > 5:
+                    # D151-1: Fix canonical_event_url: /markets/ → /event/, slug from groupSlug
+                    # D151-4: Debug log to verify groupSlug is correctly read
+                    logger.debug(
+                        "[EVENT_NAME_FETCH][D151] token=%s market_slug=%s group_slug=%s url=%s",
+                        tid_str[:20],
+                        (m.get("slug") or "")[:40],
+                        (m.get("groupSlug") or "")[:40],
+                        (f"https://polymarket.com/event/{slug}" if slug else "(empty)")[:80],
+                    )
                     db.conn.execute("""
                         INSERT OR IGNORE INTO polymarket_link_map
                             (token_id, event_slug, market_slug, canonical_event_url,
@@ -352,8 +369,8 @@ def _gamma_batch_fetch_event_names(db, token_ids: list[str]) -> int:
                     """, (
                         tid_str,
                         question,
-                        slug,
-                        f"https://polymarket.com/markets/{slug}" if slug else "",
+                        m.get("slug") or "",
+                        f"https://polymarket.com/event/{slug}" if slug else "",
                         "batch_fetch",
                     ))
                     inserted += 1
@@ -397,7 +414,8 @@ def _batch_fill_link_map(db_path: str, batch_size: int = 20, lookback_days: int 
           AND er.created_ts_utc >= ?
           AND (plm.token_id IS NULL
                OR plm.source IS NULL
-               OR plm.source = 'fallback')
+               OR plm.source = 'fallback'
+               OR plm.source = 'url_stale')   -- D151-3: retry rows with stale /markets/ URL
     """, (cutoff_ts,)).fetchall()
     conn.close()
 
@@ -462,7 +480,14 @@ def _gamma_batch_fill_link_map(db_path: str, token_ids: list[str]) -> int:
             if not isinstance(clob_ids, list):
                 clob_ids = [clob_ids]
 
-            slug = m.get("slug") or m.get("event_slug") or ""
+            # D151-2: groupSlug is the event-level slug — use it for canonical_event_url
+            # market_slug keeps the market-level slug for audit
+            slug = (
+                m.get("groupSlug")
+                or m.get("event_slug")
+                or m.get("slug")
+                or ""
+            )
             question = m.get("question") or m.get("title") or ""
 
             for tid in clob_ids:
@@ -470,11 +495,18 @@ def _gamma_batch_fill_link_map(db_path: str, token_ids: list[str]) -> int:
                 if tid_str not in [str(t) for t in token_ids]:
                     continue
                 if question and len(question) > 5:
+                    # D151-2: Add canonical_event_url (was missing entirely)
                     conn.execute("""
                         INSERT OR IGNORE INTO polymarket_link_map
-                            (token_id, event_slug, market_slug, source, fetched_at)
-                        VALUES (?, ?, ?, ?, datetime('now'))
-                    """, (tid_str, question, slug, "batch_fetch"))
+                            (token_id, event_slug, market_slug, canonical_event_url, source, fetched_at)
+                        VALUES (?, ?, ?, ?, ?, datetime('now'))
+                    """, (
+                        tid_str,
+                        question,
+                        m.get("slug") or "",
+                        f"https://polymarket.com/event/{slug}" if slug else "",
+                        "batch_fetch",
+                    ))
                     inserted += 1
         except Exception as exc:
             logger.warning("[D65][BATCH_FILL] failed to parse market: %s", exc)
@@ -3334,7 +3366,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.51-D145"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond
+    PROCESS_VERSION = "v1.1.52-D151"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
