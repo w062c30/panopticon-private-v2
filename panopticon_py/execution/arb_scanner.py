@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.0-D121"   # ← AGENT: bump on every change  # D121-2: fee rate dynamic query with 300 bps filter
+PROCESS_VERSION = "v0.5.1-D135"   # ← AGENT: bump on every change  # D135: exit logging + graceful shutdown
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -470,8 +470,21 @@ class ArbScanner:
 
 
 async def main() -> None:
+    """D135: Wrap run() to catch all exceptions and log exit reason before terminating."""
+    from panopticon_py.utils.process_guard import update_heartbeat
     scanner = ArbScanner(paper_mode=PAPER_MODE)
-    await scanner.run()
+    try:
+        await scanner.run()
+    except asyncio.CancelledError:
+        logger.info("[ARB_EXIT] CancelledError — graceful shutdown")
+        raise
+    except Exception as e:
+        logger.error("[ARB_EXIT] Unhandled exception: %s — process will exit", e, exc_info=True)
+        try:
+            update_heartbeat("arb_scanner")
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":
@@ -479,4 +492,9 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     )
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("[ARB_EXIT] KeyboardInterrupt")
+    except Exception as e:
+        logger.error("[ARB_FATAL] %s", e)
