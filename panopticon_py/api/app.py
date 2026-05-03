@@ -29,7 +29,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.39-D137"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets
+PROCESS_VERSION = "v1.1.40-D146"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets  # D146-P1: /api/arb/health os.kill → is_process_alive()
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -418,12 +418,10 @@ async def get_arb_health() -> dict:
 
     pid = arb_entry.get("pid")
     if pid:
-        try:
-            import os as _os
-            _os.kill(int(pid), 0)
-            pid_alive = True
-        except (OSError, ProcessLookupError):
-            pid_alive = False
+        # D146-P1-1: Use is_process_alive() — Windows-safe (GetExitCodeProcess).
+        # os.kill(pid, 0) raises OSError(WinError 5) on Windows even for live processes.
+        from panopticon_py.utils.process_guard import is_process_alive
+        pid_alive = is_process_alive(int(pid))
 
     return {
         "pid": pid,

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.7-D142"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx
+PROCESS_VERSION = "v0.5.8-D146"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -313,8 +313,23 @@ class ArbScanner:
         """
         D121-2: Filter out tokens with fee_rate_bps > 300.
         Stores fee rates in self._fee_rates for observability.
+        D146-P0-2: Hard 15s timeout — fee query failure must never block the main loop.
         """
-        rates = await self._fetch_fee_rates(token_ids)
+        try:
+            rates = await asyncio.wait_for(
+                self._fetch_fee_rates(token_ids),
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[ARB_FEE] Fee rate query timed out (15s) — skipping filter, using all %d tokens",
+                len(token_ids),
+            )
+            return token_ids
+        except Exception as e:
+            logger.warning("[ARB_FEE] Fee filter error: %s — using unfiltered list", e)
+            return token_ids
+
         self._fee_rates = rates
 
         excluded = [tid for tid, bps in rates.items() if bps > 300]
@@ -348,72 +363,67 @@ class ArbScanner:
     async def run(self) -> None:
         """
         D119-P0: Main entry point.
-        Auto-discovers T5 token_ids from Gamma API (CLOB WS uses token_id, NOT condition_id).
-        Refreshes every 60s.
-
-        Note: acquire_singleton() is called in __main__ before asyncio.run(),
-        not here, so this method is pure business logic (testable in isolation).
+        D146-P0-3: Restructured — heartbeat starts immediately, Gamma fetch has a 20s
+        hard timeout so startup never blocks longer than 35s total. WS listener enters
+        regardless of whether initial token fetch succeeded; _connect_and_listen refreshes
+        tokens on each reconnect.
         """
-        # D137-1: Start 30s fixed heartbeat thread
+        # D137-1: Start 30s fixed heartbeat FIRST — must be writing before any blocking call
         self._start_heartbeat()
 
-        # D121-2: Create HTTP session for fee rate queries
+        # D121-2: Create HTTP session + semaphore
         self._http_session = httpx.AsyncClient(timeout=10.0)
         self._fee_semaphore = asyncio.Semaphore(10)
 
         logger.info("[ARB] Starting ArbScanner paper_mode=%s auto_refresh=%ds",
                     PAPER_MODE, self._refresh_interval)
-        current_token_ids: list[str] = []
-        current_market_ids: list[str] = []
 
+        # ── Step 1: Initial token discovery with hard 20s timeout ─────────────────
+        try:
+            token_ids, market_ids = await asyncio.wait_for(
+                fetch_t5_token_ids(session=self._http_session),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[ARB] Initial Gamma fetch timed out (20s) — starting WS with empty token list")
+            token_ids, market_ids = [], []
+        except Exception as e:
+            logger.warning("[ARB] Initial Gamma fetch failed: %s — starting WS with empty token list", e)
+            token_ids, market_ids = [], []
+
+        current_token_ids: list[str] = list(token_ids)
+
+        if current_token_ids:
+            self._token_ids = current_token_ids
+            logger.info("[ARB] Discovered %d T5 token_ids (%d markets) via Gamma API",
+                        len(current_token_ids), len(market_ids))
+            # D146-P0-2: _apply_fee_filter has internal 15s timeout — safe to await directly
+            filtered = await self._apply_fee_filter(current_token_ids)
+            if not filtered:
+                logger.warning("[ARB] All tokens filtered by fee rate — keeping unfiltered list to avoid empty subscription")
+            else:
+                current_token_ids = filtered
+            self._original_token_ids = current_token_ids
+            # D119-P0: [ARB_INIT] format validation (0x + 64 hex chars = 66 total)
+            sample = current_token_ids[:3]
+            all_valid = all(len(t) == 66 and t.startswith("0x") for t in current_token_ids)
+            invalid = [t for t in current_token_ids if not (len(t) == 66 and t.startswith("0x"))]
+            logger.info("[ARB_INIT] token_ids=%d sample=%s all_valid_format=%s",
+                        len(current_token_ids), sample, all_valid)
+            if invalid:
+                logger.warning("[ARB_INIT] %d invalid token_ids: %s", len(invalid), invalid[:5])
+        else:
+            logger.warning("[ARB] No T5 tokens at startup — WS starts with empty list; refresh on first reconnect")
+
+        # Start background fee refresh loop (once per process lifetime)
+        if not self._refresh_started:
+            self._refresh_started = True
+            asyncio.create_task(self._fee_rate_refresh_loop())
+
+        # ── Step 2: WS listener — handles all reconnects + token refresh internally ─
         while True:
             try:
-                # ── Step 1: Auto-discover T5 token_ids (CLOB WS format) ───────────
-                token_ids, market_ids = await fetch_t5_token_ids(session=self._http_session)
-                if token_ids:
-                    self._token_ids = token_ids  # store for stats tracking
-                    current_token_ids = token_ids
-                    current_market_ids = market_ids
-                    logger.info("[ARB] Discovered %d T5 token_ids (%d markets) via Gamma API",
-                                len(current_token_ids), len(current_market_ids))
-                    # D121-2: Apply fee rate filter before subscribing
-                    try:
-                        current_token_ids = await self._apply_fee_filter(current_token_ids)
-                        if not current_token_ids:
-                            logger.warning("[ARB] All tokens filtered out by fee rate; retrying in 30s…")
-                            await asyncio.sleep(30)
-                            continue
-                        # D121-2: Store for 6h refresh loop
-                        self._original_token_ids = current_token_ids
-                        # Start background refresh loop (only once)
-                        if not hasattr(self, "_refresh_started") or not self._refresh_started:
-                            self._refresh_started = True
-                            asyncio.create_task(self._fee_rate_refresh_loop())
-                    except Exception as e:
-                        logger.warning("[ARB_FEE] Fee filter failed, using unfiltered list: %s", e)
-                        self._original_token_ids = current_token_ids
-                        if not hasattr(self, "_refresh_started") or not self._refresh_started:
-                            self._refresh_started = True
-                            asyncio.create_task(self._fee_rate_refresh_loop())
-                    # D119-P0: [ARB_INIT] format validation
-                    # Valid CLOB token_id = "0x" + 64 hex chars = 66 total chars
-                    sample = current_token_ids[:3]
-                    all_valid = all(len(t) == 66 and t.startswith("0x") for t in current_token_ids)
-                    invalid = [t for t in current_token_ids if not (len(t) == 66 and t.startswith("0x"))]
-                    logger.info(
-                        "[ARB_INIT] token_ids=%d sample=%s all_valid_format=%s",
-                        len(current_token_ids), sample, all_valid,
-                    )
-                    if invalid:
-                        logger.warning("[ARB_INIT] %d invalid token_ids: %s", len(invalid), invalid[:5])
-                elif not current_token_ids:
-                    logger.warning("[ARB] No T5 token_ids found; retrying in 30s…")
-                    await asyncio.sleep(30)
-                    continue
-
-                # ── Step 2: Run WS listener with CLOB token_ids ────────────────────
                 await self._connect_and_listen(current_token_ids)
-
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -436,7 +446,12 @@ class ArbScanner:
         while not self._stop_event.is_set():
             try:
                 sub_msg = {"type": "subscribe", "assets_ids": current_token_ids}
-                async with websockets.connect(ARB_WS_URL, ping_interval=20) as ws:
+                async with websockets.connect(
+                    ARB_WS_URL,
+                    ping_interval=20,
+                    ping_timeout=30,   # D146-P0-4: no-pong for 30s → ConnectionClosed
+                    close_timeout=10,  # D146-P0-4: closing handshake hard limit
+                ) as ws:
                     self._ws = ws
                     await ws.send(json.dumps(sub_msg))
                     backoff = 5.0  # reset on successful connect
@@ -475,9 +490,14 @@ class ArbScanner:
                 # subscription stays aligned with current market state.  If this fails,
                 # fall back to the previous list — WS reconnection is more important
                 # than refreshing the market list.
+                # D146-P0-1: Hard 20s timeout prevents Gamma hang from blocking reconnect.
                 try:
-                    fresh_ids, fresh_markets = await fetch_t5_token_ids(session=self._http_session)
+                    fresh_ids, fresh_markets = await asyncio.wait_for(
+                        fetch_t5_token_ids(session=self._http_session),
+                        timeout=20.0,
+                    )
                     if fresh_ids:
+                        # _apply_fee_filter has its own 15s internal timeout
                         filtered = await self._apply_fee_filter(fresh_ids)
                         if filtered:
                             old_count = len(current_token_ids)
@@ -610,10 +630,11 @@ if __name__ == "__main__":
             manifest = _read_manifest()
             if "arb_scanner" in manifest:
                 manifest["arb_scanner"]["status"] = "crashed"
-                manifest["arb_scanner"]["crash_reason"] = str(exc)
+                manifest["arb_scanner"]["crash_reason"] = str(exc)[:200]
+                manifest["arb_scanner"]["crash_time"] = datetime.now(timezone.utc).isoformat()
                 _write_manifest("arb_scanner", manifest["arb_scanner"])
-        except Exception:
-            pass
+        except Exception as me:
+            _main_logger.warning("[ARB_CRASH] manifest write failed: %s", me)
         import sys
         sys.exit(1)
     finally:

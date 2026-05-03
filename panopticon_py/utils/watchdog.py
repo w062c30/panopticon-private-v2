@@ -86,6 +86,7 @@ _DB_MAINT_INTERVAL_SEC = 21600    # 6 hours
 _RESTART_WINDOW_SEC = 300          # 5 min circuit breaker window
 _MIN_RESTART_GAP_SEC = 10          # floor between restarts
 _MAX_RESTARTS_IN_WINDOW = 3
+_CIRCUIT_HALF_OPEN_SEC = 600       # D146-P3: 10 min after OPEN → allow one probe restart
 
 
 # ── Circuit breaker state ───────────────────────────────────────────────────────
@@ -144,20 +145,49 @@ def _check_process(name: str, config: dict) -> None:
     _restart_process(name, config)
 
 
+def _circuit_state(name: str, now: float) -> str:
+    """
+    D146-P3: Return circuit breaker state for a process.
+    CLOSED  → restart allowed (fewer than _MAX_RESTARTS_IN_WINDOW recent attempts)
+    OPEN    → too many recent attempts, block restarts
+    HALF_OPEN → OPEN but _CIRCUIT_HALF_OPEN_SEC has elapsed since last attempt;
+                allow one probe restart to test if the process recovered
+    """
+    attempts = _restart_attempts.get(name, [])
+    recent = [t for t in attempts if now - t < _RESTART_WINDOW_SEC]
+    if len(recent) < _MAX_RESTARTS_IN_WINDOW:
+        return "CLOSED"
+    if recent and (now - recent[-1]) >= _CIRCUIT_HALF_OPEN_SEC:
+        return "HALF_OPEN"
+    return "OPEN"
+
+
 def _restart_process(name: str, config: dict) -> None:
-    """Restart a process with circuit breaker protection."""
+    """Restart a process with circuit breaker protection (CLOSED/HALF_OPEN/OPEN)."""
     now = time.monotonic()
     attempts = _restart_attempts.setdefault(name, [])
 
-    # Circuit breaker: too many restarts in window
-    recent = [t for t in attempts if now - t < _RESTART_WINDOW_SEC]
-    if len(recent) >= _MAX_RESTARTS_IN_WINDOW:
+    # D146-P3: Evaluate circuit state before acting
+    state = _circuit_state(name, now)
+    if state == "OPEN":
+        recent_count = len([t for t in attempts if now - t < _RESTART_WINDOW_SEC])
         logger.error(
             "[WATCHDOG] CIRCUIT_OPEN: %s restarted %d times in %ds — "
             "manual intervention required. Skipping restart.",
-            name, len(recent), _RESTART_WINDOW_SEC,
+            name, recent_count, _RESTART_WINDOW_SEC,
         )
         return
+    if state == "HALF_OPEN":
+        logger.warning(
+            "[WATCHDOG] CIRCUIT_HALF_OPEN: %s — attempting probe restart after %ds silence",
+            name, _CIRCUIT_HALF_OPEN_SEC,
+        )
+        # Reset window so this probe starts a clean slate
+        _restart_attempts[name] = []
+        attempts = _restart_attempts[name]
+
+    # Recompute recent after any HALF_OPEN reset
+    recent = [t for t in attempts if now - t < _RESTART_WINDOW_SEC]
 
     # Minimum gap check
     if recent and (now - recent[-1]) < _MIN_RESTART_GAP_SEC:
@@ -288,7 +318,7 @@ if __name__ == "__main__":
     # D114-3: Register as singleton in manifest so tooling can observe watchdog liveness.
     # In daemon mode: runs in grandchild (after double-fork), so manifest PID is correct.
     from panopticon_py.utils.process_guard import acquire_singleton
-    WATCHDOG_VERSION = "v1.0.4-D143"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES  # D139: parents[2] + PYTHONPATH env  # D143: restart grace sleep before Popen
+    WATCHDOG_VERSION = "v1.0.5-D146"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES  # D139: parents[2] + PYTHONPATH env  # D143: restart grace sleep before Popen  # D146-P3: HALF_OPEN circuit breaker
     acquire_singleton("watchdog", WATCHDOG_VERSION)
 
     run_watchdog()
