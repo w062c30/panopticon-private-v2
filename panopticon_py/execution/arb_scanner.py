@@ -410,6 +410,8 @@ class ArbScanner:
             )
             self._db.conn.commit()
             self._last_flush_ts = time.time()
+            # D148-2: reset _last_stats_log so _on_message 60s guard doesn't re-flush
+            self._last_stats_log = time.time()
         except Exception as e:
             logger.debug("[ARB_STATS] write failed: %s", e)
 
@@ -513,6 +515,12 @@ class ArbScanner:
                         "[ARB] WS connected, subscribed to %d token_ids",
                         len(current_token_ids),
                     )
+                    # D148-2: Flush stats on connection so arb_stats is populated
+                    # even before any WS messages arrive. Don't await — let it run
+                    # in background so WS receive loop isn't blocked.
+                    asyncio.create_task(self._flush_stats())
+                    self._last_flush_ts = time.time()  # reset 60s interval from connect time
+                    self._last_stats_log = time.time()  # D148-2: align 60s tick with flush on connect
 
                     async for raw in ws:
                         from panopticon_py.utils.process_guard import update_heartbeat
