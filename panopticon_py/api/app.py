@@ -29,7 +29,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.38-D136"   # ← AGENT: bump on every change  # D136-2: +heartbeat_bootstrapping in /api/arb/health
+PROCESS_VERSION = "v1.1.39-D137"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -436,3 +436,19 @@ async def get_arb_health() -> dict:
         "ts": utc_now_rfc3339_ms(),
     }
 
+
+@app.get("/api/radar/active-markets")
+def get_radar_active_markets() -> dict:
+    """
+    D137-2: Radar current WS subscription market snapshot by tier.
+    Source: data/radar_active_markets.json written by run_radar.py after each tier refresh.
+    Zero DB write, zero impact on radar main loop.
+    """
+    snap_path = os.getenv("RADAR_ACTIVE_MARKETS_PATH", "data/radar_active_markets.json")
+    try:
+        with open(snap_path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"error": "snapshot not yet available — radar may still be starting"}
+    except Exception as exc:
+        return {"error": str(exc)}

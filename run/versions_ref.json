@@ -3,12 +3,12 @@
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
   "radar": "v1.1.50-D131",
   "orchestrator": "v1.1.37-D133",
-  "backend": "v1.1.38-D136",
+  "backend": "v1.1.39-D137",
   "frontend": "v1.1.11-D111",
   "analysis_worker": "v1.1.13-D90",
   "watchdog": "v1.0.1-D132",
-  "arb_scanner": "v0.5.1-D135",
-  "last_updated": "2026-05-03T08:15:00Z",
-  "updated_by_sprint": "D136",
-  "updated_by_agent": "D136-coding-agent"
+  "arb_scanner": "v0.5.2-D137",
+  "last_updated": "2026-05-03T08:35:00Z",
+  "updated_by_sprint": "D137",
+  "updated_by_agent": "D137-coding-agent"
 }

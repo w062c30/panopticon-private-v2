@@ -12,6 +12,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from panopticon_py.db import ShadowDB
@@ -544,6 +545,34 @@ _ws_1009_last_failure: float = 0.0
 # when a refresh call is rate-limited and returns [].
 _cached_t1_tokens: list[str] = []
 _cached_t2_tokens: list[str] = []
+
+
+# D137-2: Radar active market snapshot — written by _write_active_market_snapshot()
+#          read by /api/radar/active-markets endpoint in app.py
+def _write_active_market_snapshot(tier: str, token_ids: list[str], slugs: dict[str, str]) -> None:
+    """
+    D137-2: Write current WS subscription token list to data/radar_active_markets.json.
+    Written after each tier refresh (T1: 60s, T5: 60s). Exceptions are always silent
+    to保证主路徑不受影響。
+    """
+    try:
+        snap_path = Path(os.getenv("RADAR_ACTIVE_MARKETS_PATH", "data/radar_active_markets.json"))
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        existing: dict = {}
+        if snap_path.exists():
+            try:
+                existing = json.loads(snap_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        existing[tier] = {
+            "token_ids": token_ids,
+            "slugs": slugs,
+            "count": len(token_ids),
+            "updated_ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%%03dZ"),
+        }
+        snap_path.write_text(json.dumps(existing, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 _cached_t5_tokens: list[str] = []
 _cached_t3_tokens: list[str] = []
 
@@ -1780,6 +1809,9 @@ async def _refresh_all_subscriptions(db) -> tuple[list[str], list[str], list[str
         len(combined), len(tier1_tokens), len(tier2_tokens),
         len(tier5_tokens), len(tier3_tokens),
     )
+    # D137-2: Write market snapshot for observability (silent — never affects main path)
+    _write_active_market_snapshot("t1", list(tier1_tokens), dict(_token_to_slug_map))
+    _write_active_market_snapshot("t5", list(tier5_tokens), {})
     # ── MetricsCollector hook (in-process, no DB reads) ─────────────────
     mc = _mc()
     if mc is not None:

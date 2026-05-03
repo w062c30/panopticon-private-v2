@@ -12,6 +12,7 @@ import httpx
 import json
 import logging
 import os
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.1-D135"   # ← AGENT: bump on every change  # D135: exit logging + graceful shutdown
+PROCESS_VERSION = "v0.5.2-D137"   # ← AGENT: bump on every change  # D137-1: +30s fixed heartbeat thread
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -228,6 +229,22 @@ class ArbScanner:
     _http_session: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
     _fee_semaphore: asyncio.Semaphore = field(init=False, repr=False)
     _refresh_started: bool = field(default=False, init=False)
+    _stop_event: threading.Event = field(default=threading.Event, init=False, repr=False)
+
+    # D137-1: 30s fixed heartbeat — independent of WS message frequency
+    def _heartbeat_loop(self) -> None:
+        """D137: Writes heartbeat every 30s regardless of WS message rate."""
+        while not self._stop_event.is_set():
+            try:
+                from panopticon_py.utils.process_guard import update_heartbeat
+                update_heartbeat("arb_scanner")
+            except Exception:
+                pass
+            self._stop_event.wait(timeout=30)
+
+    def _start_heartbeat(self) -> None:
+        hb = threading.Thread(target=self._heartbeat_loop, name="arb-heartbeat", daemon=True)
+        hb.start()
 
     async def _fetch_fee_rates(self, token_ids: list[str]) -> dict[str, int]:
         """
@@ -317,6 +334,9 @@ class ArbScanner:
         """
         from panopticon_py.utils.process_guard import acquire_singleton
         acquire_singleton("arb_scanner", PROCESS_VERSION)
+
+        # D137-1: Start 30s fixed heartbeat thread immediately after singleton
+        self._start_heartbeat()
 
         # D121-2: Create HTTP session for fee rate queries
         self._http_session = httpx.AsyncClient(timeout=10.0)
@@ -477,6 +497,7 @@ async def main() -> None:
         await scanner.run()
     except asyncio.CancelledError:
         logger.info("[ARB_EXIT] CancelledError — graceful shutdown")
+        scanner._stop_event.set()
         raise
     except Exception as e:
         logger.error("[ARB_EXIT] Unhandled exception: %s — process will exit", e, exc_info=True)
