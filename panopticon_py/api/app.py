@@ -30,7 +30,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.42-D150"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets  # D146-P1: /api/arb/health os.kill → is_process_alive()  # D148-3: +arb_router (/api/arb/health, /api/arb/stats)  # D150-1: +reconnect_critical field
+PROCESS_VERSION = "v1.1.43-D152"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets  # D146-P1: /api/arb/health os.kill → is_process_alive()  # D148-3: +arb_router (/api/arb/health, /api/arb/stats)  # D150-1: +reconnect_critical field  # D152: no code change — investigation sprint
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
