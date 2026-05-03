@@ -521,6 +521,10 @@ async def main_async() -> int:
             conn.commit()
         except Exception as e:
             logger.warning("[INSIDER] DB update failed: %s", e)
+            try:
+                conn.rollback()  # prevent uncommitted transaction from blocking shared connection
+            except Exception:
+                pass
         logger.warning(
             "[INSIDER ALERT] %s %s $%.0f %s",
             alert.trigger,
