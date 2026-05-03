@@ -72,8 +72,8 @@ export default function App() {
         <LiveReportPanel report={snapshots.report} />
         <WalletNetworkPanel apiBaseUrl={import.meta.env.VITE_API_BASE_URL || "http://localhost:8001"} />
         <RvfMetricsPanel />
-        <ArbHealthPanel />
-        <div className="xl:col-span-2">
+        <div className="xl:col-span-2 grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <ArbHealthPanel />
           <ProcessHeartbeatPanel />
         </div>
         <div className="xl:col-span-2">
