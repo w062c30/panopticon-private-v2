@@ -822,6 +822,32 @@ Architect must create or verify a complete implementation plan that includes:
 - [ ] 版本 bump 策略（哪個 process 改、從什麼版本、改成什麼版本）
 
 
+### 3. 任務狀態追蹤（Task Status Tracking — REQUIRED）
+
+Every handoff document MUST begin with a prominent task status table showing the full implementation plan's task list. This lets the architect see at a glance what is DONE vs. PENDING vs. BLOCKED without reading the full document.
+
+```markdown
+## 任務狀態追蹤
+
+| # | 任務 | Priority | Status | Notes |
+|---|------|----------|--------|-------|
+| 1 | Task description | P0 | ✅ DONE | Notes |
+| 2 | Task description | P1 | ⏳ PENDING | Waiting on X |
+| 3 | Task description | P2 | 🔒 BLOCKED | Awaiting architect ruling |
+| 4 | Task description | P3 | ⏭️ SKIPPED | Out of scope |
+```
+
+**Status values:**
+- ✅ DONE — completed and verified
+- ⏳ PENDING — not started, waiting for trigger or user action
+- 🔄 IN_PROGRESS — currently being worked on
+- 🔒 BLOCKED — cannot proceed until X
+- ❌ FAILED — tried but did not succeed
+- ⏭️ SKIPPED — intentionally deferred or out of scope
+
+**IMPORTANT**: This table MUST appear at the top of every handoff document, even if all tasks are DONE. Architect uses it to prioritize review. Do NOT bury it in the middle or omit it if the list is short.
+
+
 ## Language
 
 
