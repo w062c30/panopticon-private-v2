@@ -14,13 +14,13 @@ import logging
 import os
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.9-D148"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters + process_guard import in _on_message
+PROCESS_VERSION = "v0.5.10-D149"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters  # D149-1: _token_ids dataclass field explicit init  # D149-2: reconnect_count excludes first connection  # D149-4: opportunities_log deque(maxlen=10000)
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -234,12 +234,16 @@ class ArbScanner:
     books: dict[str, dict[str, PriceLevel]] = field(
         default_factory=lambda: defaultdict(dict)
     )
-    opportunities_log: list[ArbOpportunity] = field(default_factory=list)
+    opportunities_log: deque[ArbOpportunity] = field(
+        default_factory=lambda: deque(maxlen=10000)  # D149-4: rolling window, no unbounded growth
+    )
     # D120-P2: Track per-token book update frequency
     _update_counter: dict[str, int] = field(default_factory=dict)
     _ws: object = field(default=None, init=False, repr=False)
     _refresh_interval: int = field(default=60, init=False)
     _last_stats_log: float = field(default_factory=time.time, init=False)
+    # D149-1: Active token list (for stats + WS subscription refresh)
+    _token_ids: list[str] = field(default_factory=list, init=False)
     # D121-2: Fee rate filter
     _original_token_ids: list[str] = field(default_factory=list, init=False)
     _fee_rates: dict[str, int] = field(default_factory=dict, init=False)
@@ -381,7 +385,7 @@ class ArbScanner:
             now_iso = datetime.now(timezone.utc).isoformat()
             total_updates = sum(self._update_counter.values())
             active_tokens = len([v for v in self._update_counter.values() if v > 0])
-            n_subscribed = len(self._token_ids) if hasattr(self, "_token_ids") and self._token_ids else 0
+            n_subscribed = len(self._token_ids) if self._token_ids else 0
             opp_count_1h = sum(
                 1 for o in self.opportunities_log
                 if (time.time() - o.ts) < 3600
@@ -459,6 +463,7 @@ class ArbScanner:
             else:
                 current_token_ids = filtered
             self._original_token_ids = current_token_ids
+            self._token_ids = current_token_ids  # D149-1: explicit dataclass field init
             # D119-P0: [ARB_INIT] format validation (0x + 64 hex chars = 66 total)
             sample = current_token_ids[:3]
             all_valid = all(len(t) == 66 and t.startswith("0x") for t in current_token_ids)
@@ -497,9 +502,9 @@ class ArbScanner:
         backoff = 5.0
         max_backoff = 120.0
         current_token_ids = token_ids  # initial list; updated on each reconnect
+        _first_connection = True  # D149-2: first connect is not a reconnect
 
         while not self._stop_event.is_set():
-            self._reconnect_count += 1   # D148-2: track reconnects
             try:
                 sub_msg = {"type": "subscribe", "assets_ids": current_token_ids}
                 async with websockets.connect(
@@ -511,6 +516,10 @@ class ArbScanner:
                     self._ws = ws
                     await ws.send(json.dumps(sub_msg))
                     backoff = 5.0  # reset on successful connect
+                    # D149-2: Only count actual reconnects (not the first ever connection)
+                    if not _first_connection:
+                        self._reconnect_count += 1
+                    _first_connection = False
                     logger.info(
                         "[ARB] WS connected, subscribed to %d token_ids",
                         len(current_token_ids),
@@ -602,7 +611,7 @@ class ArbScanner:
         if now - self._last_stats_log >= 60.0:
             total_updates = sum(self._update_counter.values())
             active_tokens = len([v for v in self._update_counter.values() if v > 0])
-            total_subscribed = getattr(self, "_token_ids", None)
+            total_subscribed = self._token_ids
             n_subscribed = len(total_subscribed) if total_subscribed else 0
             logger.info(
                 "[ARB_STATS] total_updates=%d active_tokens=%d/%d elapsed_s=%.0f",

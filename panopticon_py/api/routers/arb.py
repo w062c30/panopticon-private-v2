@@ -60,6 +60,16 @@ def arb_health() -> dict[str, Any]:
         from panopticon_py.utils.process_guard import is_process_alive
         pid_alive = is_process_alive(int(pid))
 
+    try:
+        db = ShadowDB()
+        latest_row = db.conn.execute(
+            "SELECT reconnect_count FROM arb_stats ORDER BY ts_utc DESC LIMIT 1"
+        ).fetchone()
+        reconnect_count = int(latest_row["reconnect_count"]) if latest_row else 0
+        db.close()
+    except Exception:
+        reconnect_count = 0
+
     return {
         "pid": pid,
         "pid_alive": pid_alive,
@@ -69,6 +79,9 @@ def arb_health() -> dict[str, Any]:
         "heartbeat_stale": (age_sec or 9999) > 300,
         "heartbeat_bootstrapping": age_sec is None and pid_alive,
         "crash_reason": entry.get("crash_reason"),
+        # D149-3: reconnect_warning flags excessive WS reconnects
+        "reconnect_warning": reconnect_count > 3,
+        "reconnect_count": reconnect_count,
         "ts": utc_now_rfc3339_ms(),
     }
 

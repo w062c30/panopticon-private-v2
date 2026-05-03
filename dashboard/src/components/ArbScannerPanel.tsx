@@ -18,6 +18,8 @@ interface ArbHealth {
   heartbeat_stale: boolean;
   heartbeat_bootstrapping: boolean;
   crash_reason: string | null;
+  reconnect_warning: boolean;  // D149-3
+  reconnect_count: number;   // D149-3
   ts: string;
 }
 
@@ -101,6 +103,13 @@ export function ArbScannerPanel() {
     ? "STALE"
     : "LIVE";
 
+  // D149-3: reconnect warning
+  const reconnectWarn = health?.reconnect_count > 10
+    ? "severe"
+    : health?.reconnect_warning
+    ? "mild"
+    : null;
+
   // ── Latest stats row ────────────────────────────────────────────────────
   const latest = stats?.stats?.[0] ?? null;
 
@@ -125,6 +134,19 @@ export function ArbScannerPanel() {
         </div>
       )}
 
+      {/* D149-3: Reconnect warning banner */}
+      {reconnectWarn === "severe" && (
+        <div className="rounded bg-red-900/50 px-2 py-1 text-xs text-red-300 flex items-center gap-1">
+          <span>WS 重連 {health.reconnect_count} 次</span>
+          <span>— 建議檢查 Gamma API 或網路穩定性</span>
+        </div>
+      )}
+      {reconnectWarn === "mild" && (
+        <div className="rounded bg-orange-900/40 px-2 py-1 text-xs text-orange-300 flex items-center gap-1">
+          <span>WS 重連 {health.reconnect_count} 次</span>
+        </div>
+      )}
+
       {/* WS + Connection row */}
       {health && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
@@ -146,8 +168,9 @@ export function ArbScannerPanel() {
           </span>
 
           <span className="text-slate-400">Reconnects</span>
-          <span className="font-mono text-yellow-400">
+          <span className={`font-mono ${reconnectWarn === "severe" ? "text-red-400" : reconnectWarn === "mild" ? "text-orange-400" : "text-yellow-400"}`}>
             {latest?.reconnect_count ?? 0}
+            {reconnectWarn === "severe" ? " ⚠" : reconnectWarn === "mild" ? " ⚠" : ""}
           </span>
 
           <span className="text-slate-400">Last HB</span>
