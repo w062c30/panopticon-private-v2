@@ -202,14 +202,21 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.13-D90"
+    PROCESS_VERSION = "v1.1.14-D147"
     acquire_singleton("analysis_worker", PROCESS_VERSION)
 
-    db = ShadowDB()
-    writer = AsyncDBWriter(db)
-    writer.start()  # Must start queue worker before submitting items
-    worker = InsiderAnalysisWorker(db, writer)
-    worker.start()
+    # D147-2: Wrap all init steps so WAL lock / import failures are logged
+    # and the process exits with code 1 (visible to watchdog / restart_all).
+    try:
+        db = ShadowDB()
+        writer = AsyncDBWriter(db)
+        writer.start()
+        worker = InsiderAnalysisWorker(db, writer)
+        worker.start()
+    except Exception as exc:
+        logger.critical("[AW_INIT] Startup failed: %s", exc, exc_info=True)
+        return 1
+
     try:
         while True:
             time.sleep(10)

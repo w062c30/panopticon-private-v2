@@ -1,5 +1,5 @@
 # Panopticon - Singleton-Enforced Process Restart with Auto-Recovery
-# Version: v1.0.12-D131
+# Version: v1.0.13-D147
 # Run from: d:\Antigravity\Panopticon
 # MANDATORY: Use this script for ALL restarts.
 # OPTIONAL: Pass "-Continuous" for continuous monitoring with auto-recovery.
@@ -76,7 +76,10 @@ function Start-Orchestrator {
 }
 
 function Start-AnalysisWorker {
-    Start-Process python -ArgumentList "-m panopticon_py.ingestion.analysis_worker" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+    # D147-1: Capture stdout/stderr so init failures are observable
+    $awOut = "$runDir\analysis_worker.log"
+    $awErr = "$runDir\analysis_worker.err.log"
+    Start-Process python -ArgumentList "-m panopticon_py.ingestion.analysis_worker" -WorkingDirectory $projDir -WindowStyle Hidden -RedirectStandardOutput $awOut -RedirectStandardError $awErr -PassThru
 }
 
 function Start-ArbScanner {
@@ -197,7 +200,8 @@ function Kill-All {
     Remove-Item "$runDir\*.pid" -Force -ErrorAction SilentlyContinue
     Remove-Item "$runDir\radar.log","$runDir\radar.err.log" -Force -ErrorAction SilentlyContinue
     Remove-Item "$runDir\watchdog.log","$runDir\watchdog.err.log" -Force -ErrorAction SilentlyContinue
-    Write-Host "  Stale PID files cleared."
+    Remove-Item "$runDir\analysis_worker.log","$runDir\analysis_worker.err.log" -Force -ErrorAction SilentlyContinue
+    Write-Host "  Stale PID files and log files cleared."
     Start-Sleep -Seconds 3
 }
 
