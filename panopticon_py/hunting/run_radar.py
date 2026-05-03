@@ -3138,7 +3138,10 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                         existing.add(t)
                 sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
                 reconnect_now = True
-                ew.mark_reconnect(reason="subscription_refresh")  # D154: preserve _h_history
+                # D155: mark_reconnect removed — adding new tokens to an existing WS subscription
+                # does NOT interrupt the stream; _h_history must be preserved across heartbeats.
+                # WS reconnect (clob_ws_client.on_reconnect) still calls mark_reconnect
+                # via the lambda in _ws_runner if the actual connection drops.
 
             # Task 4: T1 window boundary trigger — refresh just before 5-min roll-over
             # This ensures new T1 market is subscribed the moment it goes live,
@@ -3366,7 +3369,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.53-D154"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history
+    PROCESS_VERSION = "v1.1.54-D155"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

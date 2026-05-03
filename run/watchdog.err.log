@@ -1,8 +1,0 @@
-2026-05-04 02:37:24,553 [INFO] panopticon_py.utils.process_guard [guard] watchdog singleton acquired (PID=34120, version=v1.0.5-D146)
-2026-05-04 02:37:24,554 [INFO] panopticon_py.utils.process_guard [guard] watchdog version OK: v1.0.5-D146 == v1.0.5-D146
-2026-05-04 02:37:24,564 [INFO] panopticon_py.utils.process_guard [guard] _write_manifest: wrote watchdog to manifest, total keys=6
-2026-05-04 02:37:24,565 [INFO] __main__ [WATCHDOG] Starting ¡X watching: orchestrator, backend, arb_scanner
-2026-05-04 02:37:24,618 [INFO] panopticon_py.db [DB_MAINT] Starting SQLite ANALYZE...
-2026-05-04 02:37:24,845 [INFO] panopticon_py.db [DB_MAINT] WAL checkpoint: busy=0 log=0 checkpointed=0
-2026-05-04 02:37:30,043 [ERROR] panopticon_py.db [DB_MAINT] INTEGRITY CHECK FAILED: [<sqlite3.Row object at 0x00000245B49086D0>]
-2026-05-04 02:37:30,045 [INFO] __main__ [WATCHDOG] DB maintenance complete
