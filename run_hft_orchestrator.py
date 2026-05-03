@@ -67,7 +67,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.36-D126"   # ← AGENT: bump on every change  # D126: remove dead code graph_engine local assignment (Debt-3)
+PROCESS_VERSION = "v1.1.37-D133"   # ← AGENT: bump on every change  # D133: Debt-1 fix — _on_insider_alert uses ShadowDB.conn instead of bare sqlite3.connect
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -497,7 +497,6 @@ async def main_async() -> int:
         D71 Q1: Uses get_canonical_market_id() to resolve COALESCE(market_id, condition_id).
         If canonical ID is None, logs warning and skips UPDATE.
         """
-        import sqlite3
         layer = 1 if "L1" in (alert.trigger or "") else 2 if "L2" in (alert.trigger or "") else 3
         try:
             # D71 Q1: Resolve canonical market ID (handles BTC 5m market_id=NULL case)
@@ -511,14 +510,15 @@ async def main_async() -> int:
                 )
                 return
 
-            conn = sqlite3.connect(str(db_obj.path))
+            # Debt-1 fix: use ShadowDB's pre-configured connection (WAL mode + busy_timeout=30000)
+            # instead of bare sqlite3.connect(timeout=5.0) which bypasses WAL and uses 5s timeout.
+            conn = db_obj.conn
             conn.execute(f"""
                 UPDATE wallet_activity
                 SET insider_l{layer}=1, alert_trigger=?
                 WHERE transaction_hash=?
             """, (alert.trigger, alert.tx_hash))
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.warning("[INSIDER] DB update failed: %s", e)
         logger.warning(

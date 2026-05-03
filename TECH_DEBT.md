@@ -1,6 +1,6 @@
 # TECH_DEBT — Panopticon Technical Debt & Decision Records
 
-> Last updated: D131 (2026-05-03)
+> Last updated: D133 (2026-05-03)
 > Source: https://github.com/w062c30/panopticon-private-v2
 
 ---
@@ -38,10 +38,10 @@
 ## Active Debt Observations
 
 ### Debt-1: `_on_insider_alert` uses bare `sqlite3.connect`
-**File**: `panopticon_py/ingestion/analysis_worker.py` (TBC)
-**Problem**: Directly opens `sqlite3.connect(str(db_obj.path))` bypassing ShadowDB DAL, which means it bypasses WAL mode and `busy_timeout=30000`. Native `sqlite3.connect(timeout=5.0)` will fail under high load.
-**Non-blocking**: Not hot path, stable in production.
-**Suggestion**: Monitor; if `_on_insider_alert` shows timeout errors under high load, migrate to ShadowDB path.
+**File**: `run_hft_orchestrator.py:L500–L518` (was L494–L531 in D126)
+**Problem**: Directly opened `sqlite3.connect(str(db_obj.path))` bypassing ShadowDB WAL mode and `busy_timeout=30000`. Native `sqlite3.connect(timeout=5.0)` fails under WAL contention.
+**Status (D133)**: **RESOLVED** — `_on_insider_alert` now uses `db_obj.conn` (ShadowDB's pre-configured connection) instead of bare `sqlite3.connect`. WAL mode + `busy_timeout=30000` apply to all insider alert writes. Also removed redundant `conn.close()`.
+**Code**: `run_hft_orchestrator.py:L514` (formerly L514–L521)
 
 ### Debt-2: `AsyncDBWriter.health()` implicit contract (no TypedDict)
 **File**: `panopticon_py/db.py` (AsyncDBWriter), `panopticon_py/api/app.py` (AsyncDBWriterStub)

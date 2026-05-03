@@ -212,7 +212,7 @@ else:               return None → NO_PRICE_DATA
 
 | Process | Version | Notes |
 |---------|---------|-------|
-| Orchestrator | v1.1.36-D126 | graph_engine dead code removed (Debt-3) |
+| Orchestrator | v1.1.37-D133 | Debt-1 fix: _on_insider_alert uses ShadowDB.conn |
 | Backend | v1.1.36-D131 | Debt-5 API: real_trade_ticks_60s endpoint |
 | Radar | v1.1.50-D131 | Debt-5: on_real_trade_tick hook wired to mc |
 
