@@ -14,23 +14,25 @@ $projDir = "d:\Antigravity\Panopticon"
 $dashDir = "$projDir\dashboard"
 $runDir = "$projDir\run"
 $manifestPath = "$runDir\process_manifest.json"
-$restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker = 0; watchdog = 0 }
+$restartAttempts = @{ backend = 0; radar = 0; orchestrator = 0; analysis_worker = 0; arb_scanner = 0; watchdog = 0 }
 
 function Get-ProcessStatus {
     $status = @{}
     $pythonProcs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
         $_.CommandLine -ne $null -and
         ($_.CommandLine -match "panopticon_py\.hunting\.run_radar" -or
-         $_.CommandLine -match "panopticon_py\.hunting\.run_radar" -or
          $_.CommandLine -match "run_hft_orchestrator" -or
          $_.CommandLine -match "uvicorn.*--port 8001" -or
-         $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker")
+         $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker" -or
+         $_.CommandLine -match "panopticon_py\.execution\.arb_scanner" -or
+         $_.CommandLine -match "panopticon_py\.utils\.watchdog")
     }
 
     $status.backend = ($pythonProcs | Where-Object { $_.CommandLine -match "uvicorn.*--port 8001" }).Count
     $status.radar = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.hunting\.run_radar" }).Count
     $status.orchestrator = ($pythonProcs | Where-Object { $_.CommandLine -match "run_hft_orchestrator" }).Count
     $status.analysis_worker = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.ingestion\.analysis_worker" }).Count
+    $status.arb_scanner = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.execution\.arb_scanner" }).Count
     $status.watchdog = ($pythonProcs | Where-Object { $_.CommandLine -match "panopticon_py\.utils\.watchdog" }).Count
     $status.frontend = (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Measure-Object).Count
     $status.frontendPort = $null -ne (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
@@ -75,6 +77,14 @@ function Start-Orchestrator {
 
 function Start-AnalysisWorker {
     Start-Process python -ArgumentList "-m panopticon_py.ingestion.analysis_worker" -WorkingDirectory $projDir -WindowStyle Hidden -PassThru
+}
+
+function Start-ArbScanner {
+    # D135: Arb Scanner is started as standalone process (not inside orchestrator).
+    # It auto-discovers T5 Sports markets via Gamma API and monitors order books via WS.
+    $arbErr = "$runDir\arb_scanner.err.log"
+    $arbOut = "$runDir\arb_scanner.log"
+    Start-Process python -ArgumentList "-m panopticon_py.execution.arb_scanner" -WorkingDirectory $projDir -WindowStyle Hidden -RedirectStandardOutput $arbOut -RedirectStandardError $arbErr -PassThru
 }
 
 function Start-Watchdog {
@@ -145,6 +155,7 @@ function Kill-All {
         "run_hft_orchestrator",                     # orchestrator (script file)
         "uvicorn.*--port 8001",                     # backend uvicorn (port-specific)
         "panopticon_py\.ingestion\.analysis_worker", # analysis_worker
+        "panopticon_py\.execution\.arb_scanner",   # arb_scanner (D135)
         "panopticon_py\.utils\.watchdog"           # watchdog (D131)
     )
     foreach ($t in $pythonTargets) {
@@ -235,6 +246,10 @@ function Full-Restart {
     Write-Host ("  AnalysisWorker started PID=" + $analysisWorker.Id)
     Start-Sleep -Seconds 2
 
+    $arbScanner = Start-ArbScanner
+    Write-Host ("  ArbScanner started PID=" + $arbScanner.Id)
+    Start-Sleep -Seconds 2
+
     $watchdog = Start-Watchdog
     Write-Host ("  Watchdog started PID=" + $watchdog.Id)
     Start-Sleep -Seconds 2
@@ -259,8 +274,8 @@ function Full-Restart {
         $m = Get-Content $manifest | ConvertFrom-Json -ErrorAction Stop
         
         # D79: Verify backend, orchestrator, analysis_worker as independent processes
-        # D131: Also verify watchdog
-        foreach ($svc in @("backend","orchestrator","analysis_worker","watchdog")) {
+        # D131: Also verify watchdog; D135: Also verify arb_scanner
+        foreach ($svc in @("backend","orchestrator","analysis_worker","arb_scanner","watchdog")) {
             $entry = $m.PSObject.Properties[$svc].Value
             if ($null -ne $entry) {
                 $svcPid = $entry.pid
@@ -387,6 +402,20 @@ function Monitor-Loop {
             }
         } else {
             $restartAttempts.analysis_worker = 0
+        }
+
+        # D135: ArbScanner monitoring
+        if ($status.arb_scanner -eq 0) {
+            if ($restartAttempts.arb_scanner -lt $MaxRestartAttempts) {
+                Write-Host "[$timestamp] ArbScanner DOWN, restarting (attempt $($restartAttempts.arb_scanner + 1)/$MaxRestartAttempts)..." -ForegroundColor Yellow
+                Start-ArbScanner | Out-Null
+                $restartAttempts.arb_scanner++
+                $changes += "arb_scanner"
+            } else {
+                Write-Host "[$timestamp] ArbScanner DOWN, max attempts reached!" -ForegroundColor Red
+            }
+        } else {
+            $restartAttempts.arb_scanner = 0
         }
 
         # D131: Watchdog monitoring
