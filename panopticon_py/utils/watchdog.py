@@ -46,13 +46,17 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ───────────────────────────────────────────────────────────────
 
+# D139: Corrected parents[2] — watchdog.py at panopticon_py/utils/ →
+# parents[0]=utils/, parents[1]=panopticon_py/, parents[2]=project root
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 WATCHED_PROCESSES: dict[str, dict] = {
     # D132: radar runs inside orchestrator as asyncio task (D79 architecture).
     # Watchdog monitors orchestrator as the process that hosts radar.
     # Radar itself does not have a standalone PID — monitoring orchestrator covers radar health.
     "orchestrator": {
         "cmd": [sys.executable, "run_hft_orchestrator.py"],
-        "cwd": str(Path(__file__).resolve().parents[3]),
+        "cwd": str(_PROJECT_ROOT),
         "log": "run/orchestrator.log",
         "heartbeat_stale_sec": 90,   # orchestrator writes HB every 5s; 90s = 18x margin
     },
@@ -61,16 +65,19 @@ WATCHED_PROCESSES: dict[str, dict] = {
         "cmd": [sys.executable, "-m", "uvicorn",
                 "panopticon_py.api.app:app",
                 "--host", "0.0.0.0", "--port", "8001"],
-        "cwd": str(Path(__file__).resolve().parents[3]),
+        "cwd": str(_PROJECT_ROOT),
         "log": "run/backend.log",
         "heartbeat_stale_sec": 60,  # backend writes HB every 30s; 60s = 2x margin
     },
     "arb_scanner": {
         # D138: arb_scanner runs as standalone process with 30s fixed heartbeat
         "cmd": [sys.executable, "-m", "panopticon_py.execution.arb_scanner"],
-        "cwd": str(Path(__file__).resolve().parents[3]),
+        "cwd": str(_PROJECT_ROOT),
         "log": "run/arb_scanner.log",
         "heartbeat_stale_sec": 120,  # 30s fixed HB × 4 = safe margin
+        # D139: Explicit PYTHONPATH ensures subprocess finds panopticon_py even when
+        # watchdog's cwd differs from the project root (e.g. started from different directory)
+        "env_pythonpath": str(_PROJECT_ROOT),
     },
 }
 
@@ -162,8 +169,14 @@ def _restart_process(name: str, config: dict) -> None:
 
     _restart_attempts[name] = recent + [now]
 
-    log_path = Path(config["log"])
+    # D139: Use absolute paths based on _PROJECT_ROOT so log writing is reliable
+    # regardless of watchdog's current working directory
+    config_cwd = config.get("cwd", str(_PROJECT_ROOT))
+    log_path = _PROJECT_ROOT / config["log"]
     log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # D139: Build env with explicit PYTHONPATH to ensure subprocess finds panopticon_py
+    env = {**os.environ, "PYTHONPATH": config.get("env_pythonpath", config_cwd)}
 
     # D114-1: Use context manager so log_fh is always closed, even on exception.
     # Subprocess inherits a copy of this FD — closing it in parent does not affect child.
@@ -171,7 +184,8 @@ def _restart_process(name: str, config: dict) -> None:
         with open(log_path, "a") as log_fh:
             proc = subprocess.Popen(
                 config["cmd"],
-                cwd=config["cwd"],
+                cwd=config_cwd,
+                env=env,
                 stdout=log_fh,
                 stderr=log_fh,
                 close_fds=True,
@@ -270,7 +284,7 @@ if __name__ == "__main__":
     # D114-3: Register as singleton in manifest so tooling can observe watchdog liveness.
     # In daemon mode: runs in grandchild (after double-fork), so manifest PID is correct.
     from panopticon_py.utils.process_guard import acquire_singleton
-    WATCHDOG_VERSION = "v1.0.2-D138"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES
+    WATCHDOG_VERSION = "v1.0.3-D139"   # ← AGENT: bump on every change  # D138: +arb_scanner to WATCHED_PROCESSES  # D139: parents[2] + PYTHONPATH env
     acquire_singleton("watchdog", WATCHDOG_VERSION)
 
     run_watchdog()

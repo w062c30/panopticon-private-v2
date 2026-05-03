@@ -6,9 +6,9 @@
   "backend": "v1.1.39-D137",
   "frontend": "v1.1.12-D112",
   "analysis_worker": "v1.1.13-D90",
-  "watchdog": "v1.0.2-D138",
-  "arb_scanner": "v0.5.3-D138",
-  "last_updated": "2026-05-03T09:00:00Z",
-  "updated_by_sprint": "D138",
-  "updated_by_agent": "D138-coding-agent"
+  "watchdog": "v1.0.3-D139",
+  "arb_scanner": "v0.5.4-D139",
+  "last_updated": "2026-05-03T09:31:00Z",
+  "updated_by_sprint": "D139",
+  "updated_by_agent": "D139-coding-agent"
 }

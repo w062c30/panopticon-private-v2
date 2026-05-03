@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.3-D138"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning
+PROCESS_VERSION = "v0.5.4-D139"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -404,27 +404,52 @@ class ArbScanner:
                 await asyncio.sleep(10)
 
     async def _connect_and_listen(self, token_ids: list[str]) -> None:
+        """
+        D139: Wraps WS connection with exponential-backoff reconnection loop.
+        Disconnection is normal (server-side close, network drop), not a crash.
+        """
         import websockets
-        # D119-P0: Polymarket CLOB WS uses "assets_ids" field (clobTokenIds, NOT condition_ids)
-        sub_msg = {"type": "subscribe", "assets_ids": token_ids}
-        async with websockets.connect(ARB_WS_URL, ping_interval=20) as ws:
-            self._ws = ws
-            await ws.send(json.dumps(sub_msg))
-            logger.info("[ARB] Subscribed to %d token_ids via WebSocket (assets_ids format)", len(token_ids))
-            async for raw in ws:
-                from panopticon_py.utils.process_guard import update_heartbeat
-                update_heartbeat("arb_scanner")
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                # D120: Polymarket WS sends both dict messages and list batches
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            await self._on_message(item)
-                elif isinstance(data, dict):
-                    await self._on_message(data)
+
+        backoff = 5.0
+        max_backoff = 120.0
+
+        while not self._stop_event.is_set():
+            try:
+                sub_msg = {"type": "subscribe", "assets_ids": token_ids}
+                async with websockets.connect(ARB_WS_URL, ping_interval=20) as ws:
+                    self._ws = ws
+                    await ws.send(json.dumps(sub_msg))
+                    backoff = 5.0  # reset on successful connect
+                    logger.info(
+                        "[ARB] WS connected, subscribed to %d token_ids",
+                        len(token_ids),
+                    )
+
+                    async for raw in ws:
+                        from panopticon_py.utils.process_guard import update_heartbeat
+                        update_heartbeat("arb_scanner")
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict):
+                                    await self._on_message(item)
+                        elif isinstance(data, dict):
+                            await self._on_message(data)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._stop_event.is_set():
+                    raise
+                logger.warning(
+                    "[ARB_WS] Disconnected: %s — reconnecting in %.0fs (backoff=%.0f)",
+                    exc, backoff, backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     async def _on_message(self, data: dict) -> None:
         # D120: Guard against missing market_id
