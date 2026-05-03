@@ -16,6 +16,7 @@ interface ArbHealth {
   version: string | null;
   heartbeat_age_s: number | null;
   heartbeat_stale: boolean;
+  heartbeat_bootstrapping: boolean; // D136-2: pid alive but heartbeat not yet written
   ts: string;
 }
 
@@ -42,10 +43,13 @@ export function ArbHealthPanel() {
     return () => clearInterval(timer);
   }, []);
 
+  // D136-2: bootstrapping = pid alive but heartbeat not yet written → blue STARTING
   const statusColor = !data
     ? "bg-slate-500"
     : !data.pid_alive
     ? "bg-red-500"
+    : data.heartbeat_bootstrapping
+    ? "bg-blue-400"
     : data.heartbeat_stale
     ? "bg-yellow-400"
     : "bg-green-500";
@@ -54,6 +58,8 @@ export function ArbHealthPanel() {
     ? "—"
     : !data.pid_alive
     ? "DEAD"
+    : data.heartbeat_bootstrapping
+    ? "STARTING"
     : data.heartbeat_stale
     ? "STALE"
     : "LIVE";

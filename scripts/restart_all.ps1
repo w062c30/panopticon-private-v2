@@ -181,6 +181,7 @@ function Kill-All {
             ($_ -split '\s+')[-1]
         } | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique
         foreach ($procId in $portOwners) {
+            if ($procId -eq 0) { continue }   # D136: skip System Idle Process
             Write-Host "  [PORT_KILL] port=$port PID=$procId"
             $result = & taskkill /F /PID $procId 2>&1
             if ($LASTEXITCODE -ne 0) {

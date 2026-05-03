@@ -29,7 +29,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.37-D134"   # ← AGENT: bump on every change  # D134: +GET /api/arb/health endpoint
+PROCESS_VERSION = "v1.1.38-D136"   # ← AGENT: bump on every change  # D136-2: +heartbeat_bootstrapping in /api/arb/health
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -431,6 +431,8 @@ async def get_arb_health() -> dict:
         "version": arb_entry.get("version"),
         "heartbeat_age_s": round(heartbeat_age_s, 1) if heartbeat_age_s is not None else None,
         "heartbeat_stale": (heartbeat_age_s or 9999) > 300,
+        # D136-2: pid_alive but heartbeat not yet written = bootstrapping
+        "heartbeat_bootstrapping": heartbeat_age_s is None and pid_alive,
         "ts": utc_now_rfc3339_ms(),
     }
 
