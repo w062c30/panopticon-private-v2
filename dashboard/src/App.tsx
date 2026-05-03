@@ -8,6 +8,7 @@ import { PerformanceSummaryPanel } from "./components/PerformanceSummaryPanel";
 import { ProcessHeartbeatPanel } from "./components/ProcessHeartbeatPanel";
 import { ReadinessGauge } from "./components/ReadinessGauge";
 import { RvfMetricsPanel } from "./components/RvfMetricsPanel";
+import { ArbHealthPanel } from "./components/ArbHealthPanel";
 import { TradeListPanel } from "./components/TradeListPanel";
 import { LiveReportPanel } from "./components/LiveReportPanel";
 import { WalletNetworkPanel } from "./components/WalletNetworkPanel";
@@ -71,6 +72,7 @@ export default function App() {
         <LiveReportPanel report={snapshots.report} />
         <WalletNetworkPanel apiBaseUrl={import.meta.env.VITE_API_BASE_URL || "http://localhost:8001"} />
         <RvfMetricsPanel />
+        <ArbHealthPanel />
         <div className="xl:col-span-2">
           <ProcessHeartbeatPanel />
         </div>

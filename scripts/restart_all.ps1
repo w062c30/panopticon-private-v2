@@ -81,11 +81,17 @@ function Start-Watchdog {
     # D131: watchdog runs as standalone supervisor process.
     # It reads process_manifest.json, checks PID liveness + heartbeat freshness,
     # and restarts crashed processes with circuit-breaker protection.
-    $watchdogLog = "$runDir\watchdog.log"
-    Start-Process python -ArgumentList "-m panopticon_py.utils.watchdog" `
-        -WorkingDirectory $projDir -WindowStyle Hidden `
-        -RedirectStandardOutput $watchdogLog `
-        -RedirectStandardError $watchdogLog -PassThru
+    # D134: Use separate stdout/stderr files — PowerShell rejects same path for both.
+    $watchdogOut = "$runDir\watchdog.log"
+    $watchdogErr = "$runDir\watchdog.err.log"
+    $proc = Start-Process python `
+        -ArgumentList "-m panopticon_py.utils.watchdog" `
+        -WorkingDirectory $projDir `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $watchdogOut `
+        -RedirectStandardError  $watchdogErr `
+        -PassThru
+    return $proc
 }
 
 function Start-Frontend {
@@ -178,6 +184,7 @@ function Kill-All {
     New-Item -ItemType Directory -Force -Path $runDir | Out-Null
     Remove-Item "$runDir\*.pid" -Force -ErrorAction SilentlyContinue
     Remove-Item "$runDir\radar.log","$runDir\radar.err.log" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$runDir\watchdog.log","$runDir\watchdog.err.log" -Force -ErrorAction SilentlyContinue
     Write-Host "  Stale PID files cleared."
     Start-Sleep -Seconds 3
 }
