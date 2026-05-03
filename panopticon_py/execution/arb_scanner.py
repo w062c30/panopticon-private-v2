@@ -229,7 +229,7 @@ class ArbScanner:
     _http_session: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
     _fee_semaphore: asyncio.Semaphore = field(init=False, repr=False)
     _refresh_started: bool = field(default=False, init=False)
-    _stop_event: threading.Event = field(default=threading.Event, init=False, repr=False)
+    _stop_event: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
 
     # D137-1: 30s fixed heartbeat — independent of WS message frequency
     def _heartbeat_loop(self) -> None:
