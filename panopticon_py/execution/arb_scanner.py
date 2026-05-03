@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.4-D139"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop
+PROCESS_VERSION = "v0.5.5-D140"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -333,11 +333,11 @@ class ArbScanner:
         D119-P0: Main entry point.
         Auto-discovers T5 token_ids from Gamma API (CLOB WS uses token_id, NOT condition_id).
         Refreshes every 60s.
-        """
-        from panopticon_py.utils.process_guard import acquire_singleton
-        acquire_singleton("arb_scanner", PROCESS_VERSION)
 
-        # D137-1: Start 30s fixed heartbeat thread immediately after singleton
+        Note: acquire_singleton() is called in __main__ before asyncio.run(),
+        not here, so this method is pure business logic (testable in isolation).
+        """
+        # D137-1: Start 30s fixed heartbeat thread
         self._start_heartbeat()
 
         # D121-2: Create HTTP session for fee rate queries
@@ -542,6 +542,18 @@ if __name__ == "__main__":
     )
     _main_logger = logging.getLogger("arb_scanner.main")
     _main_logger.info("[ARB_MAIN] arb_scanner %s starting", PROCESS_VERSION)
+
+    # D140: acquire_singleton at process entry point (not inside run()).
+    # This lets singleton conflicts exit cleanly with sys.exit(0) before
+    # the asyncio event loop starts, preventing zombie heartbeats.
+    from panopticon_py.utils.process_guard import acquire_singleton
+    try:
+        acquire_singleton("arb_scanner", PROCESS_VERSION)
+    except Exception as exc:
+        _main_logger.error("[ARB_SINGLETON] Failed: %s — another instance running?", exc)
+        import sys
+        sys.exit(0)   # exit 0 = clean, won't trigger watchdog restart
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
