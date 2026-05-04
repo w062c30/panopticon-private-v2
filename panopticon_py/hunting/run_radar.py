@@ -189,6 +189,42 @@ async def _btc5m_resolve_loop(db: ShadowDB) -> None:
 
 # ── MetricsCollector JSON loop (5s cadence) ───────────────────────────────────
 
+def _write_entropy_snapshot(entropy_windows: dict) -> None:
+    """
+    D157-1: Write per-token EntropyWindow state to data/entropy_status.json.
+    Called every 5s from _metrics_json_loop. Exceptions must be silent.
+    Schema: {"updated_ts": str, "total": int, "z_ready_count": int, "tokens": {token_id: {...}}}
+    """
+    try:
+        import json as _json
+        snap_path = Path(os.getenv("ENTROPY_STATUS_PATH", "data/entropy_status.json"))
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        tokens: dict = {}
+        for token_id, ew in entropy_windows.items():
+            s = ew.state_dict()
+            need = ew.min_history_for_z
+            h = s["h_hist"]
+            tokens[token_id] = {
+                "h_hist": h,
+                "need": need,
+                "pct": round(min(1.0, h / need) * 100, 1) if need > 0 else 100.0,
+                "trigger_locked": s["trigger_locked"],
+                "events": s["events"],
+                "healthy_span": round(s["healthy_span"], 2),
+                "z_ready": (not s["trigger_locked"]) and (h >= need),
+            }
+        payload = {
+            "updated_ts": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.") + f"{(datetime.now(timezone.utc).microsecond // 1000):03d}Z",
+            "total": len(tokens),
+            "z_ready_count": sum(1 for t in tokens.values() if t["z_ready"]),
+            "tokens": tokens,
+        }
+        snap_path.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass  # Must be silent — cannot affect main tick path
+
+
 async def _metrics_json_loop(
     mc,
     db,
@@ -219,6 +255,9 @@ async def _metrics_json_loop(
                 heartbeat_fixed_logged = True
             mc.sync_consensus_from_db(db)
             mc.persist_json(path=path)
+
+            # D157-1: Write per-token EntropyWindow state to JSON snapshot
+            _write_entropy_snapshot(_entropy_windows)
 
             # D81: Sync coverage + TE stats every 60s (every 12 × 5s iterations)
             if _loop_count % 12 == 0:
@@ -677,6 +716,35 @@ _token_to_slug_map: dict[str, str] = {}  # token_id -> slug (e.g. "btc-updown-5m
 # T2/T3/T5 markets use the single shared ew in _live_ticks; T1 markets
 # get their own EntropyWindow per window to prevent cross-window contamination.
 _entropy_windows: dict[str, EntropyWindow] = {}
+
+# D157-3: Replace single shared ew with per-token dict for T2/T3/T5 path
+# T1 already has per-token (_entropy_windows.setdefault at L2570); now T2/T3/T5 does too.
+def _get_or_create_ew(token_id: str) -> EntropyWindow:
+    """
+    D157-3: Get or create per-token EntropyWindow for any tier.
+    Called in hot path — must be fast. No await, no lock.
+    """
+    if token_id not in _entropy_windows:
+        _entropy_windows[token_id] = EntropyWindow(min_history_for_z=get_min_history_for_z())
+    return _entropy_windows[token_id]
+
+
+def _reconnect_all_entropy_windows() -> None:
+    """
+    D157-3: Called on actual WS disconnect — mark all token windows as disconnected.
+    Preserves _h_history per D154 rules; clears tick buffer and locks trigger.
+    """
+    for ew_obj in _entropy_windows.values():
+        ew_obj.mark_reconnect(reason="ws_disconnect")
+
+
+def _refresh_subscription_all(reason: str) -> None:
+    """
+    D157-3: Called on subscription token list refresh (NOT actual WS disconnect).
+    Calls refresh_subscription on all existing per-token EntropyWindows.
+    """
+    for ew_obj in _entropy_windows.values():
+        ew_obj.refresh_subscription(reason=reason)
 
 # Raw T2 market dicts (for series detection) — populated in _refresh_tier2_tokens
 _t2_raw_markets: list[dict] = []  # list of market dicts passing _is_tier2_market
@@ -2194,9 +2262,12 @@ def _pctl(values: list[float], pct: float) -> float | None:
     return arr[idx]
 
 
-async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Queue | None = None) -> None:
+async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -> None:
     """
-    Radar live tick loop with TWO collection layers:
+    D157-3: Radar live tick loop — now uses per-token _entropy_windows dict.
+    No single shared EntropyWindow — each token has its own buffer in _entropy_windows.
+
+    Two collection layers:
 
     1. WS feed (fast): subscribes to ALL 200 active Polymarket tokens.
        Listens for book/price_change events to detect entropy drops.
@@ -2723,13 +2794,14 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 else:
                     order_id = None
 
-                # Push to EntropyWindow (Trade-Tick only)
-                ew.push(recv, buy, sell)
-                ew.record_H_sample(recv)
+                # Push to EntropyWindow (Trade-Tick only, D157-3: per-token)
+                token_ew = _get_or_create_ew(asset_id)
+                token_ew.push(recv, buy, sell)
+                token_ew.record_H_sample(recv)
                 # D75: Entropy gate pre/post diagnostics to explain why fire doesn't happen.
                 _entropy_eval_total += 1
-                _d_diag, z_diag = ew.zscore_of_latest_delta()
-                state_diag = ew.state_dict()
+                _d_diag, z_diag = token_ew.zscore_of_latest_delta()
+                state_diag = token_ew.state_dict()
                 if z_diag is None:
                     if state_diag.get("trigger_locked"):
                         _entropy_locked_count += 1
@@ -2785,13 +2857,13 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                     except Exception:
                         pass  # forensic only — never crash the tick path
 
-                if ew.should_fire_negative_entropy(get_z_threshold()):
+                if token_ew.should_fire_negative_entropy(get_z_threshold()):
                     # ── P2 DIAG: entropy fire counter ────────────────────────────────
                     _ws_entropy_fire_count += 1
 
                     recent.append(msg)
                     parents, virtuals = cross_wallet_burst_cluster(recent[-50:])
-                    z_score = ew.zscore_of_latest_delta()
+                    z_score = token_ew.zscore_of_latest_delta()
 
                     # D37 FIX: Tell MetricsCollector entropy fire detected (for active_entropy_windows + mean_z + processed_60s)
                     # NOTE: must call AFTER z_score is computed above
@@ -2921,7 +2993,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     )
     _current_tokens = combined_tokens
     _close_event.clear()
-    ew.refresh_subscription(reason="boot_subscription_refresh")  # D156-1: no trigger lock, preserve tick buffer
+    _refresh_subscription_all("boot_subscription_refresh")  # D156-1 + D157-3: refresh all per-token windows, no trigger lock
 
     logger.info(
         "[L1_MARKET_TIER] tier1=%d tier2_event=%d tier5_sports=%d tier3_long=%d total=%d",
@@ -3035,7 +3107,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                 await run_ws_loop(
                     _on_message,
                     subscribe_payload=sub,
-                    on_reconnect=lambda: ew.mark_reconnect(reason="ws_disconnect"),  # D154: reason for diagnostic
+                    on_reconnect=lambda: _reconnect_all_entropy_windows(),  # D157-3: reconnect all per-token windows
                     on_connect_cb=(lambda: (mc.on_ws_connected() if mc else None)) if mc else None,
                     on_disconnect_cb=(lambda: (mc.on_ws_disconnected() if mc else None)) if mc else None,
                     close_event=_close_event,
@@ -3124,7 +3196,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                             existing.add(t)
                     sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
                     reconnect_now = True
-                    ew.refresh_subscription(reason="pol_token_refresh")  # D156-1: no trigger lock, preserve tick buffer
+                    _refresh_subscription_all("pol_token_refresh")  # D156-1 + D157-3: refresh all per-token windows
 
             # D103: Log T5 sports market status after POL refresh cycle
             await asyncio.to_thread(_log_t5_market_status, db)
@@ -3178,7 +3250,12 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
             # Data API poll for taker addresses
             _poll_data_api_for_takers(_current_tokens, db)
 
-            state = ew.state_dict()
+            # D157-3: Aggregate state across all per-token EntropyWindows for heartbeat logging
+            ew_states = [ew.state_dict() for ew in _entropy_windows.values()]
+            total_events = sum(s["events"] for s in ew_states)
+            any_locked = any(s["trigger_locked"] for s in ew_states)
+            total_h_hist = sum(s["h_hist"] for s in ew_states)
+            state = {"events": total_events, "trigger_locked": any_locked, "h_hist": total_h_hist}
 
             # P2 DIAG: periodic L1 WebSocket counters (every 60s)
             now = time.monotonic()
@@ -3338,7 +3415,9 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
             name="metrics-json-loop",
         )
 
-    ew = EntropyWindow()
+    # D157-3: No single shared ew — all entropy windows are per-token in _entropy_windows dict
+    # synthetic mode still needs a local ew for the test
+    ew = EntropyWindow()  # kept for --synthetic CLI mode only
     if args.synthetic:
         await _synthetic_ticks(ew, db, float(args.duration_sec))
     else:
@@ -3348,7 +3427,8 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
             name="btc5m-resolve-loop",
         )
         try:
-            await _live_ticks(ew, db, signal_queue=signal_queue)
+            # D157-3: ew param removed — _live_ticks now uses _entropy_windows dict internally
+            await _live_ticks(db, signal_queue=signal_queue)
         except asyncio.CancelledError:
             pass
         finally:
@@ -3357,7 +3437,13 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
                 await asyncio.wait_for(btc_resolve_task, timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-    print(json.dumps({"ok": True, "entropy_state": ew.state_dict()}))
+    # D157-3: Aggregate state across all per-token windows for final printout
+    if _entropy_windows:
+        total_h = sum(w.state_dict()["h_hist"] for w in _entropy_windows.values())
+        any_lock = any(w.state_dict()["trigger_locked"] for w in _entropy_windows.values())
+        print(json.dumps({"ok": True, "entropy_windows": len(_entropy_windows), "total_h_hist": total_h, "any_locked": any_lock}))
+    else:
+        print(json.dumps({"ok": True, "entropy_windows": 0, "total_h_hist": 0, "any_locked": False}))
     return 0
 
 
@@ -3369,7 +3455,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.55-D156"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh; L2924/L3127 now call refresh_subscription()  # D156-3: HUNT_MIN_HISTORY_FOR_Z=5 (shadow mode)
+    PROCESS_VERSION = "v1.1.56-D157"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

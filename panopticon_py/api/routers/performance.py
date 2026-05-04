@@ -85,33 +85,24 @@ def get_t5_coverage() -> T5CoverageResponse:
         db.close()
 
 
+import json as _json
+from pathlib import Path as _Path
+
 @router.get("/entropy/status")
-def get_entropy_status():
+def get_entropy_status() -> dict:
     """
-    D153-4: Return per-token EntropyWindow state for L1 health monitoring.
-    Reads module-level _entropy_windows dict from run_radar.py.
-    Returns z_ready count and per-token breakdown.
+    D157-2: Read entropy snapshot written by orchestrator every 5s (data/entropy_status.json).
+    Replaces D153-4 broken cross-process import with file-based IPC.
+    Returns empty tokens dict if file not found or stale.
     """
-    from panopticon_py.hunting.run_radar import _entropy_windows
-    result = {}
-    for token_id, ew in _entropy_windows.items():
-        state = ew.state_dict()
-        result[token_id] = {
-            "h_hist": state["h_hist"],
-            "need": ew.min_history_for_z,
-            "pct": round(state["h_hist"] / ew.min_history_for_z * 100, 1) if ew.min_history_for_z > 0 else 0,
-            "trigger_locked": state["trigger_locked"],
-            "events": state["events"],
-            "z_ready": state["h_hist"] >= ew.min_history_for_z and not state["trigger_locked"],
-        }
-    total = len(result)
-    z_ready_count = sum(1 for v in result.values() if v["z_ready"])
-    return {
-        "total_tokens": total,
-        "z_ready_count": z_ready_count,
-        "z_ready_pct": round(z_ready_count / total * 100, 1) if total > 0 else 0,
-        "tokens": result,
-    }
+    snap_path = _Path(os.getenv("ENTROPY_STATUS_PATH", "data/entropy_status.json"))
+    try:
+        if not snap_path.exists():
+            return {"error": "not_ready", "tokens": {}, "total": 0, "z_ready_count": 0}
+        raw = _json.loads(snap_path.read_text(encoding="utf-8"))
+        return raw
+    except Exception as exc:
+        return {"error": str(exc), "tokens": {}, "total": 0, "z_ready_count": 0}
 
 
 @router.get("/async-writer-health")

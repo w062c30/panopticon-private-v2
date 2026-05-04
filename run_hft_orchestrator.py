@@ -236,11 +236,8 @@ args: argparse.Namespace | None = None   # set in main()
 
 async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> None:
     """Run Polymarket Radar, feeding SignalEvents into signal_queue (zero disk I/O)."""
-    from panopticon_py.hunting.entropy_window import EntropyWindow
     from panopticon_py.hunting.run_radar import _live_ticks
     from panopticon_py.hunting.run_radar import _sync_pol_tokens_from_watchlist  # D109: POL immediate startup scan
-
-    ew = EntropyWindow()
 
     # ── D109: POL immediate startup scan (not in _main_async — orchestrator bypasses it) ──
     try:
@@ -251,7 +248,7 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
 
     logger.info("[RADAR] Starting Polymarket CLOB WebSocket feed → signal_queue")
     try:
-        await _live_ticks(ew, db, signal_queue=signal_queue)
+        await _live_ticks(db, signal_queue=signal_queue)
     except asyncio.CancelledError:
         logger.info("[RADAR] Cancelled")
     except Exception as exc:

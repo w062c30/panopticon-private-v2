@@ -93,9 +93,9 @@ frontend `package.json` version bumps, config files (non-secret).
 ### Required structure (ALL handoffs):
 
 ```markdown
-Use the "architect-response-when-receiving-handoff" skill.
+Give step be step guide, code example, brainstorming for possible code/logic errors to give appropriate restrictions to avoid errors, to give a complete implementation plan for coding agent.
 
-# Architect Handoff — {date} {tag}
+# Architect Handoff — {date} {tag} {HH:MM}
 
 > Architect: read live code at https://github.com/w062c30/panopticon-private-v2
 
