@@ -728,14 +728,35 @@ _entropy_windows: dict[str, EntropyWindow] = {}
 
 # D157-3: Replace single shared ew with per-token dict for T2/T3/T5 path
 # T1 already has per-token (_entropy_windows.setdefault at L2570); now T2/T3/T5 does too.
-def _get_or_create_ew(token_id: str) -> EntropyWindow:
+def _get_or_create_ew(token_id: str, tier: str | None = None) -> EntropyWindow:
     """
     D157-3: Get or create per-token EntropyWindow for any tier.
     Called in hot path — must be fast. No await, no lock.
     """
+    from panopticon_py.hunting.entropy_window import resolve_window_sec_for_tier
+
+    resolved_tier = str(tier or _token_tier_map.get(token_id, "t3")).lower()
     if token_id not in _entropy_windows:
-        _entropy_windows[token_id] = EntropyWindow()
-    return _entropy_windows[token_id]
+        _entropy_windows[token_id] = EntropyWindow(tier=resolved_tier)
+        return _entropy_windows[token_id]
+
+    ew = _entropy_windows[token_id]
+    expected_window_sec = resolve_window_sec_for_tier(resolved_tier)
+    needs_migration = (
+        getattr(ew, "tier", "t3") != resolved_tier
+        or abs(float(ew.window_sec) - float(expected_window_sec)) > 1e-9
+    )
+    if needs_migration:
+        ew.tier = resolved_tier
+        ew.window_sec = expected_window_sec
+        ew.mark_reconnect(reason="tier_migration")
+        logger.info(
+            "[EW][D166] tier migration token=%s tier=%s window_sec=%.1f",
+            token_id[:20],
+            resolved_tier,
+            expected_window_sec,
+        )
+    return ew
 
 
 def _reconnect_all_entropy_windows() -> None:
@@ -2042,11 +2063,21 @@ def _poll_data_api_for_takers(token_ids: list[str], db: ShadowDB) -> None:
             continue
 
         for trade in trades:
+            if not isinstance(trade, dict):
+                continue
             taker = str(trade.get("proxyWallet") or trade.get("taker_address") or "").strip()
             if not (taker.startswith("0x") and len(taker) >= 42):
                 continue
             taker_addr = taker[:42].lower()
-            order_id = try_match_or_open(trade, db)
+            try:
+                order_id = try_match_or_open(trade, db)
+            except Exception as exc:
+                logger.warning(
+                    "[RADAR][DATA_API] try_match_or_open failed token=%s err=%s",
+                    token_id[:20],
+                    exc,
+                )
+                order_id = ""
             obs = {
                 "obs_id": str(uuid4()),
                 "address": taker_addr,
@@ -2248,7 +2279,28 @@ def try_match_or_open(raw: dict, db) -> str:
     Kept as module-level alias for backward compatibility with _poll_data_api_for_takers.
     """
     from panopticon_py.ingestion.order_reconstruction_engine import try_match_or_open as _impl
-    return _impl(raw, db)
+
+    backoffs = (0.0, 0.05, 0.20, 0.50)
+    for attempt, delay_sec in enumerate(backoffs, start=1):
+        if delay_sec > 0:
+            time.sleep(delay_sec)
+        try:
+            return _impl(raw, db)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            if attempt == len(backoffs):
+                logger.warning(
+                    "[ORDER_RECON][SKIP] database locked after retries attempts=%d",
+                    attempt,
+                )
+                return ""
+            logger.warning(
+                "[ORDER_RECON][RETRY] database locked attempt=%d delay=%.2fs",
+                attempt,
+                backoffs[attempt],
+            )
+    return ""
 
 
 
@@ -2558,7 +2610,7 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                         "[T1_RESOLVED] asset=%s window_ts=%s slug=%s — triggering T1 refresh",
                         str(resolved_asset)[:20], window_ts, slug,
                     )
-                    asyncio.create_task(_refresh_tier1_tokens(db))
+                    asyncio.create_task(asyncio.to_thread(_refresh_tier1_tokens, db))
                 continue
 
             # ── P1-FIX: tick_size_change — critical for bots per Polymarket WS spec ────
@@ -2662,7 +2714,10 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                         w_ts_str, secs_left, getattr(t1c, "_ntp_offset_seconds", 0.0),
                     )
                     # D96-B: T1 route — push to per-token ew only; NO signal queue, NO fire, NO DB write
-                    t1_ew = _entropy_windows.setdefault(asset_id, EntropyWindow())
+                    t1_ew = _entropy_windows.get(asset_id)
+                    if t1_ew is None:
+                        t1_ew = EntropyWindow(tier="t1")
+                        _entropy_windows[asset_id] = t1_ew
                     # Derive buy/sell for H_sample
                     t1_buy = trade_size if trade_side == "BUY" else 0.0
                     t1_sell = trade_size if trade_side == "SELL" else 0.0
@@ -2819,7 +2874,7 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                     order_id = None
 
                 # Push to EntropyWindow (Trade-Tick only, D157-3: per-token)
-                token_ew = _get_or_create_ew(asset_id)
+                token_ew = _get_or_create_ew(asset_id, tier=tier)
                 token_ew.push(recv, buy, sell)
                 token_ew.record_H_sample(recv)
                 # D75: Entropy gate pre/post diagnostics to explain why fire doesn't happen.
@@ -3085,18 +3140,19 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
             if _ws_1009_last_failure and (now - _ws_1009_last_failure) < 60.0:
                 await asyncio.sleep(5.0)
                 continue
-            if reconnect_now or _current_tokens != (sub or {}).get("assets_ids", []):
+            desired_ws_tokens = (
+                _build_ws_token_list(_cached_t1_tokens, _cached_t2_tokens, limit=_WS_TOKEN_LIMIT)
+                if _current_tokens
+                else []
+            )
+            if reconnect_now or desired_ws_tokens != (sub or {}).get("assets_ids", []):
                 reconnect_now = False
                 if not _current_tokens:
                     await asyncio.sleep(1.0)
                     continue
                 # D121: Build WS token list within payload size limit
                 # Priority: T1 (BTC 5m) > POL T2 > general T2. T3/T5 excluded.
-                ws_tokens = _build_ws_token_list(
-                    _cached_t1_tokens,
-                    _cached_t2_tokens,
-                    limit=_WS_TOKEN_LIMIT,
-                )
+                ws_tokens = desired_ws_tokens
                 sub = {"assets_ids": ws_tokens, "type": "market", "custom_feature_enabled": True}
                 # D121-3: Payload size pre-check log — before sending to WS layer
                 import json as _json
@@ -3207,12 +3263,14 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
 
         # ── Heartbeat: refresh subscriptions every 10s ──────────────────────────
         if now_loop >= next_heartbeat:
-            # Concurrently refresh all tiers (asyncio.gather) then re-subscribe
-            new_tokens, _, _, _, _ = await _refresh_all_subscriptions(db)
+            # Concurrently refresh all tiers (asyncio.gather) then evaluate WS diffs.
+            await _refresh_all_subscriptions(db)
             # D42: Propagate active market registry to whale_scanner so it can scan T1/T3/T5
             from panopticon_py.hunting import whale_scanner as _ws_mod
             _ws_mod.register_active_markets(_token_tier_map)
             reconnect_now = False
+            existing = set(_current_tokens)
+            had_ws_tokens = list((sub or {}).get("assets_ids", []))
 
             # D101: T2-POL refresh — every 30 minutes scan political markets
             # via asyncio.to_thread (sync httpx called from thread, safe for event loop)
@@ -3221,31 +3279,15 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 _last_pol_refresh = now_ts
                 pol_tokens = await asyncio.to_thread(_sync_pol_tokens_from_watchlist, db)
                 if pol_tokens:
-                    existing = set(_current_tokens)
                     for t in pol_tokens:
                         if t not in existing:
                             _current_tokens.append(t)
                             existing.add(t)
-                    sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
-                    reconnect_now = True
+                    # D166: additions must not force full reconnect.
                     _refresh_subscription_all("pol_token_refresh")  # D156-1 + D157-3: refresh all per-token windows
 
             # D103: Log T5 sports market status after POL refresh cycle
             await asyncio.to_thread(_log_t5_market_status, db)
-
-            if new_tokens:
-                existing = set(_current_tokens)
-                _current_tokens = list(_current_tokens)
-                for t in new_tokens:
-                    if t not in existing:
-                        _current_tokens.append(t)
-                        existing.add(t)
-                sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
-                reconnect_now = True
-                # D155: mark_reconnect removed — adding new tokens to an existing WS subscription
-                # does NOT interrupt the stream; _h_history must be preserved across heartbeats.
-                # WS reconnect (clob_ws_client.on_reconnect) still calls mark_reconnect
-                # via the lambda in _ws_runner if the actual connection drops.
 
             # Task 4: T1 window boundary trigger — refresh just before 5-min roll-over
             # This ensures new T1 market is subscribed the moment it goes live,
@@ -3263,8 +3305,8 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                         _current_tokens.append(t)
                         existing.add(t)
                 if tier1_extra:
-                    sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
-                    reconnect_now = True
+                    # D166: additions must not force full reconnect.
+                    _refresh_subscription_all("t1_window_boundary_refresh")
                 # Notify MetricsCollector of T1 window rollover
                 try:
                     from panopticon_py.hunting.t1_market_clock import get_current_t1_window
@@ -3279,8 +3321,25 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 except Exception:
                     pass
 
+            # D166: only reconnect when ws-token set shrinks (token removals).
+            desired_ws_tokens = _build_ws_token_list(
+                _cached_t1_tokens,
+                _cached_t2_tokens,
+                limit=_WS_TOKEN_LIMIT,
+            )
+            if len(desired_ws_tokens) < len(had_ws_tokens):
+                reconnect_now = True
+                logger.info(
+                    "[WS_RECONNECT][D166] ws token set shrank old=%d new=%d",
+                    len(had_ws_tokens),
+                    len(desired_ws_tokens),
+                )
+
             # Data API poll for taker addresses
-            _poll_data_api_for_takers(_current_tokens, db)
+            try:
+                _poll_data_api_for_takers(_current_tokens, db)
+            except Exception as exc:
+                logger.error("[RADAR][DATA_API] poll failed (continuing): %s", exc)
 
             # D157-3: Aggregate state across all per-token EntropyWindows for heartbeat logging
             ew_states = [ew.state_dict() for ew in _entropy_windows.values()]
@@ -3297,7 +3356,14 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 db.flush_wallet_obs_buffer()
                 db.flush_kyle_buffer()
                 # D98: close stale orders (orders with no new fills for 30s)
-                closed = close_stale_orders(db)
+                try:
+                    closed = close_stale_orders(db)
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" in str(exc).lower():
+                        logger.warning("[D98][ORDER_CLEANUP] skip due to db lock")
+                        closed = 0
+                    else:
+                        raise
                 if closed > 0:
                     logger.info("[D98][ORDER_CLEANUP] closed %d stale orders", closed)
                 # D165: D75_ENTROPY_GATE — renamed to disambiguate:
@@ -3492,7 +3558,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.61-D165"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics  # D165: D75 naming — z_eval_ok / hist_not_ready / z_below_thr; HUNT_EW_UNLOCK_* env vars in entropy_window
+    PROCESS_VERSION = "v1.1.62-D166"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics  # D165: D75 naming — z_eval_ok / hist_not_ready / z_below_thr; HUNT_EW_UNLOCK_* env vars in entropy_window  # D166: DB lock hardening, reconnect shrink-only, tier-aware EW migration
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

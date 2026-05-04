@@ -67,7 +67,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.45-D165"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)
+PROCESS_VERSION = "v1.1.46-D166"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -247,12 +247,17 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
         logger.warning("[POL][D109] startup scan failed: %s", exc)
 
     logger.info("[RADAR] Starting Polymarket CLOB WebSocket feed → signal_queue")
-    try:
-        await _live_ticks(db, signal_queue=signal_queue)
-    except asyncio.CancelledError:
-        logger.info("[RADAR] Cancelled")
-    except Exception as exc:
-        logger.error("[RADAR] Fatal error: %s", exc, exc_info=True)
+    while True:
+        try:
+            await _live_ticks(db, signal_queue=signal_queue)
+            logger.warning("[RADAR] _live_ticks exited cleanly; restarting in 5s")
+            await asyncio.sleep(5.0)
+        except asyncio.CancelledError:
+            logger.info("[RADAR] Cancelled")
+            raise
+        except Exception as exc:
+            logger.error("[RADAR] Fatal error: %s", exc, exc_info=True)
+            await asyncio.sleep(5.0)
 
 
 async def run_hyperliquid_ofi(

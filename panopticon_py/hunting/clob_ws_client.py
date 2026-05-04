@@ -53,81 +53,91 @@ async def stream_json_messages(
     u = url or default_clob_ws_url()
     _sys.stderr.write(f"[WS_DIAG] connecting to {u}\n")
     _sys.stderr.flush()
-    async with websockets.connect(u, ping_interval=20, ping_timeout=20) as ws:
-        ping_task = asyncio.create_task(_ws_heartbeat(ws, interval=10.0))
-        try:
-            if subscribe_payload:
-                payload_str = json.dumps(subscribe_payload)
-                _sys.stderr.write(f"[WS_DIAG] sending payload ({len(payload_str)} bytes)\n")
-                _sys.stderr.flush()
-                logger.info("[WS] Sending subscribe payload: %s", payload_str[:200])
-                await ws.send(payload_str)
-            # Fire on_open callback after connection + subscription are established
-            logger.info("[WS] on_open callback about to fire, on_open=%s", on_open)
-            if on_open:
-                try:
-                    on_open()
-                    logger.info("[WS] on_open callback fired successfully")
-                except Exception as exc:
-                    logger.warning("[WS] on_open callback error: %s", exc)
-
-            # D123-2: First-message timer — detect silent subscription rejections
-            _first_msg_received = False
-            _subscribe_sent_ts = asyncio.get_event_loop().time()
-            while True:
-                if close_event is not None and close_event.is_set():
-                    break
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    # D123-2: 15s without a message — likely silent rejection
-                    if not _first_msg_received:
-                        waited = asyncio.get_event_loop().time() - _subscribe_sent_ts
-                        if waited > 15.0:
-                            _sys.stderr.write(f"[WS_DIAG] 15s silent reject after subscribe\n")
-                            _sys.stderr.flush()
-                            logger.error(
-                                "[WS] No message received %.0fs after subscribe "
-                                "(silent reject?). Forcing reconnect.",
-                                waited,
-                            )
-                            raise Exception(f"ws_silent_after_subscribe_{waited:.0f}s")
-                    continue  # Normal: no message yet
-                except asyncio.CancelledError:
-                    raise
-                if isinstance(raw, bytes):
-                    raw = raw.decode("utf-8", errors="replace")
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.debug("[WS] non-JSON frame dropped: %s", raw[:100])
-                    continue
-                # D123-2: First non-PONG, non-error message — log and mark received
-                if not _first_msg_received:
-                    _first_msg_received = True
-                    logger.info(
-                        "[WS] First message received +%.2fs after subscribe",
-                        asyncio.get_event_loop().time() - _subscribe_sent_ts,
-                    )
-                if isinstance(msg, dict):
-                    # Per Polymarket WS spec: server responds to PING with PONG.
-                    # Filter it out — it carries no market data.
-                    if msg.get("type") == "PONG":
-                        continue
-                    logger.debug("[WS] recv dict keys=%s event_type=%s",
-                                 list(msg.keys()), msg.get("event_type", ""))
-                    yield msg
-                elif isinstance(msg, list):
-                    for item in msg:
-                        if isinstance(item, dict):
-                            logger.debug("[WS] recv list item event_type=%s", item.get("event_type", ""))
-                            yield item
-        finally:
-            ping_task.cancel()
+    try:
+        async with websockets.connect(
+            u,
+            ping_interval=20,
+            ping_timeout=20,
+            subprotocols=None,
+            extensions=None,
+        ) as ws:
+            ping_task = asyncio.create_task(_ws_heartbeat(ws, interval=10.0))
             try:
-                await ping_task
-            except asyncio.CancelledError:
-                pass
+                if subscribe_payload:
+                    payload_str = json.dumps(subscribe_payload)
+                    _sys.stderr.write(f"[WS_DIAG] sending payload ({len(payload_str)} bytes)\n")
+                    _sys.stderr.flush()
+                    logger.info("[WS] Sending subscribe payload: %s", payload_str[:200])
+                    await ws.send(payload_str)
+                # Fire on_open callback after connection + subscription are established
+                logger.info("[WS] on_open callback about to fire, on_open=%s", on_open)
+                if on_open:
+                    try:
+                        on_open()
+                        logger.info("[WS] on_open callback fired successfully")
+                    except Exception as exc:
+                        logger.warning("[WS] on_open callback error: %s", exc)
+
+                # D123-2: First-message timer — detect silent subscription rejections
+                _first_msg_received = False
+                _subscribe_sent_ts = asyncio.get_event_loop().time()
+                while True:
+                    if close_event is not None and close_event.is_set():
+                        break
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        # D123-2: 15s without a message — likely silent rejection
+                        if not _first_msg_received:
+                            waited = asyncio.get_event_loop().time() - _subscribe_sent_ts
+                            if waited > 15.0:
+                                _sys.stderr.write(f"[WS_DIAG] 15s silent reject after subscribe\n")
+                                _sys.stderr.flush()
+                                logger.error(
+                                    "[WS] No message received %.0fs after subscribe "
+                                    "(silent reject?). Forcing reconnect.",
+                                    waited,
+                                )
+                                raise Exception(f"ws_silent_after_subscribe_{waited:.0f}s")
+                        continue  # Normal: no message yet
+                    except asyncio.CancelledError:
+                        raise
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", errors="replace")
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        logger.debug("[WS] non-JSON frame dropped: %s", raw[:100])
+                        continue
+                    # D123-2: First non-PONG, non-error message — log and mark received
+                    if not _first_msg_received:
+                        _first_msg_received = True
+                        logger.info(
+                            "[WS] First message received +%.2fs after subscribe",
+                            asyncio.get_event_loop().time() - _subscribe_sent_ts,
+                        )
+                    if isinstance(msg, dict):
+                        # Per Polymarket WS spec: server responds to PING with PONG.
+                        # Filter it out — it carries no market data.
+                        if msg.get("type") == "PONG":
+                            continue
+                        logger.debug("[WS] recv dict keys=%s event_type=%s",
+                                     list(msg.keys()), msg.get("event_type", ""))
+                        yield msg
+                    elif isinstance(msg, list):
+                        for item in msg:
+                            if isinstance(item, dict):
+                                logger.debug("[WS] recv list item event_type=%s", item.get("event_type", ""))
+                                yield item
+            finally:
+                ping_task.cancel()
+                try:
+                    await ping_task
+                except asyncio.CancelledError:
+                    pass
+    except TypeError:
+        logger.exception("[WS] TypeError during websocket connect/stream")
+        raise
 
 
 async def run_ws_loop(
@@ -187,7 +197,7 @@ async def run_ws_loop(
                         pass
                 return  # let _ws_runner rebuild subscription with smaller payload
             backoff = min(30.0, float(os.getenv("HUNT_WS_BACKOFF_SEC", "3")))
-            logger.warning("[WS] Connection error: %s: %s", type(exc).__name__, exc)
+            logger.exception("[WS] Connection error: %s: %s", type(exc).__name__, exc)
             if on_disconnect_cb:
                 try:
                     on_disconnect_cb()

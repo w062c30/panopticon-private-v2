@@ -21,12 +21,34 @@ from __future__ import annotations
 import logging as _logging
 import math
 import os
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque
 
 _logger = _logging.getLogger(__name__)
+
+_TIER_WINDOW_DEFAULTS: dict[str, float] = {
+    "t1": 5.0,
+    "t2": 60.0,
+    "t3": 60.0,
+    "t5": 60.0,
+}
+
+
+def _normalize_tier(tier: str) -> str:
+    normalized = str(tier or "t3").strip().lower()
+    return normalized if normalized in _TIER_WINDOW_DEFAULTS else "t3"
+
+
+def resolve_window_sec_for_tier(tier: str, fallback: float | None = None) -> float:
+    normalized_tier = _normalize_tier(tier)
+    default_sec = _TIER_WINDOW_DEFAULTS.get(normalized_tier, 60.0) if fallback is None else float(fallback)
+    return float(
+        os.getenv(
+            f"HUNT_ENTROPY_WINDOW_SEC_{normalized_tier.upper()}",
+            os.getenv("HUNT_ENTROPY_WINDOW_SEC", str(default_sec)),
+        )
+    )
 
 
 def _shannon_H(counts: dict[str, float]) -> float:
@@ -48,7 +70,8 @@ class EntropyWindow:
     until ``window_sec`` of healthy consecutive samples (each gap <= max_internal_gap_sec).
     """
 
-    window_sec: float = 5.0   # 5s window; min H samples from HUNT_MIN_HISTORY_FOR_Z (default 5, D159)
+    tier: str = "t3"
+    window_sec: float = 5.0   # tier-aware in D166; min H samples from HUNT_MIN_HISTORY_FOR_Z (default 5, D159)
     gap_flush_sec: float = float("inf")  # disable auto-flush; only mark_reconnect() flushes
     max_internal_gap_sec: float = float("inf")
     min_history_for_z: int = 5
@@ -61,7 +84,8 @@ class EntropyWindow:
     _last_reason: str = ""
 
     def __post_init__(self) -> None:
-        self.window_sec = float(os.getenv("HUNT_ENTROPY_WINDOW_SEC", str(self.window_sec)))
+        self.tier = _normalize_tier(self.tier)
+        self.window_sec = resolve_window_sec_for_tier(self.tier)
         self.gap_flush_sec = float(os.getenv("HUNT_ENTROPY_GAP_FLUSH_SEC", str(self.gap_flush_sec)))
         self.max_internal_gap_sec = float(os.getenv("HUNT_ENTROPY_MAX_INTERNAL_GAP_SEC", str(self.max_internal_gap_sec)))
         # D159: single source — config.get_min_history_for_z() (HUNT_MIN_HISTORY_FOR_Z, default 5)
@@ -88,6 +112,10 @@ class EntropyWindow:
         if self._unlock_healthy_span_sec < 1.0:
             raise ValueError(
                 f"HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC={self._unlock_healthy_span_sec} is too low (min=1.0s)."
+            )
+        if self.window_sec < 1.0 or self.window_sec > 600.0:
+            raise ValueError(
+                f"Entropy window_sec={self.window_sec} is invalid (must be in [1, 600])."
             )
 
     def refresh_subscription(self, reason: str = "sub_refresh") -> None:
