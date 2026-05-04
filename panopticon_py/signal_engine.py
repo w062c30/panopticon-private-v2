@@ -34,6 +34,7 @@ from panopticon_py.execution.constants import (
     REASON_KELLY_DEGRADED_PREFIX,
     REASON_NO_PRICE_DATA,
     REASON_T1_SHORT_CIRCUIT,
+    REASON_Z_MAGNITUDE_BELOW_THRESHOLD,
 )
 from panopticon_py.fast_gate import FastSignalInput, GateDecision, fast_execution_gate
 from panopticon_py.friction_state import FrictionSnapshot
@@ -570,6 +571,27 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # Skip when |z| < 4.0 (low magnitude), continue when |z| >= 4.0 (high magnitude signal)
     if abs(z) < abs(MIN_ENTROPY_Z_THRESHOLD):
         logging.debug("[SE] |z|=%.2f below threshold magnitude %.2f, skipping", abs(z), abs(MIN_ENTROPY_Z_THRESHOLD))
+        # D158-4: was silent return — persist reject so dashboards / audits see L2 entry
+        decision_id = str(uuid4())
+        db.append_execution_record({
+            "execution_id": decision_id,
+            "decision_id": decision_id,
+            "accepted": 0,
+            "reason": REASON_Z_MAGNITUDE_BELOW_THRESHOLD,
+            "mode": "PAPER",
+            "source": safe_source,
+            "gate_reason": REASON_Z_MAGNITUDE_BELOW_THRESHOLD,
+            "latency_ms": 25.0,
+            "posterior": 0.0,
+            "p_adj": 0.0,
+            "qty": 0.0,
+            "ev_net": 0.0,
+            "avg_entry_price": 0.0,
+            "created_ts_utc": _utc(),
+            "market_id": market_id,
+            "market_tier": event.market_tier,
+            "asset_id": event.token_id,
+        })
         return
 
     # D96-C: T1 short-circuit — T1 markets go to Kyle λ path only, not consensus

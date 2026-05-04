@@ -67,7 +67,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.37-D133"   # ← AGENT: bump on every change  # D133: Debt-1 fix — _on_insider_alert uses ShadowDB.conn instead of bare sqlite3.connect
+PROCESS_VERSION = "v1.1.38-D158"   # ← AGENT: bump on every change  # D133: Debt-1 fix — _on_insider_alert uses ShadowDB.conn instead of bare sqlite3.connect  # D158-2: signal_queue bounded maxsize=500 (backpressure vs unbounded growth)
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -449,7 +449,7 @@ async def main_async() -> int:
     logger.info("[DB] AsyncDBWriter started")
 
     # ── Signal Queue — zero-latency event bus [Invariant 1.1] ─────────────
-    signal_queue: asyncio.Queue = asyncio.Queue()
+    signal_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
 
     def _persist_writer_health() -> None:
         """D119/D120: Persist AsyncDBWriter health snapshot every 30s for cross-process read."""

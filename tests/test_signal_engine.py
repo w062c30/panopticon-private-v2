@@ -17,7 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from panopticon_py.signal_engine import _process_event
+from panopticon_py.execution.constants import REASON_Z_MAGNITUDE_BELOW_THRESHOLD
+from panopticon_py.signal_engine import SignalEvent, _process_event
 from panopticon_py.fast_gate import GateDecision
 
 
@@ -55,27 +56,13 @@ class DummyDB:
 def make_event(z: float = -5.5, market_id: str = "mkt-001",
                source: str = "radar", trigger_address: str = "0xabc",
                token_id: str = "tkn-001"):
-    """Create a SignalEvent that passes the z-score threshold (must be <= -4.1)."""
-    from dataclasses import dataclass
-    from typing import Literal
-
-    @dataclass
-    class SignalEvent:
-        market_id: str
-        source: Literal["radar", "ofi"]
-        z: float
-        trigger_address: str
-        token_id: str
-        ofi_shock_value: float = 0.0
-        market_tier: str = "t3"
-
+    """Radar-style entropy z (signed); ``SignalEvent.z`` is ``abs(entropy_z)`` for L2 magnitude."""
     return SignalEvent(
+        source=source,  # type: ignore[arg-type]
         market_id=market_id,
-        source=source,
-        z=z,
-        trigger_address=trigger_address,
         token_id=token_id,
-        ofi_shock_value=0.0,
+        entropy_z=z,
+        trigger_address=trigger_address,
         market_tier="t3",
     )
 
@@ -462,6 +449,10 @@ class TestZScoreRegression:
             await _process_event(event, db)
 
         assert not reached_gate, "z=-2.0 is a weak signal (|z|=2.0 < 4.0) and must be filtered"
+        # D158-4: magnitude reject persists execution_records (was silent)
+        assert len(db.execution_records) == 1
+        assert db.execution_records[0]["accepted"] == 0
+        assert db.execution_records[0]["reason"] == REASON_Z_MAGNITUDE_BELOW_THRESHOLD
 
     @pytest.mark.asyncio
     async def test_strong_positive_z_is_not_filtered(self):
@@ -628,18 +619,15 @@ class TestExecutionRecordIncludesMarketId:
 
 
 class TestEntropyLookbackDefault:
-    """D45b: ENTROPY_LOOKBACK_SEC must default to 360, not 60."""
+    """D45b/D96: ENTROPY_LOOKBACK_SEC default covers whale / data-api cadence (not 60)."""
 
-    def test_entropy_lookback_default_is_360(self):
-        """Default ENTROPY_LOOKBACK_SEC = 360 (300s scan * 1.2 buffer per architect ruling)."""
+    def test_entropy_lookback_default_is_1800(self):
+        """D96: default 1800s unless ENTROPY_LOOKBACK_SEC set at import (was 360 in D45b)."""
         import os
         saved = os.environ.pop("ENTROPY_LOOKBACK_SEC", None)
         try:
-            # ENTROPY_LOOKBACK_SEC is set at module load time.
-            # Check it is > 60 (old value) and a reasonable value for whale scanner cadence.
-            # Whale scanner runs every 300s; 360s gives 1.2x buffer.
             from panopticon_py.signal_engine import ENTROPY_LOOKBACK_SEC as val
-            assert val == 360, f"Expected 360, got {val}"
+            assert val == 1800, f"Expected default 1800 (D96), got {val}"
             assert val >= 300, "Lookback must cover at least one whale scan cycle"
         finally:
             if saved is not None:
