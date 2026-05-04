@@ -390,7 +390,7 @@ async def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
 
     # D37: Direct query to discovered_entities.insider_score (whale scanner injection)
     # D101: Wrapped in try/except to guard against pre-migration DB state.
-    # Filter score > 0.0 to skip DEFAULT 0.0 entries (not scored entities).
+    # D161-2: Only catch DB and data errors — NOT CancelledError / asyncio.CancelledError.
     try:
         row_de = (await _db_execute_async_retry(
             db.conn,
@@ -405,7 +405,7 @@ async def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
             score = float(row_de[0])
             if score > 0.0:
                 return score
-    except Exception as exc:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError) as exc:
         logger.debug("[SE][D37_FALLBACK_ERR] %s", exc)
 
     row2 = (await _db_execute_async_retry(
@@ -554,27 +554,30 @@ async def _collect_insider_sources(
             (market_id, cutoff_ts),
         )).fetchall()
 
-    snapshot_hits = 0
-    fallback_hits = 0
-
     sources: list[float] = []
     threshold = _effective_insider_threshold()
     for (wallet,) in rows:
         wallet_lower = wallet.lower()
         score = await _get_insider_score(wallet_lower, db)
 
-        snapshot_row = (await _db_execute_async_retry(
+        # D161-1: Early threshold filter — no point checking source if score is None or below threshold
+        if score is None or score < threshold:
+            continue
+
+        # Determine source classification without redundant re-query
+        # If wallet exists in insider_score_snapshots → snapshot hit, else fallback
+        snapshot_check = (await _db_execute_async_retry(
             db.conn,
-            "SELECT 1 FROM insider_score_snapshots WHERE address=? AND score>=? LIMIT 1",
-            (wallet_lower, threshold),
+            "SELECT 1 FROM insider_score_snapshots WHERE address=? LIMIT 1",
+            (wallet_lower,),
         )).fetchone()
 
-        if snapshot_row is not None and score is not None and score >= threshold:
+        if snapshot_check is not None:
             snapshot_hits += 1
-            sources.append(score)
-        elif score is not None and score >= threshold:
+        else:
             fallback_hits += 1
-            sources.append(score)
+
+        sources.append(score)
 
     logger.info(
         "[D73_SOURCE_BREAKDOWN] market=%s series=%s snapshot_hits=%d fallback_hits=%d final=%d",

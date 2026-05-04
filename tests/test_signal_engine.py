@@ -13,6 +13,7 @@ MIN_ENTROPY_Z_THRESHOLD = -4.0 by default, so z must be <= -4.1 to pass the z-sc
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -647,3 +648,122 @@ class TestEntropyLookbackDefault:
         finally:
             os.environ.pop("ENTROPY_LOOKBACK_SEC", None)
             importlib.reload(se_mod)
+
+
+# ── D161-3: Tests for _effective_insider_threshold and _db_execute_async_retry ──
+
+class TestEffectiveInsiderThreshold:
+    """D160-3: effective threshold differs between paper (0.30) and live (0.55) modes."""
+
+    def test_paper_mode_returns_paper_threshold(self, monkeypatch):
+        """Paper mode: effective threshold = PAPER_INSIDER_SCORE_THRESHOLD (default 0.30)."""
+        monkeypatch.delenv("LIVE_TRADING", raising=False)
+        monkeypatch.delenv("PAPER_INSIDER_SCORE_THRESHOLD", raising=False)
+        import importlib
+        import panopticon_py.signal_engine as se_mod
+        importlib.reload(se_mod)
+        assert se_mod._effective_insider_threshold() == pytest.approx(0.30)
+
+    def test_live_mode_returns_live_threshold(self, monkeypatch):
+        """Live mode: effective threshold = INSIDER_SCORE_THRESHOLD (default 0.55)."""
+        monkeypatch.setenv("LIVE_TRADING", "true")
+        monkeypatch.setenv("INSIDER_SCORE_THRESHOLD", "0.55")
+        import importlib
+        import panopticon_py.signal_engine as se_mod
+        importlib.reload(se_mod)
+        try:
+            assert se_mod._effective_insider_threshold() == pytest.approx(0.55)
+        finally:
+            monkeypatch.delenv("LIVE_TRADING", raising=False)
+            importlib.reload(se_mod)
+
+    def test_paper_threshold_floor_enforced_at_import(self, monkeypatch):
+        """PAPER_INSIDER_SCORE_THRESHOLD < 0.15 raises ValueError at module import."""
+        monkeypatch.delenv("LIVE_TRADING", raising=False)
+        monkeypatch.setenv("PAPER_INSIDER_SCORE_THRESHOLD", "0.10")
+        import importlib
+        import panopticon_py.signal_engine as se_mod
+        with pytest.raises(ValueError, match="0.15"):
+            importlib.reload(se_mod)
+        # Restore before next test
+        monkeypatch.setenv("PAPER_INSIDER_SCORE_THRESHOLD", "0.30")
+        importlib.reload(se_mod)
+
+    def test_custom_paper_threshold_respected(self, monkeypatch):
+        """Custom PAPER_INSIDER_SCORE_THRESHOLD is respected in paper mode."""
+        monkeypatch.delenv("LIVE_TRADING", raising=False)
+        monkeypatch.setenv("PAPER_INSIDER_SCORE_THRESHOLD", "0.25")
+        import importlib
+        import panopticon_py.signal_engine as se_mod
+        importlib.reload(se_mod)
+        try:
+            assert se_mod._effective_insider_threshold() == pytest.approx(0.25)
+        finally:
+            monkeypatch.delenv("PAPER_INSIDER_SCORE_THRESHOLD", raising=False)
+            importlib.reload(se_mod)
+
+
+class TestDbExecuteAsyncRetry:
+    """D160-2 / D161-1: async-safe SQLite lock retry — event-loop safe (not time.sleep)."""
+
+    @pytest.mark.asyncio
+    async def test_success_on_first_attempt_no_retry(self):
+        """If conn.execute succeeds on first try, no sleep is called."""
+        mock_conn = MagicMock()
+        mock_result = MagicMock()
+        mock_conn.execute.return_value = mock_result
+
+        from panopticon_py.signal_engine import _db_execute_async_retry
+        with patch("panopticon_py.signal_engine.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await _db_execute_async_retry(mock_conn, "SELECT 1 FROM t", ())
+            assert result is mock_result
+            assert mock_conn.execute.call_count == 1
+            mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retries_on_locked_then_succeeds(self):
+        """Locked OperationalError triggers retry with backoff; succeeds on second attempt."""
+        mock_conn = MagicMock()
+        mock_result = MagicMock()
+        mock_conn.execute.side_effect = [
+            sqlite3.OperationalError("database is locked"),
+            mock_result,  # succeeds on 2nd attempt
+        ]
+        from panopticon_py.signal_engine import _db_execute_async_retry
+        with patch("panopticon_py.signal_engine.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await _db_execute_async_retry(
+                mock_conn, "SELECT 1 FROM t", (), max_retries=3, sleep_s=0.001,
+            )
+            assert result is mock_result
+            assert mock_conn.execute.call_count == 2
+            mock_sleep.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_raises_immediately_on_non_lock_error(self):
+        """Non-lock OperationalError (e.g. no such table) raises immediately — no retry."""
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("no such table: t")
+
+        from panopticon_py.signal_engine import _db_execute_async_retry
+        with patch("panopticon_py.signal_engine.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with pytest.raises(sqlite3.OperationalError, match="no such table"):
+                await _db_execute_async_retry(
+                    mock_conn, "SELECT 1 FROM t", (), max_retries=3, sleep_s=0.001,
+                )
+            assert mock_conn.execute.call_count == 1  # no retry on non-lock
+            mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_raises_after_max_retries_exhausted(self):
+        """All attempts return locked → raises after max_retries, not silent drop."""
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+
+        from panopticon_py.signal_engine import _db_execute_async_retry
+        with patch("panopticon_py.signal_engine.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                await _db_execute_async_retry(
+                    mock_conn, "SELECT 1 FROM t", (), max_retries=3, sleep_s=0.001,
+                )
+            assert mock_conn.execute.call_count == 3  # exactly 3 attempts
+            assert mock_sleep.call_count == 2  # sleep between attempt 1→2 and 2→3
