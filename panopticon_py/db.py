@@ -3615,13 +3615,18 @@ class ShadowDB:
         side: str,
         updated_ts_utc: str,
     ) -> None:
+        """
+        LIFO position accounting for wallet/market.
+
+        D163: Single commit per successful write path (BUY/SELL updates share one execute+commit).
+        Early returns before any DML avoid empty commits / driver edge cases on shared ``conn``.
+        """
         side = side.upper()
         wallet_address = wallet_address.lower()
 
         if side not in ("BUY", "SELL"):
             return
 
-        # Fetch current position
         row = self.conn.execute(
             """
             SELECT current_position_notional, avg_entry_price
@@ -3632,9 +3637,8 @@ class ShadowDB:
         ).fetchone()
 
         if row is None:
-            # New position: only BUY can create
             if side == "SELL":
-                return  # can't sell what you don't have
+                return
             self.conn.execute(
                 """
                 INSERT INTO wallet_market_positions
@@ -3644,53 +3648,52 @@ class ShadowDB:
                 (wallet_address, market_id, float(fill_qty), float(fill_price), updated_ts_utc),
             )
             self.conn.commit()
+            logger.debug(
+                "[LIFO] wallet=%s market=%s side=%s new_notional=%.2f (new row)",
+                wallet_address[:8],
+                (market_id or "")[:12],
+                side,
+                float(fill_qty),
+            )
             return
 
-        current_notional = float(row[0])
-        avg_entry = float(row[1])
+        current_notional = float(row["current_position_notional"])
+        avg_entry = float(row["avg_entry_price"])
 
         if side == "BUY":
-            # Increase position, update avg_entry_price via VWAP
             new_notional = current_notional + fill_qty
-            if new_notional > 0:
-                new_avg = (avg_entry * current_notional + fill_price * fill_qty) / new_notional
-            else:
-                new_avg = 0.0
-            self.conn.execute(
-                """
-                INSERT INTO wallet_market_positions
-                  (wallet_address, market_id, current_position_notional, avg_entry_price, last_updated_ts_utc)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(wallet_address, market_id) DO UPDATE SET
-                  current_position_notional = excluded.current_position_notional,
-                  avg_entry_price = excluded.avg_entry_price,
-                  last_updated_ts_utc = excluded.last_updated_ts_utc
-                """,
-                (wallet_address, market_id, new_notional, new_avg, updated_ts_utc),
+            new_avg = (
+                (avg_entry * current_notional + fill_price * fill_qty) / new_notional
+                if new_notional > 0
+                else 0.0
             )
-            self.conn.commit()
-
-        elif side == "SELL":
-            # LIFO: reduce position, do NOT update avg_entry_price
+        else:
             if current_notional <= 0:
-                return  # nothing to sell
-            new_notional = current_notional - fill_qty
-            if new_notional < 0:
-                new_notional = 0.0
-            # avg_entry_price stays the same (LIFO: sold from most recent buy)
-            self.conn.execute(
-                """
-                INSERT INTO wallet_market_positions
-                  (wallet_address, market_id, current_position_notional, avg_entry_price, last_updated_ts_utc)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(wallet_address, market_id) DO UPDATE SET
-                  current_position_notional = excluded.current_position_notional,
-                  avg_entry_price = excluded.avg_entry_price,
-                  last_updated_ts_utc = excluded.last_updated_ts_utc
-                """,
-                (wallet_address, market_id, new_notional, avg_entry, updated_ts_utc),
-            )
-            self.conn.commit()
+                return
+            new_notional = max(0.0, current_notional - fill_qty)
+            new_avg = avg_entry
+
+        self.conn.execute(
+            """
+            INSERT INTO wallet_market_positions
+              (wallet_address, market_id, current_position_notional, avg_entry_price, last_updated_ts_utc)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(wallet_address, market_id) DO UPDATE SET
+              current_position_notional = excluded.current_position_notional,
+              avg_entry_price = excluded.avg_entry_price,
+              last_updated_ts_utc = excluded.last_updated_ts_utc
+            """,
+            (wallet_address, market_id, new_notional, new_avg, updated_ts_utc),
+        )
+        self.conn.commit()
+        logger.debug(
+            "[LIFO] wallet=%s market=%s side=%s old_notional=%.2f new_notional=%.2f",
+            wallet_address[:8],
+            (market_id or "")[:12],
+            side,
+            current_notional,
+            new_notional,
+        )
 
     def get_wallet_market_position(
         self, wallet_address: str, market_id: str

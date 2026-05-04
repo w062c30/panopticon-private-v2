@@ -202,7 +202,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.15-D162"
+    PROCESS_VERSION = "v1.1.16-D163"
     acquire_singleton("analysis_worker", PROCESS_VERSION)
 
     # D147-2: Wrap all init steps so WAL lock / import failures are logged
