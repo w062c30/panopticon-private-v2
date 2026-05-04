@@ -85,6 +85,35 @@ def get_t5_coverage() -> T5CoverageResponse:
         db.close()
 
 
+@router.get("/entropy/status")
+def get_entropy_status():
+    """
+    D153-4: Return per-token EntropyWindow state for L1 health monitoring.
+    Reads module-level _entropy_windows dict from run_radar.py.
+    Returns z_ready count and per-token breakdown.
+    """
+    from panopticon_py.hunting.run_radar import _entropy_windows
+    result = {}
+    for token_id, ew in _entropy_windows.items():
+        state = ew.state_dict()
+        result[token_id] = {
+            "h_hist": state["h_hist"],
+            "need": ew.min_history_for_z,
+            "pct": round(state["h_hist"] / ew.min_history_for_z * 100, 1) if ew.min_history_for_z > 0 else 0,
+            "trigger_locked": state["trigger_locked"],
+            "events": state["events"],
+            "z_ready": state["h_hist"] >= ew.min_history_for_z and not state["trigger_locked"],
+        }
+    total = len(result)
+    z_ready_count = sum(1 for v in result.values() if v["z_ready"])
+    return {
+        "total_tokens": total,
+        "z_ready_count": z_ready_count,
+        "z_ready_pct": round(z_ready_count / total * 100, 1) if total > 0 else 0,
+        "tokens": result,
+    }
+
+
 @router.get("/async-writer-health")
 def get_async_writer_health(request: Request) -> dict:
     """

@@ -2921,7 +2921,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
     )
     _current_tokens = combined_tokens
     _close_event.clear()
-    ew.mark_reconnect(reason="subscription_refresh")  # D154: preserve _h_history
+    ew.refresh_subscription(reason="boot_subscription_refresh")  # D156-1: no trigger lock, preserve tick buffer
 
     logger.info(
         "[L1_MARKET_TIER] tier1=%d tier2_event=%d tier5_sports=%d tier3_long=%d total=%d",
@@ -3124,7 +3124,7 @@ async def _live_ticks(ew: EntropyWindow, db: ShadowDB, signal_queue: asyncio.Que
                             existing.add(t)
                     sub = {"assets_ids": _current_tokens, "type": "market", "custom_feature_enabled": True}
                     reconnect_now = True
-                    ew.mark_reconnect(reason="subscription_refresh")  # D154: preserve _h_history
+                    ew.refresh_subscription(reason="pol_token_refresh")  # D156-1: no trigger lock, preserve tick buffer
 
             # D103: Log T5 sports market status after POL refresh cycle
             await asyncio.to_thread(_log_t5_market_status, db)
@@ -3369,7 +3369,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.54-D155"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats
+    PROCESS_VERSION = "v1.1.55-D156"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh; L2924/L3127 now call refresh_subscription()  # D156-3: HUNT_MIN_HISTORY_FOR_Z=5 (shadow mode)
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

@@ -53,6 +53,19 @@ class EntropyWindow:
         if shadow_override is not None:
             self.min_history_for_z = int(shadow_override)
 
+    def refresh_subscription(self, reason: str = "sub_refresh") -> None:
+        """
+        D156-1: Called on subscription token list refresh (NOT actual WS disconnect).
+        Does NOT flush _events or set _trigger_locked.
+        Only logs the refresh for diagnostic purposes.
+        Use mark_reconnect() ONLY for actual WS disconnects (ConnectionClosed/OSError).
+        _h_history is preserved — H distribution is market-level state.
+        """
+        _logger.debug(
+            "[EW][D156] refresh_subscription reason=%s h_hist=%d events=%d locked=%s",
+            reason, len(self._h_history), len(self._events), self._trigger_locked,
+        )
+
     # D154: reason parameter added for diagnostic differentiation
     # (subscription_refresh vs ws_disconnect, etc.)
     def mark_reconnect(self, reason: str = "ws_reconnect") -> None:
