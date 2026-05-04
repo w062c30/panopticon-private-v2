@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import random
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
@@ -25,7 +26,7 @@ from panopticon_py.analysis.insider_pattern import compute_pattern_score
 from panopticon_py.series.event_series import classify_oracle_risk, ORACLE_RISK_HIGH
 from panopticon_py.time_utils import normalize_external_ts_to_utc, utc_now_rfc3339_ms
 from panopticon_py.utils.process_guard import update_heartbeat
-from config import get_z_threshold, get_min_history_for_z
+from config import get_z_threshold
 
 # Lazy MetricsCollector getter (avoids circular import)
 def _mc():
@@ -725,7 +726,7 @@ def _get_or_create_ew(token_id: str) -> EntropyWindow:
     Called in hot path — must be fast. No await, no lock.
     """
     if token_id not in _entropy_windows:
-        _entropy_windows[token_id] = EntropyWindow(min_history_for_z=get_min_history_for_z())
+        _entropy_windows[token_id] = EntropyWindow()
     return _entropy_windows[token_id]
 
 
@@ -1191,40 +1192,55 @@ def _detect_and_persist_series(markets: list[dict], db) -> None:
         rolling_count = sum(1 for s in detected if s.series_type == "ROLLING_WINDOW")
 
         for series in detected:
-            # Persist event_series
-            db.upsert_event_series({
-                "series_id": series.series_id,
-                "series_type": series.series_type,
-                "underlying_topic": series.underlying_topic,
-                "oracle_risk": series.oracle_risk,
-                "created_ts_utc": _utc(),
-            })
-            # Persist each member
-            for member in series.members:
-                m_dict = {
-                    "token_id": member.token_id,
-                    "slug": member.slug,
-                    "settlement_date": (
-                        member.settlement_date.isoformat()
-                        if member.settlement_date else ""
-                    ),
-                    "market_tier": member.market_tier,
-                    "current_prob": member.current_prob,
-                }
-                db.upsert_series_member(series.series_id, m_dict)
+            # D159-2C: best-effort series persist — retry transient SQLite locks
+            persisted = False
+            for attempt in range(3):
+                try:
+                    db.upsert_event_series({
+                        "series_id": series.series_id,
+                        "series_type": series.series_type,
+                        "underlying_topic": series.underlying_topic,
+                        "oracle_risk": series.oracle_risk,
+                        "created_ts_utc": _utc(),
+                    })
+                    for member in series.members:
+                        m_dict = {
+                            "token_id": member.token_id,
+                            "slug": member.slug,
+                            "settlement_date": (
+                                member.settlement_date.isoformat()
+                                if member.settlement_date else ""
+                            ),
+                            "market_tier": member.market_tier,
+                            "current_prob": member.current_prob,
+                        }
+                        db.upsert_series_member(series.series_id, m_dict)
 
-            # Check monotone violations (DEADLINE_LADDER only)
-            if series.series_type == "DEADLINE_LADDER":
-                violations = check_monotone_violations(series)
-                for v in violations:
-                    db.write_series_violation(
-                        series_id=v.series_id,
-                        violation_type="MONOTONE_VIOLATION",
-                        earlier_slug=v.earlier_slug,
-                        later_slug=v.later_slug,
-                        gap_pct=v.gap_pct,
-                        action_taken="LOGGED",
-                    )
+                    if series.series_type == "DEADLINE_LADDER":
+                        violations = check_monotone_violations(series)
+                        for v in violations:
+                            db.write_series_violation(
+                                series_id=v.series_id,
+                                violation_type="MONOTONE_VIOLATION",
+                                earlier_slug=v.earlier_slug,
+                                later_slug=v.later_slug,
+                                gap_pct=v.gap_pct,
+                                action_taken="LOGGED",
+                            )
+                    persisted = True
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower():
+                        raise
+                    if attempt >= 2:
+                        logger.warning(
+                            "[L1_SERIES] DB locked after retries — skip series_id=%s",
+                            (series.series_id or "")[:32],
+                        )
+                        break
+                    time.sleep(0.05 * (attempt + 1))
+            if not persisted:
+                continue
 
         logger.info(
             "[L1_SERIES] detected=%d deadline_ladders=%d rolling=%d",
@@ -3463,7 +3479,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.57-D158"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine
+    PROCESS_VERSION = "v1.1.58-D159"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

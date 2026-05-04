@@ -16,6 +16,7 @@ Order type 推斷：
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from uuid import uuid4
 
@@ -23,6 +24,22 @@ from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 ORDER_CLOSE_GAP_MS = 30_000   # 30s 無新 fill → order 視為完成
 JOIN_TOLERANCE_MS  = 3_000    # timestamp join 容忍度（±3s）
+
+# D159-2: hot-path SQLite — retry transient locks (shared conn with whale / series / writer)
+_DB_LOCK_MAX_RETRIES = 3
+_DB_LOCK_RETRY_SLEEP_S = 0.05
+
+
+def conn_execute_with_retry(conn, sql: str, params=()):
+    """Execute with bounded retry on ``database is locked`` only."""
+    for attempt in range(_DB_LOCK_MAX_RETRIES):
+        try:
+            return conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" not in msg or attempt >= _DB_LOCK_MAX_RETRIES - 1:
+                raise
+            time.sleep(_DB_LOCK_RETRY_SLEEP_S * (attempt + 1))
 
 
 def try_match_or_open(raw: dict, db) -> str:
@@ -45,7 +62,7 @@ def try_match_or_open(raw: dict, db) -> str:
 
     cutoff_ms = ts_ms - ORDER_CLOSE_GAP_MS
 
-    row = db.conn.execute("""
+    row = conn_execute_with_retry(db.conn, """
         SELECT order_id, total_size, fill_count, avg_price, first_fill_ts
         FROM order_reconstructions
         WHERE taker_wallet = ?
@@ -64,7 +81,7 @@ def try_match_or_open(raw: dict, db) -> str:
         span_ms    = ts_ms - first_ts
         new_type   = _infer_type(fill_count + 1, span_ms)
 
-        db.conn.execute("""
+        conn_execute_with_retry(db.conn, """
             UPDATE order_reconstructions
             SET total_size          = ?,
                 fill_count          = ?,
@@ -75,7 +92,7 @@ def try_match_or_open(raw: dict, db) -> str:
         """, (new_total, fill_count + 1, new_avg, ts_ms, new_type, order_id))
     else:
         order_id = str(uuid4())
-        db.conn.execute("""
+        conn_execute_with_retry(db.conn, """
             INSERT INTO order_reconstructions
                 (order_id, taker_wallet, market_id, side,
                  total_size, fill_count, avg_price,
@@ -92,7 +109,7 @@ def try_match_or_open(raw: dict, db) -> str:
 def close_stale_orders(db) -> int:
     """關閉超過 ORDER_CLOSE_GAP_MS 未更新的 open orders。返回關閉筆數。"""
     cutoff_ms = int(time.time() * 1000) - ORDER_CLOSE_GAP_MS
-    cur = db.conn.execute("""
+    cur = conn_execute_with_retry(db.conn, """
         UPDATE order_reconstructions
         SET is_complete = 1
         WHERE is_complete = 0

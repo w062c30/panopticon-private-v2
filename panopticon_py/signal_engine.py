@@ -30,6 +30,7 @@ from uuid import uuid4
 from panopticon_py.db import ShadowDB
 from panopticon_py.execution.clob_client import submit_fok_order
 from panopticon_py.execution.constants import (
+    REASON_INSIDER_BYPASS_PAPER,
     REASON_INSUFFICIENT_CONSENSUS,
     REASON_KELLY_DEGRADED_PREFIX,
     REASON_NO_PRICE_DATA,
@@ -79,6 +80,20 @@ KELLY_FRACTION = 0.25
 
 # D108: Schema-sync constant — must match execution_records CHECK constraint
 _VALID_EXECUTION_SOURCES: frozenset[str] = frozenset({"radar", "ofi"})
+
+
+def _live_trading_env_on() -> bool:
+    return os.getenv("LIVE_TRADING", "").lower() in ("1", "true", "yes")
+
+
+def _insider_bypass_tiers_effective() -> frozenset[str]:
+    """D159-3: INSIDER_BYPASS_TIERS e.g. ``t2,t3``. Empty = disabled. Never active when LIVE_TRADING."""
+    if _live_trading_env_on():
+        return frozenset()
+    raw = os.getenv("INSIDER_BYPASS_TIERS", "").strip().lower()
+    if not raw:
+        return frozenset()
+    return frozenset(x.strip() for x in raw.split(",") if x.strip())
 
 # ---------------------------------------------------------------------------
 # Shadow Mode Parameters (Phase 2 data collection acceleration)
@@ -655,8 +670,21 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     te_n = 1 if (te_cache is not None and te_cache.is_significant) else 0
     effective_sources = len(sources) + te_n
 
+    tier_lc = (event.market_tier or "").strip().lower()
+    bypass_tiers = _insider_bypass_tiers_effective()
+    consensus_bypass_active = (
+        tier_lc in bypass_tiers
+        and effective_sources < MIN_CONSENSUS_SOURCES
+    )
+    if consensus_bypass_active:
+        logger.info(
+            "[INSIDER_BYPASS] tier=%s market=%s — insufficient-consensus gate bypassed (PAPER)",
+            event.market_tier,
+            str(market_id)[:28] if market_id else "None",
+        )
+
     # 5. Consensus check
-    if effective_sources < MIN_CONSENSUS_SOURCES:
+    if effective_sources < MIN_CONSENSUS_SOURCES and not consensus_bypass_active:
         decision_id = str(uuid4())
         execution_id = decision_id
         db.append_execution_record({
@@ -851,6 +879,9 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # 10. Write execution_record (INSERT — gate decision, pre-CLOB)
     decision_id = str(uuid4())
     execution_id = decision_id  # Option A: unified ID, one signal → one decision → one record
+    gate_reason_out = (
+        REASON_INSIDER_BYPASS_PAPER if consensus_bypass_active else gate.reason
+    )
     db.append_execution_record({
         "execution_id": execution_id,
         "decision_id": decision_id,
@@ -858,7 +889,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         "reason": reason,
         "mode": "PAPER",
         "source": safe_source,  # D107-2: validated against CHECK constraint
-        "gate_reason": gate.reason,
+        "gate_reason": gate_reason_out,
         "latency_ms": signal_input.delta_t_ms,
         "posterior": posterior,
         "p_adj": gate.p_adjusted,

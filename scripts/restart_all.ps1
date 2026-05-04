@@ -1,5 +1,5 @@
 # Panopticon - Singleton-Enforced Process Restart with Auto-Recovery
-# Version: v1.0.13-D147
+# Version: v1.0.14-D159
 # Run from: d:\Antigravity\Panopticon
 # MANDATORY: Use this script for ALL restarts.
 # OPTIONAL: Pass "-Continuous" for continuous monitoring with auto-recovery.
@@ -43,6 +43,32 @@ function Get-ProcessStatus {
     })
 
     return $status
+}
+
+# D159-4: Wait until process_manifest.json lists the PID we just started (avoids stale-manifest false FAIL)
+function Wait-ManifestConverge {
+    param(
+        [string]$ManifestPath,
+        [string]$ServiceName,
+        [int]$ExpectedPid,
+        [int]$MaxWaitSec = 15
+    )
+    if ($ExpectedPid -le 0) { return $false }
+    $deadline = (Get-Date).AddSeconds($MaxWaitSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Path $ManifestPath) {
+            try {
+                $m = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+                $entry = $m.$ServiceName
+                if ($null -ne $entry -and [int]$entry.pid -eq $ExpectedPid) {
+                    $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$ExpectedPid" -ErrorAction SilentlyContinue)
+                    if ($alive) { return $true }
+                }
+            } catch {}
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return $false
 }
 
 function Start-Backend {
@@ -281,36 +307,51 @@ function Full-Restart {
     Write-Host ("  Frontend started PID=" + $nodeProc.Id + " version=" + $frontendVersion)
     
     Start-Sleep -Seconds 5
+
+    $startedPids = @{
+        backend          = $(if ($null -ne $backend) { [int]$backend.Id } else { 0 })
+        orchestrator     = $(if ($null -ne $orch) { [int]$orch.Id } else { 0 })
+        analysis_worker  = $(if ($null -ne $analysisWorker) { [int]$analysisWorker.Id } else { 0 })
+        arb_scanner      = $(if ($null -ne $arbScanner) { [int]$arbScanner.Id } else { 0 })
+        watchdog         = $(if ($null -ne $watchdog) { [int]$watchdog.Id } else { 0 })
+    }
     
     Write-Host "== STEP 4: SINGLETON VERIFICATION (manifest-based) ==" -ForegroundColor Cyan
     $manifest = "$projDir\run\process_manifest.json"
     $ok = $true
     if (Test-Path $manifest) {
-        $m = Get-Content $manifest | ConvertFrom-Json -ErrorAction Stop
-        
-        # D79: Verify backend, orchestrator, analysis_worker as independent processes
-        # D131: Also verify watchdog; D135: Also verify arb_scanner
+        # D159-4: verify each service against the PID we started + manifest convergence (not stale rows)
         foreach ($svc in @("backend","orchestrator","analysis_worker","arb_scanner","watchdog")) {
-            $entry = $m.PSObject.Properties[$svc].Value
-            if ($null -ne $entry) {
-                $svcPid = $entry.pid
-                $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$svcPid" -ErrorAction SilentlyContinue)
-                if ($alive) {
-                    Write-Host "  PASS [${svc}] PID=$svcPid version=$($entry.version) RUNNING"
-                } else {
-                    Write-Warning "  FAIL [${svc}] PID=$svcPid in manifest but NOT running"
-                    $ok = $false
+            $expectedPid = $startedPids[$svc]
+            if ($expectedPid -le 0) {
+                Write-Warning "  WARN [${svc}] no start PID (process may have failed to spawn)"
+                $ok = $false
+                continue
+            }
+            $converged = Wait-ManifestConverge -ManifestPath $manifest -ServiceName $svc -ExpectedPid $expectedPid -MaxWaitSec 15
+            if ($converged) {
+                try {
+                    $m = Get-Content $manifest -Raw | ConvertFrom-Json
+                    $ver = $m.$svc.version
+                    Write-Host "  PASS [${svc}] PID=$expectedPid version=$ver RUNNING (manifest converged)"
+                } catch {
+                    Write-Host "  PASS [${svc}] PID=$expectedPid RUNNING (manifest converged)"
                 }
             } else {
-                Write-Warning "  WARN [${svc}] not yet in manifest"
+                Write-Warning "  WARN [${svc}] manifest did not converge to PID=$expectedPid within 15s — CIM fallback"
+                $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$expectedPid" -ErrorAction SilentlyContinue)
+                if ($alive) {
+                    Write-Host "  PASS [${svc}] PID=$expectedPid RUNNING (CIM only; manifest may still be stale)"
+                } else {
+                    Write-Warning "  FAIL [${svc}] PID=$expectedPid not running"
+                    $ok = $false
+                }
             }
         }
-        
-        # D79: Radar is a shadow asyncio task inside orchestrator.
-        # Verify radar via orchestrator PID (radar dies when orchestrator dies).
-        $orchEntry = $m.PSObject.Properties["orchestrator"].Value
-        if ($null -ne $orchEntry) {
-            $orchPid = $orchEntry.pid
+
+        # D79: Radar shadow — same PID as orchestrator we started
+        $orchPid = $startedPids["orchestrator"]
+        if ($orchPid -gt 0) {
             $orchAlive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$orchPid" -ErrorAction SilentlyContinue)
             if ($orchAlive) {
                 Write-Host "  PASS [radar] SHADOW (PID=$orchPid via orchestrator) RUNNING"
@@ -319,7 +360,8 @@ function Full-Restart {
                 $ok = $false
             }
         } else {
-            Write-Warning "  WARN [radar] orchestrator not in manifest"
+            Write-Warning "  WARN [radar] orchestrator start PID missing"
+            $ok = $false
         }
     } else {
         Write-Warning "  manifest not found — processes may still be starting"

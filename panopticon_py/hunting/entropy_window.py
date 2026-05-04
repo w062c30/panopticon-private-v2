@@ -32,10 +32,10 @@ class EntropyWindow:
     until ``window_sec`` of healthy consecutive samples (each gap <= max_internal_gap_sec).
     """
 
-    window_sec: float = 5.0   # 5s window: 12 samples ≈ fills in 5-15s at 1-3 trades/s (T1/LIVE markets)
+    window_sec: float = 5.0   # 5s window; min H samples from HUNT_MIN_HISTORY_FOR_Z (default 5, D159)
     gap_flush_sec: float = float("inf")  # disable auto-flush; only mark_reconnect() flushes
     max_internal_gap_sec: float = float("inf")
-    min_history_for_z: int = 12
+    min_history_for_z: int = 5
 
     _events: Deque[tuple[float, float, float]] = field(default_factory=deque)
     _last_recv_mono: float | None = None
@@ -48,10 +48,10 @@ class EntropyWindow:
         self.window_sec = float(os.getenv("HUNT_ENTROPY_WINDOW_SEC", str(self.window_sec)))
         self.gap_flush_sec = float(os.getenv("HUNT_ENTROPY_GAP_FLUSH_SEC", str(self.gap_flush_sec)))
         self.max_internal_gap_sec = float(os.getenv("HUNT_ENTROPY_MAX_INTERNAL_GAP_SEC", str(self.max_internal_gap_sec)))
-        # Shadow mode: allow env override, else fall back to class default (12)
-        shadow_override = os.getenv("HUNT_MIN_HISTORY_FOR_Z")
-        if shadow_override is not None:
-            self.min_history_for_z = int(shadow_override)
+        # D159: single source — config.get_min_history_for_z() (HUNT_MIN_HISTORY_FOR_Z, default 5)
+        from config import get_min_history_for_z
+
+        self.min_history_for_z = get_min_history_for_z()
 
     def refresh_subscription(self, reason: str = "sub_refresh") -> None:
         """
