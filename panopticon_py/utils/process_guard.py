@@ -35,7 +35,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Library identity for versions_ref.json (shared by all acquire_singleton callers).
-PROCESS_GUARD_VERSION = "v1.1.0-D143"
+PROCESS_GUARD_VERSION = "v1.1.1-D162"
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _RUN_DIR = _PROJECT_ROOT / "run"
@@ -239,12 +239,19 @@ def acquire_singleton(name: str, version: str = "v0.0.0-D0") -> None:
             old_pid = None
 
         if old_pid and old_pid != current_pid and _is_alive(old_pid):
-            logger.warning(
-                "[guard] %s: stale instance PID=%d found. Killing before start.",
-                name, old_pid
-            )
             killed = _kill(old_pid)
-            if not killed:
+            if killed:
+                logger.info(
+                    "[guard] %s: stale instance PID=%d found and killed (confirmed dead) — normal restart",
+                    name,
+                    old_pid,
+                )
+            else:
+                logger.warning(
+                    "[guard] %s: stale instance PID=%d kill result uncertain — check manually",
+                    name,
+                    old_pid,
+                )
                 logger.error(
                     "[guard] CRITICAL: Could not kill stale %s PID=%d. "
                     "Duplicate may still be running. Proceeding anyway.",

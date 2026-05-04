@@ -410,6 +410,38 @@ CREATE INDEX IF NOT EXISTS idx_arb_stats_ts ON arb_stats(ts_utc DESC);
 """
 
 
+def _pragma_with_retry(
+    conn: sqlite3.Connection,
+    pragma_sql: str,
+    *,
+    max_retries: int = 5,
+    base_delay: float = 0.05,
+) -> None:
+    """
+    Execute a PRAGMA with exponential backoff on transient database lock.
+
+    Used in ShadowDB.__init__ so secondary processes (e.g. analysis_worker) survive
+    startup contention when orchestrator holds the DB.
+    """
+    for attempt in range(max_retries):
+        try:
+            conn.execute(pragma_sql)
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            delay = base_delay * (2**attempt)
+            logger.warning(
+                "[DB_INIT] PRAGMA locked (attempt %d/%d): %s — retrying in %.0fms",
+                attempt + 1,
+                max_retries,
+                pragma_sql.strip(),
+                delay * 1000,
+            )
+            time.sleep(delay)
+    conn.execute(pragma_sql)
+
+
 class ShadowDB:
     # ── Batch write buffers (reduce SSD writes) ────────────────────────────────
     # Each buffer holds rows as dicts; flushed via executemany + single commit.
@@ -424,17 +456,18 @@ class ShadowDB:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path.as_posix(), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row   # D113: enables row["column"] access — fully backward compatible
-        self.conn.execute("PRAGMA foreign_keys = ON;")
+        # D162: PRAGMA retry — analysis_worker / multi-process startup race
+        _pragma_with_retry(self.conn, "PRAGMA foreign_keys = ON;")
         # WAL mode: readers don't block writers, writers don't block readers.
         # Critical for running Radar + OFI + Graph + Discovery all on same DB.
-        self.conn.execute("PRAGMA journal_mode=WAL;")
+        _pragma_with_retry(self.conn, "PRAGMA journal_mode=WAL;")
         # Wait up to 30s for locks instead of immediately failing.
         # Allows Hyperliquid OFI engine and Polymarket radar to coexist with
         # start_shadow_hydration.py's atomic_execution_and_reserve BEGIN IMMEDIATE.
-        self.conn.execute("PRAGMA busy_timeout=30000;")
+        _pragma_with_retry(self.conn, "PRAGMA busy_timeout=30000;")
         # [Q6 Ruling] NORMAL synchronous = good balance of safety and performance.
         # WAL mode already handles most durability concerns.
-        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        _pragma_with_retry(self.conn, "PRAGMA synchronous=NORMAL;")
         # Advisory lock table for preventing dual-orchestrator crashes.
         self.conn.execute(
             """
@@ -3223,9 +3256,22 @@ class ShadowDB:
         """
         trade_size = float(row.get("trade_size") or 0)
         if trade_size <= 0:
+            logger.debug(
+                "[KYLE][GUARD_A] discarded: asset=%s size=%.4f (non-positive size)",
+                row.get("asset_id", "?"),
+                trade_size,
+            )
             return  # guard A
         lambda_obs = float(row.get("lambda_obs") or 0)
         if lambda_obs <= 0:
+            logger.debug(
+                "[KYLE][GUARD_B] discarded: asset=%s lambda=%.8f delta_p=%.6f size=%.2f "
+                "(zero/negative lambda — check Kyle calculation in run_radar.py)",
+                row.get("asset_id", "?"),
+                lambda_obs,
+                float(row.get("delta_price") or 0),
+                trade_size,
+            )
             return  # guard B
 
         self._kyle_buffer.append(row)

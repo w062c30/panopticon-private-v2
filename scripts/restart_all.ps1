@@ -1,5 +1,5 @@
 # Panopticon - Singleton-Enforced Process Restart with Auto-Recovery
-# Version: v1.0.14-D159
+# Version: v1.0.15-D162
 # Run from: d:\Antigravity\Panopticon
 # MANDATORY: Use this script for ALL restarts.
 # OPTIONAL: Pass "-Continuous" for continuous monitoring with auto-recovery.
@@ -271,7 +271,8 @@ function Full-Restart {
     
     $orch = Start-Orchestrator
     Write-Host ("  Orchestrator started PID=" + $orch.Id)
-    Start-Sleep -Seconds 2
+    # D162: ≥3s before analysis_worker so orchestrator ShadowDB bootstrap can release locks
+    Start-Sleep -Seconds 3
 
     $analysisWorker = Start-AnalysisWorker
     Write-Host ("  AnalysisWorker started PID=" + $analysisWorker.Id)
