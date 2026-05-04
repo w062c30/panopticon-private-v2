@@ -1,4 +1,13 @@
-"""Rolling Shannon entropy with stale-buffer flush and trigger lock (WS gap / reconnect)."""
+"""Rolling Shannon entropy with stale-buffer flush and trigger lock (WS gap / reconnect).
+
+D164-1 (z_ready / gate diagnostics, radar ``run_radar.py``):
+``zscore_of_latest_delta`` returns (None, None) when ``_trigger_locked`` is True
+(reconnect / gap flush), or when ``len(_h_history) < min_history_for_z``, or when
+the delta tail has fewer than two points. Radar's ``history_not_ready`` counter
+increments when z is None but the window is not locked (typically short H history).
+``record_H_sample`` is only called after ``push`` + ``current_entropy()`` succeeds
+(needs >=2 events in the rolling deque and not locked).
+"""
 
 from __future__ import annotations
 

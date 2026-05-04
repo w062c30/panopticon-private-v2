@@ -20,6 +20,8 @@ router = APIRouter(prefix="/api", tags=["performance"])
 
 # D103-FE: Module-level constant, read once at process start
 _DEBUG_STATS_ENABLED = os.getenv("DEBUG_STATS_ENABLED", "false").lower() == "true"
+# D164: extend GET /api/entropy/status when backend started with LOG_LEVEL=DEBUG
+_LOG_LEVEL_DEBUG = os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG"
 
 
 @router.get("/performance", response_model=PerformanceResponse)
@@ -88,21 +90,79 @@ def get_t5_coverage() -> T5CoverageResponse:
 import json as _json
 from pathlib import Path as _Path
 
+def _entropy_status_debug_detail_enabled() -> bool:
+    return _DEBUG_STATS_ENABLED or _LOG_LEVEL_DEBUG
+
+
 @router.get("/entropy/status")
 def get_entropy_status() -> dict:
     """
-    D157-2: Read entropy snapshot written by orchestrator every 5s (data/entropy_status.json).
-    Replaces D153-4 broken cross-process import with file-based IPC.
-    Returns empty tokens dict if file not found or stale.
+    D157-2: Read entropy snapshot written by **radar** every 5s (``data/entropy_status.json``).
+    File-based IPC — backend does not import radar's EntropyWindow dict.
+
+    D164: When ``DEBUG_STATS_ENABLED=true`` or ``LOG_LEVEL=DEBUG`` at backend startup,
+    merge ``rvf_latest`` (last ``rvf_metrics_snapshots`` row) and effective entropy env knobs.
     """
     snap_path = _Path(os.getenv("ENTROPY_STATUS_PATH", "data/entropy_status.json"))
     try:
         if not snap_path.exists():
-            return {"error": "not_ready", "tokens": {}, "total": 0, "z_ready_count": 0}
-        raw = _json.loads(snap_path.read_text(encoding="utf-8"))
-        return raw
+            base: dict = {"error": "not_ready", "tokens": {}, "total": 0, "z_ready_count": 0}
+        else:
+            raw = _json.loads(snap_path.read_text(encoding="utf-8"))
+            base = raw if isinstance(raw, dict) else {"error": "invalid_json", "detail": type(raw).__name__}
     except Exception as exc:
-        return {"error": str(exc), "tokens": {}, "total": 0, "z_ready_count": 0}
+        base = {"error": str(exc), "tokens": {}, "total": 0, "z_ready_count": 0}
+
+    if not _entropy_status_debug_detail_enabled():
+        return base
+
+    from config import get_min_history_for_z, get_z_threshold
+
+    extra: dict = {
+        "d164_debug": True,
+        "min_history_for_z_effective": get_min_history_for_z(),
+        "min_entropy_z_threshold_effective": get_z_threshold(),
+        "hunt_min_history_env": os.getenv("HUNT_MIN_HISTORY_FOR_Z"),
+        "hunt_min_entropy_z_env": os.getenv("HUNT_MIN_ENTROPY_Z_THRESHOLD"),
+    }
+    db: ShadowDB | None = None
+    try:
+        db = ShadowDB()
+        db.bootstrap()
+        row = db.conn.execute(
+            """
+            SELECT ts_utc,
+                   active_ew AS active_entropy_windows,
+                   mean_z_t1, mean_z_t2,
+                   gate_eval_60s, gate_pass_60s, gate_abort_60s
+            FROM rvf_metrics_snapshots
+            ORDER BY ts_utc DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row:
+            rd = dict(row)
+            ge = int(rd.get("gate_eval_60s") or 0)
+            gp = int(rd.get("gate_pass_60s") or 0)
+            if gp > 0:
+                zst = "OK"
+            elif ge <= 0:
+                zst = "NO_EVAL"
+            else:
+                zst = "BLOCKED"
+            rd["z_ready_status"] = zst
+            extra["rvf_latest"] = rd
+        else:
+            extra["rvf_latest"] = None
+    except Exception as exc:
+        extra["rvf_latest_error"] = str(exc)
+    finally:
+        if db is not None:
+            db.close()
+
+    if isinstance(base, dict):
+        return {**base, **extra}
+    return {**extra, "snapshot_body": base}
 
 
 @router.get("/async-writer-health")

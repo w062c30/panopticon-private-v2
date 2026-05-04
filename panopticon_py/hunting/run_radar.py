@@ -3292,6 +3292,10 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 closed = close_stale_orders(db)
                 if closed > 0:
                     logger.info("[D98][ORDER_CLEANUP] closed %d stale orders", closed)
+                # D164-1: D75_ENTROPY_GATE lives in RADAR (L1 WS), not orchestrator — grep run/radar.err.log.
+                # Decision tree: history_not_ready↑ & z_ready=0 → short _h_history vs min_history_for_z (or z tail <2).
+                # z_ready>0 & z_below_threshold↑ → threshold strict vs live z distribution.
+                # eval=0 & all zero → no last_trade_price entropy eval path this minute.
                 # P3 DIAG: log actual z-score even when no entropy fire
                 # D75: minute-level z-score distribution stats
                 z_min = min(_entropy_z_samples) if _entropy_z_samples else None
@@ -3479,7 +3483,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.59-D160"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)
+    PROCESS_VERSION = "v1.1.60-D164"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)
