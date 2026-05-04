@@ -192,33 +192,41 @@ async def _btc5m_resolve_loop(db: ShadowDB) -> None:
 
 def _write_entropy_snapshot(entropy_windows: dict) -> None:
     """
-    D157-1: Write per-token EntropyWindow state to data/entropy_status.json.
+    D157-1: Write entropy window aggregate state to data/entropy_status.json.
     Called every 5s from _metrics_json_loop. Exceptions must be silent.
-    Schema: {"updated_ts": str, "total": int, "z_ready_count": int, "tokens": {token_id: {...}}}
+
+    D165-4: Per-token tokens dict is included so that GET /api/entropy/status
+    (backend, DEBUG mode) can surface per-token trigger_locked / h_hist detail
+    without importing the orchestrator process's EntropyWindow instances.
+    The JSON file is cross-process IPC via file system.
     """
     try:
         import json as _json
         snap_path = Path(os.getenv("ENTROPY_STATUS_PATH", "data/entropy_status.json"))
         snap_path.parent.mkdir(parents=True, exist_ok=True)
         tokens: dict = {}
+        z_ready_count = 0
+        locked_count = 0
         for token_id, ew in entropy_windows.items():
-            s = ew.state_dict()
-            need = ew.min_history_for_z
-            h = s["h_hist"]
+            is_ready = (not ew._trigger_locked) and (len(ew._h_history) >= ew.min_history_for_z)
             tokens[token_id] = {
-                "h_hist": h,
-                "need": need,
-                "pct": round(min(1.0, h / need) * 100, 1) if need > 0 else 100.0,
-                "trigger_locked": s["trigger_locked"],
-                "events": s["events"],
-                "healthy_span": round(s["healthy_span"], 2),
-                "z_ready": (not s["trigger_locked"]) and (h >= need),
+                "h_hist": len(ew._h_history),
+                "need": ew.min_history_for_z,
+                "trigger_locked": ew._trigger_locked,
+                "events": len(ew._events),
+                "healthy_span": round(ew._healthy_span, 2),
+                "z_ready": is_ready,
             }
+            if is_ready:
+                z_ready_count += 1
+            if ew._trigger_locked:
+                locked_count += 1
         payload = {
             "updated_ts": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%S.") + f"{(datetime.now(timezone.utc).microsecond // 1000):03d}Z",
             "total": len(tokens),
-            "z_ready_count": sum(1 for t in tokens.values() if t["z_ready"]),
+            "z_ready_count": z_ready_count,
+            "locked_count": locked_count,
             "tokens": tokens,
         }
         snap_path.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -2346,8 +2354,8 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
     _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
     _entropy_eval_total = 0
     _entropy_locked_count = 0
-    _entropy_history_not_ready_count = 0
-    _entropy_z_ready_count = 0
+    _entropy_hist_not_ready_count = 0
+    _entropy_z_eval_ok_count = 0
     _entropy_z_below_threshold_count = 0
     _entropy_z_samples = []
 
@@ -2355,7 +2363,7 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
     async def _on_message(msg: dict | list) -> None:
         nonlocal _msg_count
         nonlocal _evt_count, _entropy_eval_total, _entropy_locked_count
-        nonlocal _entropy_history_not_ready_count, _entropy_z_ready_count
+        nonlocal _entropy_hist_not_ready_count, _entropy_z_eval_ok_count
         nonlocal _entropy_z_below_threshold_count, _entropy_z_samples
 
         # P2 DIAG: WebSocket L1 counters — do NOT modify business logic
@@ -2822,9 +2830,9 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                     if state_diag.get("trigger_locked"):
                         _entropy_locked_count += 1
                     else:
-                        _entropy_history_not_ready_count += 1
+                        _entropy_hist_not_ready_count += 1
                 else:
-                    _entropy_z_ready_count += 1
+                    _entropy_z_eval_ok_count += 1
                     _entropy_z_samples.append(float(z_diag))
                     if z_diag < get_z_threshold():
                         _entropy_z_below_threshold_count += 1
@@ -3292,10 +3300,11 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 closed = close_stale_orders(db)
                 if closed > 0:
                     logger.info("[D98][ORDER_CLEANUP] closed %d stale orders", closed)
-                # D164-1: D75_ENTROPY_GATE lives in RADAR (L1 WS), not orchestrator — grep run/radar.err.log.
-                # Decision tree: history_not_ready↑ & z_ready=0 → short _h_history vs min_history_for_z (or z tail <2).
-                # z_ready>0 & z_below_threshold↑ → threshold strict vs live z distribution.
-                # eval=0 & all zero → no last_trade_price entropy eval path this minute.
+                # D165: D75_ENTROPY_GATE — renamed to disambiguate:
+                #   z_eval_ok = 60s counter of tokens whose zscore_of_latest_delta() returned finite (d, z)
+                #   z_ready in entropy_status.json = per-token flag (h_hist >= min_history_for_z, not locked)
+                #   hist_not_ready = z is None & not locked (short H history)
+                #   z_below_thr = z computed but above threshold (not a signal)
                 # P3 DIAG: log actual z-score even when no entropy fire
                 # D75: minute-level z-score distribution stats
                 z_min = min(_entropy_z_samples) if _entropy_z_samples else None
@@ -3310,18 +3319,18 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 # D83: D75_ENTROPY_GATE reverted to logger.info (log handler confirmed working)
                 logger.info(
                     "[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} "
-                    "gate_60s={eval:%d,locked:%d,history_not_ready:%d,z_ready:%d,z_below_threshold:%d,fired:%d} "
+                    "gate_60s={eval:%d,locked:%d,hist_not_ready:%d,z_eval_ok:%d,z_below_thr:%d,fired:%d} "
                     "z_dist_60s={min:%s,p50:%s,p90:%s,max:%s,threshold:%s}",
                     _evt_count["last_trade_price"], _evt_count["book"], _evt_count["price_change"], _evt_count["other"],
-                    _entropy_eval_total, _entropy_locked_count, _entropy_history_not_ready_count,
-                    _entropy_z_ready_count, _entropy_z_below_threshold_count, _ws_entropy_fire_count,
+                    _entropy_eval_total, _entropy_locked_count, _entropy_hist_not_ready_count,
+                    _entropy_z_eval_ok_count, _entropy_z_below_threshold_count, _ws_entropy_fire_count,
                     z_min_str, z_p50_str, z_p90_str, z_max_str, threshold_str,
                 )
                 _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
                 _entropy_eval_total = 0
                 _entropy_locked_count = 0
-                _entropy_history_not_ready_count = 0
-                _entropy_z_ready_count = 0
+                _entropy_hist_not_ready_count = 0
+                _entropy_z_eval_ok_count = 0
                 _entropy_z_below_threshold_count = 0
                 _entropy_z_samples = []
                 _last_ws_diag_log_ts = now
@@ -3483,7 +3492,7 @@ def main() -> int:
     )
     # D51: Singleton enforcement
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.60-D164"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics
+    PROCESS_VERSION = "v1.1.61-D165"   # ← AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal → proper ISO millisecond  # D151: canonical_event_url fix — groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block — preserve _h_history across heartbeats  # D156-1: refresh_subscription() — no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics  # D165: D75 naming — z_eval_ok / hist_not_ready / z_below_thr; HUNT_EW_UNLOCK_* env vars in entropy_window
     acquire_singleton("radar", PROCESS_VERSION)
     ap = argparse.ArgumentParser(description="Hunting entropy radar (shadow hits only)")
     ap.add_argument("--duration-sec", type=float, default=15.0)

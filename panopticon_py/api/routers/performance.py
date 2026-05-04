@@ -119,11 +119,13 @@ def get_entropy_status() -> dict:
     from config import get_min_history_for_z, get_z_threshold
 
     extra: dict = {
-        "d164_debug": True,
+        "d165_debug": True,  # D164: was d164_debug; D165: unified debug version tag
         "min_history_for_z_effective": get_min_history_for_z(),
         "min_entropy_z_threshold_effective": get_z_threshold(),
         "hunt_min_history_env": os.getenv("HUNT_MIN_HISTORY_FOR_Z"),
         "hunt_min_entropy_z_env": os.getenv("HUNT_MIN_ENTROPY_Z_THRESHOLD"),
+        "hunt_ew_unlock_event_count_env": os.getenv("HUNT_EW_UNLOCK_EVENT_COUNT"),
+        "hunt_ew_unlock_healthy_span_env": os.getenv("HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC"),
     }
     db: ShadowDB | None = None
     try:

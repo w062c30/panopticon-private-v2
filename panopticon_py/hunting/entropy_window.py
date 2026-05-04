@@ -7,6 +7,13 @@ the delta tail has fewer than two points. Radar's ``history_not_ready`` counter
 increments when z is None but the window is not locked (typically short H history).
 ``record_H_sample`` is only called after ``push`` + ``current_entropy()`` succeeds
 (needs >=2 events in the rolling deque and not locked).
+
+D165 (trigger lock unlock thresholds):
+``_trigger_locked`` is cleared when EITHER condition is met (tested after each push):
+  1. ``len(self._events) >= self._unlock_event_count``  (default 30; env HUNT_EW_UNLOCK_EVENT_COUNT)
+  2. ``self._healthy_span >= self._unlock_healthy_span_sec``  (default 5.0s; env HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC)
+Low-frequency T2 markets that receive <1 tick/sec may never reach 30 events in a 5s window;
+D165 adds env-driven overrides so that a 10-event / 3s-unlock is achievable.
 """
 
 from __future__ import annotations
@@ -61,6 +68,27 @@ class EntropyWindow:
         from config import get_min_history_for_z
 
         self.min_history_for_z = get_min_history_for_z()
+        # D165: unlock threshold controls (low-frequency T2 markets)
+        self._unlock_event_count: int = int(
+            os.getenv("HUNT_EW_UNLOCK_EVENT_COUNT", "30")
+        )
+        self._unlock_healthy_span_sec: float = float(
+            os.getenv("HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC", "5.0")
+        )
+        if self._unlock_event_count < 5:
+            raise ValueError(
+                f"HUNT_EW_UNLOCK_EVENT_COUNT={self._unlock_event_count} is too low (min=5). "
+                "Fewer than 5 ticks produces statistically meaningless entropy."
+            )
+        if self._unlock_event_count > 200:
+            _logger.warning(
+                "[EW] HUNT_EW_UNLOCK_EVENT_COUNT=%d is very high — low-frequency markets may never unlock",
+                self._unlock_event_count,
+            )
+        if self._unlock_healthy_span_sec < 1.0:
+            raise ValueError(
+                f"HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC={self._unlock_healthy_span_sec} is too low (min=1.0s)."
+            )
 
     def refresh_subscription(self, reason: str = "sub_refresh") -> None:
         """
@@ -123,10 +151,12 @@ class EntropyWindow:
         while self._events and self._events[0][0] < cutoff:
             self._events.popleft()
 
-        if self._trigger_locked and len(self._events) >= 30:
+        if self._trigger_locked and len(self._events) >= self._unlock_event_count:
             self._trigger_locked = False
-        if self._trigger_locked and self._healthy_span >= 5.0:
+            _logger.debug("[EW][D165] unlocked via event_count=%d", len(self._events))
+        if self._trigger_locked and self._healthy_span >= self._unlock_healthy_span_sec:
             self._trigger_locked = False
+            _logger.debug("[EW][D165] unlocked via healthy_span=%.1f", self._healthy_span)
         return flushed
 
     def current_entropy(self) -> float | None:
