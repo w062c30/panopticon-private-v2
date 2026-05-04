@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import logging
 import math
+import sqlite3
 
 logger = logging.getLogger(__name__)
 import os
@@ -26,6 +27,28 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
+
+# D160-2: async-safe SQLite lock retry for use inside async functions
+_DB_LOCK_MAX_RETRIES = 3
+_DB_LOCK_RETRY_SLEEP_S = 0.05
+
+
+async def _db_execute_async_retry(
+    conn, sql: str, params=(), max_retries: int = _DB_LOCK_MAX_RETRIES,
+    sleep_s: float = _DB_LOCK_RETRY_SLEEP_S,
+):
+    """
+    D160-2: Async-safe bounded retry for SQLite OperationalError ``database is locked``.
+    Uses ``await asyncio.sleep()`` — safe inside async functions (does NOT block event loop).
+    Re-raises immediately for any non-lock OperationalError.
+    """
+    for attempt in range(max_retries):
+        try:
+            return conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt >= max_retries - 1:
+                raise
+            await asyncio.sleep(sleep_s * (attempt + 1))
 
 from panopticon_py.db import ShadowDB
 from panopticon_py.execution.clob_client import submit_fok_order
@@ -95,6 +118,28 @@ def _insider_bypass_tiers_effective() -> frozenset[str]:
         return frozenset()
     return frozenset(x.strip() for x in raw.split(",") if x.strip())
 
+
+# D160-3: Per-mode insider score threshold
+# LIVE: uses INSIDER_SCORE_THRESHOLD (0.55, production rigor).
+# PAPER: uses PAPER_INSIDER_SCORE_THRESHOLD (default 0.30) to allow more signals through.
+# Enforced floor: PAPER threshold must be >= 0.15 to avoid noise flooding.
+_PAPER_RAW = float(os.getenv("PAPER_INSIDER_SCORE_THRESHOLD", "0.30"))
+if _PAPER_RAW < 0.15:
+    raise ValueError(
+        f"PAPER_INSIDER_SCORE_THRESHOLD must be >= 0.15, got {_PAPER_RAW}"
+    )
+
+
+def _effective_insider_threshold() -> float:
+    """
+    D160-3: Returns the active INSIDER_SCORE_THRESHOLD for this run mode.
+    - LIVE_TRADING=true  → INSIDER_SCORE_THRESHOLD (default 0.55)
+    - PAPER / shadow     → PAPER_INSIDER_SCORE_THRESHOLD (default 0.30, floor 0.15)
+    """
+    if _live_trading_env_on():
+        return float(os.getenv("INSIDER_SCORE_THRESHOLD", "0.55"))
+    return _PAPER_RAW
+
 # ---------------------------------------------------------------------------
 # Shadow Mode Parameters (Phase 2 data collection acceleration)
 # ---------------------------------------------------------------------------
@@ -146,6 +191,8 @@ def _diag_print_ev_config() -> None:
         "MIN_ENTROPY_Z_THRESHOLD": MIN_ENTROPY_Z_THRESHOLD,
         "MIN_CONSENSUS_SOURCES": MIN_CONSENSUS_SOURCES,
         "INSIDER_SCORE_THRESHOLD": INSIDER_SCORE_THRESHOLD,
+        "INSIDER_SCORE_EFFECTIVE": _effective_insider_threshold(),  # paper vs live mode
+        "PAPER_INSIDER_SCORE_THRESHOLD": _PAPER_RAW,
         # Effective signal params (shadow vs production)
         "kyle_lambda": _SHADOW_KYLE_LAMBDA if not live_trading else "PRODUCTION_CALIBRATED",
         "slippage_tolerance": _SHADOW_SLIPPAGE_TOLERANCE if not live_trading else 0.009,
@@ -319,26 +366,25 @@ def _notify_price_fetch(source: str, spread: float | None) -> None:
         mc.on_price_fetch_result(source, spread)
 
 
-def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
+async def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
     """
-    Return the most recent insider score for a wallet, or the entity trust score
-    as a fallback from discovered_entities.
-
+    D160-2: Async-safe version of insider score lookup.
     Query order (fastest first):
     1. insider_score_snapshots — real-time scoring snapshots
     2. discovered_entities.insider_score — D37 whale scanner injection
     3. tracked_wallets + discovered_entities.trust_score — legacy mapping
     """
-    wallet = wallet.lower()
-    row = db.conn.execute(
+    wallet_lc = wallet.lower()
+    row = (await _db_execute_async_retry(
+        db.conn,
         """
         SELECT score FROM insider_score_snapshots
         WHERE address = ?
         ORDER BY ingest_ts_utc DESC
         LIMIT 1
         """,
-        (wallet,),
-    ).fetchone()
+        (wallet_lc,),
+    )).fetchone()
     if row is not None:
         return float(row[0])
 
@@ -346,22 +392,24 @@ def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
     # D101: Wrapped in try/except to guard against pre-migration DB state.
     # Filter score > 0.0 to skip DEFAULT 0.0 entries (not scored entities).
     try:
-        row_de = db.conn.execute(
+        row_de = (await _db_execute_async_retry(
+            db.conn,
             """
             SELECT insider_score FROM discovered_entities
             WHERE entity_id = ? COLLATE NOCASE
             LIMIT 1
             """,
-            (wallet,),
-        ).fetchone()
+            (wallet_lc,),
+        )).fetchone()
         if row_de is not None and row_de[0] is not None:
             score = float(row_de[0])
-            if score > 0.0:  # 0.0 = DEFAULT, not yet scored — skip
+            if score > 0.0:
                 return score
     except Exception as exc:
         logger.debug("[SE][D37_FALLBACK_ERR] %s", exc)
 
-    row2 = db.conn.execute(
+    row2 = (await _db_execute_async_retry(
+        db.conn,
         """
         SELECT e.trust_score FROM tracked_wallets tw
         JOIN discovered_entities e ON e.entity_id = tw.entity_id
@@ -369,10 +417,10 @@ def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
         ORDER BY tw.last_updated_at DESC
         LIMIT 1
         """,
-        (wallet,),
-    ).fetchone()
+        (wallet_lc,),
+    )).fetchone()
     if row2 is not None:
-        return float(row2[0]) / 100.0  # trust_score is 0-100, normalize to 0-1
+        return float(row2[0]) / 100.0
 
     return None
 
@@ -412,19 +460,15 @@ def _build_friction_snapshot() -> FrictionSnapshot:
         )
 
 
-def _collect_insider_sources(
+async def _collect_insider_sources(
     market_id: str,
     lookback_sec: int,
     db: ShadowDB,
     series_id: str = "",
 ) -> list[float]:
     """
-    Collect insider scores from wallets that have recent observations for the given market,
-    filtered by INSIDER_SCORE_THRESHOLD.
-
-    D74: For T1 rolling-window series (e.g. BTC 5m), aggregate across ALL windows
-    in the series by resolving market_id -> series_id -> all series_members.
-    BTC 5m slug changes every 5min but the underlying event/series is the same.
+    D160-2/3: Async-safe collection with ``_effective_insider_threshold()`` per run mode.
+    D74: For T1 rolling-window series, aggregate across ALL windows in the series.
     """
     try:
         from datetime import timedelta
@@ -434,42 +478,38 @@ def _collect_insider_sources(
     except Exception:
         cutoff_ts = _utc()
 
-    # D74: Resolve series_id from market_id if not provided.
-    # For T1 BTC 5m markets, market_id is the condition_id (0x... or numeric).
-    # We need to find the series and aggregate across all windows.
     resolved_series_id = series_id
     if not resolved_series_id:
-        row = db.conn.execute(
+        row = (await _db_execute_async_retry(
+            db.conn,
             "SELECT series_id FROM series_members WHERE token_id=? LIMIT 1",
             (market_id,),
-        ).fetchone()
+        )).fetchone()
         if row:
-            resolved_series_id = row[0]  # tuple index, not dict key
+            resolved_series_id = row[0]
 
-    # D74: Check if this is a T1 rolling-window market.
-    # If so, collect wallets from ALL series members, not just the current window.
     use_series_agg = False
     if resolved_series_id:
-        series_row = db.conn.execute(
+        series_row = (await _db_execute_async_retry(
+            db.conn,
             "SELECT series_type FROM event_series WHERE series_id=? LIMIT 1",
             (resolved_series_id,),
-        ).fetchone()
+        )).fetchone()
         if series_row and series_row[0] == "ROLLING_WINDOW":
             use_series_agg = True
 
     if use_series_agg:
-        # D74: Aggregate across all series members for rolling-window T1 markets.
-        # BTC 5m generates a new window every 5min; we want consensus across the
-        # entire series, not just the current window.
         all_token_ids: list[str] = [
-            r[0] for r in db.conn.execute(
+            r[0] for r in (await _db_execute_async_retry(
+                db.conn,
                 "SELECT token_id FROM series_members WHERE series_id=?",
                 (resolved_series_id,),
-            ).fetchall()
+            )).fetchall()
         ]
         if len(all_token_ids) > 1:
             placeholders = ",".join(["?"] * len(all_token_ids))
-            rows = db.conn.execute(
+            rows = (await _db_execute_async_retry(
+                db.conn,
                 f"""
                 SELECT DISTINCT wo.address
                 FROM wallet_observations wo
@@ -480,14 +520,14 @@ def _collect_insider_sources(
                 LIMIT 100
                 """,
                 (*all_token_ids, cutoff_ts),
-            ).fetchall()
+            )).fetchall()
             logger.info(
                 "[D74][SERIES_AGG] series=%s members=%d collected=%d",
                 resolved_series_id, len(all_token_ids), len(rows),
             )
         else:
-            # Fallback to single market if series has only 1 member
-            rows = db.conn.execute(
+            rows = (await _db_execute_async_retry(
+                db.conn,
                 """
                 SELECT DISTINCT wo.address
                 FROM wallet_observations wo
@@ -498,9 +538,10 @@ def _collect_insider_sources(
                 LIMIT 100
                 """,
                 (market_id, cutoff_ts),
-            ).fetchall()
+            )).fetchall()
     else:
-        rows = db.conn.execute(
+        rows = (await _db_execute_async_retry(
+            db.conn,
             """
             SELECT DISTINCT wo.address
             FROM wallet_observations wo
@@ -511,34 +552,30 @@ def _collect_insider_sources(
             LIMIT 100
             """,
             (market_id, cutoff_ts),
-        ).fetchall()
+        )).fetchall()
 
-    # D73: Source breakdown — track snapshot hits vs discovered_entities fallback hits
     snapshot_hits = 0
     fallback_hits = 0
-    wallet_lower = None
 
     sources: list[float] = []
+    threshold = _effective_insider_threshold()
     for (wallet,) in rows:
         wallet_lower = wallet.lower()
-        score = _get_insider_score(wallet_lower, db)
+        score = await _get_insider_score(wallet_lower, db)
 
-        # D73: Determine which path returned the score
-        # Query snapshot table to check if score came from insider_score_snapshots
-        snapshot_row = db.conn.execute(
+        snapshot_row = (await _db_execute_async_retry(
+            db.conn,
             "SELECT 1 FROM insider_score_snapshots WHERE address=? AND score>=? LIMIT 1",
-            (wallet_lower, INSIDER_SCORE_THRESHOLD),
-        ).fetchone()
+            (wallet_lower, threshold),
+        )).fetchone()
 
-        if snapshot_row is not None and score is not None and score >= INSIDER_SCORE_THRESHOLD:
+        if snapshot_row is not None and score is not None and score >= threshold:
             snapshot_hits += 1
             sources.append(score)
-        elif score is not None and score >= INSIDER_SCORE_THRESHOLD:
-            # Score came from discovered_entities fallback (whale scanner)
+        elif score is not None and score >= threshold:
             fallback_hits += 1
             sources.append(score)
 
-    # D73: Log source breakdown for diagnostic verification
     logger.info(
         "[D73_SOURCE_BREAKDOWN] market=%s series=%s snapshot_hits=%d fallback_hits=%d final=%d",
         str(market_id)[:20] if market_id else "None",
@@ -640,7 +677,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         logging.info("[SE][OFI] ofi=%.3f market=%s", event.ofi_shock_value, market_id)
 
     # 4. Collect insider sources
-    sources = _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
+    sources = await _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
 
     # D96-NEW-1c: Grace period — pre-fire / on-fire poll may still be writing wallet_observations
     if len(sources) < MIN_CONSENSUS_SOURCES:
@@ -651,7 +688,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         while elapsed < GRACE_PERIOD_SEC:
             await asyncio.sleep(RETRY_INTERVAL_SEC)
             elapsed += RETRY_INTERVAL_SEC
-            sources = _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
+            sources = await _collect_insider_sources(market_id, ENTROPY_LOOKBACK_SEC, db, event.series_id)
             logging.debug(
                 "[SE][GRACE] market=%s elapsed=%.1fs sources=%d",
                 market_id, elapsed, len(sources)
@@ -996,9 +1033,10 @@ def main() -> int:
     db.bootstrap()
 
     logging.info(
-        "Signal engine starting — zero-latency mode min_consensus=%d insider_threshold=%.2f",
+        "Signal engine starting — zero-latency mode min_consensus=%d insider_threshold=%.2f (mode=%s)",
         MIN_CONSENSUS_SOURCES,
-        INSIDER_SCORE_THRESHOLD,
+        _effective_insider_threshold(),
+        "LIVE" if _live_trading_env_on() else "PAPER",
     )
 
     queue: asyncio.Queue[SignalEvent] = asyncio.Queue()
