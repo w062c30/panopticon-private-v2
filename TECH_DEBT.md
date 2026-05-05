@@ -1,6 +1,6 @@
 # TECH_DEBT — Panopticon Technical Debt & Decision Records
 
-> Last updated: D168 (2026-05-05)
+> Last updated: D169 (2026-05-06)
 > Source: https://github.com/w062c30/panopticon-private-v2
 
 ---
@@ -75,8 +75,23 @@
 ### Debt-6: `D75_ENTROPY_GATE` observability gap (deferred to D169)
 **Files**: `panopticon_py/hunting/run_radar.py`, logging pipeline (`run/orchestrator.log`)
 **Problem**: Expected `D75_ENTROPY_GATE` diagnostic tag is intermittently missing from runtime logs during entropy gate investigations, reducing diagnosability of NQ-4 path.
-**Status (D168 close)**: **ACTIVE / DEFERRED** — architect ruling keeps D168 focused on DB write-path stabilization; observability gap moved to D169 backlog.
+**Status (D169 close)**: **ACTIVE / DEFERRED** — carried into D170 backlog.
 **Non-blocking**: Does not block D168 infrastructure close criteria after gate revision.
+
+### Debt-7: `safe_ts_to_seconds()` assert hardening pending post-soak probe
+**Files**: `panopticon_py/hunting/data_api_client.py`, `tests/test_d169_safe_ts.py`
+**Problem**: Heuristic is validated and unit-tested, but production hard-assert should only be enabled after first successful extended API probe cycle.
+**Status (D169 close)**: **ACTIVE / D170 BACKLOG (B-1)**.
+
+### Debt-8: Alchemy fallback CU accounting not yet automated
+**Files**: `panopticon_py/hunting/pol_monitor.py`, `run/orchestrator.err.log`
+**Problem**: `eth_getLogs` fallback count/CU projection still manual log-based; no summarized metric endpoint yet.
+**Status (D169 close)**: **ACTIVE / D170 BACKLOG (B-3)**.
+
+### Debt-9: Version bump pre-declaration policy enforcement
+**Files**: planning docs + process workflow
+**Problem**: Multi-feature sprint caused orchestrator version to advance to `v1.4.0-D169`; accepted by architect, but forward policy requires one bump target declared per PR/task.
+**Status (D169 close)**: **ACTIVE / D170 BACKLOG (B-4)**.
 
 ---
 
@@ -136,5 +151,16 @@
 - **Observed improvement**: `analysis_worker.err.log` lock count reduced from `109` to `9` in post-fix soak snapshots.
 - **Implementation note**: Added lock-only retry wrapper in `AsyncDBWriter` dispatch path (`50/200/500/1000/2000ms`) while preserving non-lock failure visibility.
 - **Follow-up**: D75 entropy observability remains as D169 backlog (Debt-6).
+
+### DR-D169-a: D169 closed under architect-approved gate + AQ-6 Option B
+- **Date**: 2026-05-06
+- **Decision**: D169 closes with `PolygonListener` running as orchestrator asyncio task (AQ-6 Option B). Exit gate accepted with strong P2-T2/P2-T3 evidence and post-close validations.
+- **Validation evidence**:
+  - `wallet_watchlist` reached 246 entries.
+  - Profile cache hit rate warmed from 85% to 93%.
+  - `safe_ts_to_seconds()` verification documented + tests passing.
+  - `polygon_sync` checkpoint advanced over 60s: `86442613 -> 86442649`.
+  - Regression suite passed: `23 passed`.
+- **Version note**: orchestrator `v1.4.0-D169` accepted as architect exception; D170 onward follows stricter pre-declared R-4 bump workflow.
 
 ---

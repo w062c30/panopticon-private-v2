@@ -50,8 +50,8 @@ The doc uses "PROC-1 (WS Hub)", "PROC-3 (Wallet Engine)", "PROC-4 (Signal Engine
 |---|---|---|---|---|
 | **D167** | Phase 0 + Q1 | F5 dry-run + F6 diagnostic + F9 entropy gate tuning + manifest version drift | 3 days | EXECUTABLE NOW |
 | **D168** | Phase 1 | `DBWriterQueue` in `db.py` + analysis_worker retry + `ORDER_RECON` consolidation | 3–4 days | SHIPPED |
-| **D169** | Phase 2 | `PolygonListener` (Alchemy WSS + HTTP fallback) + Wallet Engine basics | 5 days | EXECUTABLE |
-| **D170** | Phase 3 | L4 signal fusion (PATH-A + PATH-B merge) | 3 days | BLOCKED ON D169 |
+| **D169** | Phase 2 | `PolygonListener` (Alchemy WSS + HTTP fallback) + Wallet Engine basics | 5 days | SHIPPED |
+| **D170** | Phase 3 | L4 signal fusion (PATH-A + PATH-B merge) | 3 days | EXECUTABLE |
 | **D171** | Phase 4 | Insider score precision (fingerprint + transfer graph + entity linker) | 5–7 days | BLOCKED ON D170 + Architect (NQ-1) |
 
 ### Dependency graph
@@ -61,8 +61,8 @@ flowchart TD
   D166["D166 SHIPPED<br/>radar v1.1.62-D166<br/>orchestrator v1.1.46-D166"]:::done
   D167["D167: Phase 0 + Q1<br/>diagnose F5/F6/F9 + manifest"]:::ready
   D168["D168: Phase 1<br/>DBWriterQueue + F7/F8"]:::done
-  D169["D169: Phase 2<br/>PolygonListener"]:::ready
-  D170["D170: Phase 3<br/>L4 Signal Fusion"]:::blocked
+  D169["D169: Phase 2<br/>PolygonListener"]:::done
+  D170["D170: Phase 3<br/>L4 Signal Fusion"]:::ready
   D171["D171: Phase 4<br/>Insider Score precision"]:::blocked
 
   Architect["Architect (Sonnet 4.6)<br/>resolves AQ-6, NQ-1..NQ-6, IQ-4"]:::decision

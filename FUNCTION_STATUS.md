@@ -1,6 +1,6 @@
 # FUNCTION_STATUS — Function Runtime State Index
 
-> Last updated: D125 (2026-05-02)
+> Last updated: D169 (2026-05-06)
 > Rule (D124): Any function intentionally blocked in production must have an entry here.
 
 ---
@@ -62,6 +62,39 @@
 | `_run_analysis_loop()` | ✅ ACTIVE | Main analysis loop | D50 |
 
 ---
+
+## panopticon_py/hunting/pol_monitor.py
+
+| Function | Status | Reason | Since |
+|---------|--------|--------|-------|
+| `scan_pol_markets()` | ✅ ACTIVE | Periodic Gamma political market scan path | D101 |
+| `sync_scan_pol_markets()` | ✅ ACTIVE | Startup/bridge sync scan path | D104 |
+| `PolygonListener.run()` | ✅ ACTIVE | D169 Polygon WSS listener with HTTP fallback | D169 |
+| `PolygonListener._http_fallback()` | ⏰ BACKGROUND_ON_RECONNECT | Executes only on WSS reconnect to backfill gap blocks | D169 |
+
+---
+
+## panopticon_py/hunting/whale_scanner.py
+
+| Function | Status | Reason | Since |
+|---------|--------|--------|-------|
+| `run_whale_scanner()` | ✅ ACTIVE | Consumes transfer stream and updates watchlist pipeline | D169 |
+
+---
+
+## panopticon_py/hunting/discovery_loop.py
+
+| Function | Status | Reason | Since |
+|---------|--------|--------|-------|
+| `run_discovery_loop()` | ✅ ACTIVE | Background wallet discovery and enrichment loop | D169 |
+
+---
+
+## panopticon_py/hunting/data_api_client.py
+
+| Function | Status | Reason | Since |
+|---------|--------|--------|-------|
+| `safe_ts_to_seconds()` | ✅ ACTIVE | D169 timestamp normalization helper validated by tests | D169 |
 
 ## Adding New Entries
 
