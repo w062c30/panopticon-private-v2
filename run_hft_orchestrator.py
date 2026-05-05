@@ -43,6 +43,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -67,7 +68,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.46-D166"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff
+PROCESS_VERSION = "v1.1.47-D167"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -80,6 +81,48 @@ logger = logging.getLogger("orchestrator")
 
 def _utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# D167 Q1: Radar runs as asyncio task inside this process.
+# Write a fresh radar manifest entry at startup so /api/versions reflects live code.
+def _init_radar_manifest() -> None:
+    """
+    D167 Q1 fix: eagerly write radar entry to process_manifest.json at orchestrator
+    startup using the live PROCESS_VERSION from run_radar.py.
+
+    This replaces the stale v1.1.41-D119 entry that persisted from 2026-05-01
+    because no writer existed to update the radar key.
+    """
+    from panopticon_py.utils.process_guard import (
+        _read_manifest,
+        _write_manifest,
+        _read_expected_version,
+        _version_matches,
+    )
+    from panopticon_py.hunting import run_radar as _rr
+
+    radar_version = getattr(_rr, "PROCESS_VERSION", "unknown")
+    expected = _read_expected_version("radar") or "unknown"
+    now = _utc()
+
+    manifest = _read_manifest()
+    manifest["radar"] = {
+        "pid":               os.getpid(),
+        "version":           radar_version,
+        "expected":          expected,
+        "version_match":     _version_matches(radar_version, expected),
+        "host":              socket.gethostname(),
+        "status":           "initializing",
+        "start_time":        now,
+        "last_heartbeat_ts": now,
+    }
+    _write_manifest("radar", manifest["radar"])
+    logger.info(
+        "[ORCH][Q1_FIX] radar manifest written: version=%s expected=%s match=%s",
+        radar_version,
+        expected,
+        radar_version == expected,
+    )
 
 
 def _cleanup_lock_file() -> None:
@@ -379,6 +422,10 @@ def _check_live_trading_guard(db_path: str) -> ReadinessResult:
 async def main_async() -> int:
     global args
 
+    # D167 Q1: Write radar manifest entry before any async tasks start.
+    # Must be inside main_async (not module-level) because _utc() is defined in this module.
+    _init_radar_manifest()
+
     logger.info("=" * 60)
     logger.info("Panopticon HFT Orchestrator starting at %s", _utc())
     logger.info("PID: %s  DRY_RUN: %s", os.getpid(), os.getenv("PANOPTICON_DRY_RUN", "1"))
@@ -642,6 +689,7 @@ async def main_async() -> int:
     while True:
         await asyncio.sleep(5.0)
         update_heartbeat("orchestrator")
+        update_heartbeat("radar")  # D167 Q1: keep radar entry fresh (same PID as orchestrator)
 
         _health_persist_counter += 1
         if _health_persist_counter % 6 == 0:

@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import math
 import sqlite3
+import threading
 
 logger = logging.getLogger(__name__)
 import os
@@ -100,6 +102,60 @@ ENTROPY_LOOKBACK_SEC = int(os.getenv("ENTROPY_LOOKBACK_SEC", "1800"))  # D96: wa
 MIN_ENTROPY_Z_THRESHOLD = float(os.getenv("MIN_ENTROPY_Z_THRESHOLD", "-4.0"))
 DEFAULT_CAPITAL = 100.0
 KELLY_FRACTION = 0.25
+D167_TAG = "D167-dry-run-signal"
+
+# D167: one-shot dry-run trigger + z-distribution observability ring
+_DRY_RUN_SIGNAL = os.getenv("PANOPTICON_DRY_RUN_SIGNAL", "0").lower() in ("1", "true", "yes")
+_DRY_RUN_FIRED = False
+_DRY_RUN_SYNTHETIC_EMITTED = False
+_SIGNAL_FIRED_COUNT = 0
+_Z_OBSERVED_RING: list[tuple[str, float]] = []
+_Z_RING_MAX = 1000
+_Z_FLUSH_EVERY = 20
+_Z_LOCK = threading.Lock()
+
+
+def _flush_z_distribution(path: str = "data/z_distribution.json") -> None:
+    """Atomic write of recent z observations for D167 P0-T3 diagnostics."""
+    with _Z_LOCK:
+        payload = {
+            "updated_ts": utc_now_rfc3339_ms(),
+            "count": len(_Z_OBSERVED_RING),
+            "samples": list(_Z_OBSERVED_RING),
+        }
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def _record_z_and_maybe_flush(asset_short: str, z: float) -> None:
+    """Append z to ring and periodically flush to JSON."""
+    if z is None:
+        return
+    should_flush = False
+    with _Z_LOCK:
+        _Z_OBSERVED_RING.append((asset_short, float(z)))
+        if len(_Z_OBSERVED_RING) > _Z_RING_MAX:
+            del _Z_OBSERVED_RING[: len(_Z_OBSERVED_RING) - _Z_RING_MAX]
+        should_flush = (len(_Z_OBSERVED_RING) % _Z_FLUSH_EVERY) == 0
+    if should_flush:
+        _flush_z_distribution()
+
+
+def _maybe_dry_run_override(z: float) -> tuple[float, bool]:
+    """Return (effective_z, is_forced) for one-shot dry-run firing."""
+    global _DRY_RUN_FIRED
+    if _DRY_RUN_SIGNAL and not _DRY_RUN_FIRED:
+        _DRY_RUN_FIRED = True
+        forced = MIN_ENTROPY_Z_THRESHOLD - 1.0
+        logger.warning(
+            "[DRY_RUN_FIRE] forcing effective_z=%.3f (real_z=%.3f) one-shot consumed",
+            forced,
+            z,
+        )
+        return forced, True
+    return z, False
 
 # D108: Schema-sync constant — must match execution_records CHECK constraint
 _VALID_EXECUTION_SOURCES: frozenset[str] = frozenset({"radar", "ofi"})
@@ -556,6 +612,8 @@ async def _collect_insider_sources(
 
     sources: list[float] = []
     threshold = _effective_insider_threshold()
+    snapshot_hits = 0
+    fallback_hits = 0
     for (wallet,) in rows:
         wallet_lower = wallet.lower()
         score = await _get_insider_score(wallet_lower, db)
@@ -611,6 +669,11 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     Writes ONLY to execution_records — never touches wallet_market_positions or paper_trades.
     """
     z = event.z
+    asset_short = str(event.token_id or event.market_id or "")[:14]
+    _record_z_and_maybe_flush(asset_short, z)
+    effective_z, is_dry_run_forced = _maybe_dry_run_override(z)
+    if is_dry_run_forced:
+        _flush_z_distribution()
     market_id = event.market_id
 
     # D107-2/D108: Source validation — must match execution_records CHECK constraint
@@ -624,8 +687,12 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # 1. Z-score threshold check — skip if |z| is below threshold magnitude
     # Threshold is negative (e.g. -4.0), magnitude is abs(threshold)=4.0
     # Skip when |z| < 4.0 (low magnitude), continue when |z| >= 4.0 (high magnitude signal)
-    if abs(z) < abs(MIN_ENTROPY_Z_THRESHOLD):
-        logging.debug("[SE] |z|=%.2f below threshold magnitude %.2f, skipping", abs(z), abs(MIN_ENTROPY_Z_THRESHOLD))
+    if abs(effective_z) < abs(MIN_ENTROPY_Z_THRESHOLD):
+        logging.debug(
+            "[SE] |z|=%.2f below threshold magnitude %.2f, skipping",
+            abs(effective_z),
+            abs(MIN_ENTROPY_Z_THRESHOLD),
+        )
         # D158-4: was silent return — persist reject so dashboards / audits see L2 entry
         decision_id = str(uuid4())
         db.append_execution_record({
@@ -651,7 +718,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
 
     # D96-C: T1 short-circuit — T1 markets go to Kyle λ path only, not consensus
     if event.market_tier == "t1":
-        logging.debug("[SE][T1_SKIP] market=%s z=%.2f — kyle_path only", market_id, z)
+        logging.debug("[SE][T1_SKIP] market=%s z=%.2f — kyle_path only", market_id, effective_z)
         # D121 FIX: Write REJECT record so frontend can see T1 activity
         decision_id = str(uuid4())
         db.append_execution_record({
@@ -723,6 +790,19 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             str(market_id)[:28] if market_id else "None",
         )
 
+    # D167: one-shot dry-run should continue pipeline even when consensus sources are absent.
+    if is_dry_run_forced and effective_sources < MIN_CONSENSUS_SOURCES:
+        logger.warning(
+            "[DRY_RUN_FIRE] bypassing insufficient consensus market=%s sources=%d need=%d",
+            market_id,
+            effective_sources,
+            MIN_CONSENSUS_SOURCES,
+        )
+        consensus_bypass_active = True
+        if not sources:
+            sources = [0.5]
+        effective_sources = max(effective_sources, MIN_CONSENSUS_SOURCES)
+
     # 5. Consensus check
     if effective_sources < MIN_CONSENSUS_SOURCES and not consensus_bypass_active:
         decision_id = str(uuid4())
@@ -759,7 +839,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     # 7. Get current price AND best ask (D64 Q1: entry = CLOB /book asks[0].price)
     token_id = event.token_id
     current_price = _get_current_price(market_id, token_id, db)
-    if current_price is None:
+    if current_price is None and not is_dry_run_forced:
         decision_id = str(uuid4())
         execution_id = decision_id
         db.append_execution_record({
@@ -782,11 +862,14 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         })
         logging.warning("[SE] market=%s no price data", market_id)
         return
+    elif current_price is None and is_dry_run_forced:
+        current_price = 0.5
+        logger.warning("[DRY_RUN_FIRE] using synthetic current_price=0.5 market=%s", market_id)
 
     # 7.1: Fetch best ask for entry price (D64 Q1 ruling)
     # If no asks available → NO_TRADE (do not use 0.5 fallback)
     best_ask = fetch_best_ask(token_id) if token_id else None
-    if best_ask is None:
+    if best_ask is None and not is_dry_run_forced:
         decision_id = str(uuid4())
         execution_id = decision_id
         db.append_execution_record({
@@ -809,6 +892,9 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         })
         logger.info("[SE][ENTRY_PRICE] market=%s no asks available, skipping trade", market_id)
         return
+    elif best_ask is None and is_dry_run_forced:
+        best_ask = 0.5
+        logger.warning("[DRY_RUN_FIRE] using synthetic best_ask=0.5 market=%s", market_id)
 
     # D101: T2-POL political market logging — no posterior override
     # Political markets use full Bayesian consensus (same as standard T2).
@@ -905,6 +991,15 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         action = "BUY"
         accepted = 1
 
+    if is_dry_run_forced and accepted == 0:
+        logger.warning(
+            "[DRY_RUN_FIRE] overriding gate decision=%s to accepted BUY for pipeline validation",
+            gate.decision.name,
+        )
+        reason = "DRY_RUN_FORCED_ACCEPT"
+        action = "BUY"
+        accepted = 1
+
     # ── MetricsCollector hook (in-process, no DB writes in hot path) ──────────
     mc = _mc()
     if mc is not None:
@@ -913,7 +1008,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             depth=0,  # queue depth not meaningful here
             tier=event.market_tier,
             p_posterior=posterior,
-            z=event.z,  # canonical score — handles entropy_z=None case
+            z=effective_z,  # D167: includes one-shot dry-run override if enabled
         )
 
     # 10. Write execution_record (INSERT — gate decision, pre-CLOB)
@@ -940,6 +1035,18 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         "market_id": market_id,
         "market_tier": event.market_tier,  # D107: was missing — all tiers now recorded
     })
+
+    if accepted:
+        global _SIGNAL_FIRED_COUNT
+        _SIGNAL_FIRED_COUNT += 1
+        logger.info(
+            "[SIGNAL_FIRED] asset=%s market=%s z=%.3f dry_run=%s count=%d",
+            asset_short or "unknown",
+            str(market_id)[:20] if market_id else "None",
+            effective_z,
+            is_dry_run_forced,
+            _SIGNAL_FIRED_COUNT,
+        )
 
     # D103-1: Record last signal timestamp for accepted T2-POL signals
     if accepted and event.market_tier == "t2_pol":
@@ -971,7 +1078,7 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             reason=clob_result.reason if not clob_result.accepted else None,
         )
 
-    log_msg = (f"[SE][{safe_source}] market={market_id} z={z:.2f} "
+    log_msg = (f"[SE][{safe_source}] market={market_id} z={effective_z:.2f} "
                f"sources={len(sources)} posterior={posterior:.3f} "
                f"action={action} reason={reason}")
     if action == "BUY":
@@ -991,6 +1098,33 @@ async def _run_async(queue: asyncio.Queue[SignalEvent], db: ShadowDB) -> None:
         try:
             event = await asyncio.wait_for(queue.get(), timeout=5.0)
         except asyncio.TimeoutError:
+            global _DRY_RUN_SYNTHETIC_EMITTED
+            if _DRY_RUN_SIGNAL and not _DRY_RUN_SYNTHETIC_EMITTED:
+                _DRY_RUN_SYNTHETIC_EMITTED = True
+                synthetic_market_id = os.getenv(
+                    "PANOPTICON_DRY_RUN_MARKET_ID",
+                    "27911616648163853231017805596118911526202185567944724228908312975649746722206",
+                )
+                synthetic_token_id = os.getenv("PANOPTICON_DRY_RUN_TOKEN_ID", synthetic_market_id)
+                logger.warning(
+                    "[DRY_RUN_FIRE] emitting synthetic SignalEvent market=%s token=%s",
+                    synthetic_market_id[:20],
+                    synthetic_token_id[:20],
+                )
+                synthetic_event = SignalEvent(
+                    source="radar",
+                    market_id=synthetic_market_id,
+                    token_id=synthetic_token_id,
+                    entropy_z=0.1,  # will be overridden by _maybe_dry_run_override()
+                    trigger_address="system",
+                    trigger_ts_utc=_utc(),
+                    market_tier="t3",
+                )
+                await _process_event(synthetic_event, db)
+                mc = _mc()
+                if mc is not None:
+                    mc.on_signal_processed()
+                continue
             # No DB fallback — queue is the only signal path [Invariant 1.1]
             mc = _mc()
             if mc is not None:

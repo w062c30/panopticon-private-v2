@@ -119,4 +119,9 @@
 - **Decision**: T2-POL market arrival rate < 1 trade/5s is insufficient to accumulate `min_history_for_z=12` samples in the 5s rolling window. Decision: do not adjust `window_sec`. T2 Smart Money signal relies on Kyle λ + insider score accumulation, not entropy fire triggers. EntropyWindow remains a high-frequency T1 signal generator. If per-tier EntropyWindow parameterization is needed in the future, open a separate DR.
 - **Code**: `panopticon_py/hunting/run_radar.py` (global shared `ew` + per-token `_entropy_windows` T1 path)
 
+### DR-D167-a: F6 `window_ts=0` diagnosis → observability backlog only
+- **Date**: 2026-05-05
+- **Decision**: `kyle_lambda_samples.window_ts=0` is by-design fallback for non-T1 samples (D97 comment in `run_radar.py`). No D167 code fix. Backlog for D168: split startup metric into `kyle_t1_count` (`window_ts>0`) and `kyle_non_t1_count` (`window_ts=0`) to avoid false stale-metric interpretation.
+- **Code**: `panopticon_py/hunting/run_radar.py:L570-L578`, `L2554-L2561`, `L2776-L2783`
+
 ---
