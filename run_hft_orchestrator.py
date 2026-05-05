@@ -42,16 +42,19 @@ import atexit
 import json
 import logging
 import os
+import queue
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from panopticon_py.db import ShadowDB
+from panopticon_py.db import DBWriterQueue, ShadowDB
 from panopticon_py.friction_state import FrictionStateWorker, GlobalFrictionState
 from panopticon_py.hft.graph_linker import HiddenLinkGraphEngine
 from panopticon_py.hft.hyperliquid_ws_client import HyperliquidOFIEngine, UnderlyingShock
@@ -68,7 +71,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.1.47-D167"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync
+PROCESS_VERSION = "v1.2.0-D168"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -77,6 +80,20 @@ _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-spec
 os.environ.setdefault("PANOPTICON_WHALE", "1")
 
 logger = logging.getLogger("orchestrator")
+_DB_WRITER_HEALTH_PATH = os.getenv("PANOPTICON_WRITER_HEALTH_PATH", "data/async_writer_health.json")
+_DB_WRITER_HEARTBEAT_SEC = 5.0
+_DB_WRITER_BATCH_MAX = 100
+_DB_WRITER_BATCH_TIMEOUT = 0.1
+_DB_WRITER_PHASE1_RETRY_DELAY = 0.05
+
+_writer_stats = {
+    "batch_count": 0,
+    "drop_count": 0,
+    "last_batch_size": 0,
+    "last_batch_duration_ms": 0,
+    "consumer_alive": False,
+}
+_writer_stats_lock = threading.Lock()
 
 
 def _utc() -> str:
@@ -136,6 +153,150 @@ def _cleanup_lock_file() -> None:
             os.remove(_LOCK_FILE)
     except Exception:
         pass
+
+
+def _writer_health_flush(async_writer_health: dict | None = None) -> None:
+    """Atomic-write DB writer health snapshot, preserving legacy async writer fields."""
+    os.makedirs(os.path.dirname(_DB_WRITER_HEALTH_PATH) or ".", exist_ok=True)
+    with _writer_stats_lock:
+        snap = dict(_writer_stats)
+
+    payload = {
+        "written_at": utc_now_rfc3339_ms(),
+        "queue_size": DBWriterQueue.qsize_safe(),
+        **snap,
+    }
+    if async_writer_health:
+        payload["running"] = async_writer_health.get("running")
+        payload["thread_alive"] = async_writer_health.get("thread_alive")
+        payload["queue_depth"] = async_writer_health.get("queue_depth")
+        payload["queue_unfinished"] = async_writer_health.get("queue_unfinished")
+
+    tmp = f"{_DB_WRITER_HEALTH_PATH}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, separators=(",", ":"))
+    os.replace(tmp, _DB_WRITER_HEALTH_PATH)
+
+
+def _execute_batch(conn: sqlite3.Connection, items: list) -> int:
+    """Execute a batch under one implicit transaction."""
+    with conn:
+        for item in items:
+            conn.execute(item.sql, item.params)
+    return len(items)
+
+
+def _execute_per_item(conn: sqlite3.Connection, items: list) -> int:
+    """Phase-2 fallback: execute individually, drop failures."""
+    committed = 0
+    for item in items:
+        try:
+            with conn:
+                conn.execute(item.sql, item.params)
+            committed += 1
+        except Exception as exc:
+            logger.warning(
+                "[DB_WRITER] phase2 drop table=%s sql=%s err=%s",
+                item.table_hint,
+                item.sql[:80],
+                exc,
+            )
+            with _writer_stats_lock:
+                _writer_stats["drop_count"] += 1
+    return committed
+
+
+def _db_writer_thread(db_path: str) -> None:
+    """Daemon consumer thread for DBWriterQueue."""
+    conn = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    q = DBWriterQueue.get()
+    last_health = time.monotonic()
+
+    with _writer_stats_lock:
+        _writer_stats["consumer_alive"] = True
+    logger.info("[DB_WRITER] thread started conn=%s", db_path)
+
+    try:
+        while True:
+            try:
+                first = q.get(timeout=_DB_WRITER_BATCH_TIMEOUT)
+            except queue.Empty:
+                if time.monotonic() - last_health >= _DB_WRITER_HEARTBEAT_SEC:
+                    _writer_health_flush()
+                    last_health = time.monotonic()
+                continue
+
+            batch = [first]
+            sentinel_inside = first is None
+            while not sentinel_inside and len(batch) < _DB_WRITER_BATCH_MAX:
+                try:
+                    nxt = q.get_nowait()
+                except queue.Empty:
+                    break
+                batch.append(nxt)
+                if nxt is None:
+                    sentinel_inside = True
+                    break
+
+            payload_items = [x for x in batch if x is not None]
+            t0 = time.monotonic()
+            if payload_items:
+                try:
+                    _execute_batch(conn, payload_items)
+                except sqlite3.OperationalError as exc:
+                    logger.warning(
+                        "[DB_WRITER] batch failed (%s), phase-1 retry after %.0fms",
+                        exc,
+                        _DB_WRITER_PHASE1_RETRY_DELAY * 1000,
+                    )
+                    time.sleep(_DB_WRITER_PHASE1_RETRY_DELAY)
+                    try:
+                        _execute_batch(conn, payload_items)
+                    except sqlite3.OperationalError as exc2:
+                        logger.warning("[DB_WRITER] phase-1 failed (%s), phase-2 per-item", exc2)
+                        _execute_per_item(conn, payload_items)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            with _writer_stats_lock:
+                _writer_stats["batch_count"] += 1
+                _writer_stats["last_batch_size"] = len(payload_items)
+                _writer_stats["last_batch_duration_ms"] = duration_ms
+
+            for _ in batch:
+                q.task_done()
+
+            if time.monotonic() - last_health >= _DB_WRITER_HEARTBEAT_SEC:
+                _writer_health_flush()
+                last_health = time.monotonic()
+
+            if sentinel_inside:
+                logger.info("[DB_WRITER] sentinel received, exiting")
+                break
+    except Exception:
+        logger.critical("[DB_WRITER] fatal exception, thread dying", exc_info=True)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with _writer_stats_lock:
+            _writer_stats["consumer_alive"] = False
+        _writer_health_flush()
+        logger.info("[DB_WRITER] thread exited cleanly")
+
+
+def _shutdown_writer(thread: threading.Thread) -> None:
+    """atexit handler: enqueue sentinel and join writer thread."""
+    try:
+        DBWriterQueue.enqueue_sentinel()
+        thread.join(timeout=10.0)
+        if thread.is_alive():
+            logger.error("[DB_WRITER] thread did not exit within 10s — items may be lost")
+    except Exception as exc:
+        logger.warning("[DB_WRITER] atexit shutdown failed: %s", exc)
 
 
 def _pid_is_alive(pid: int) -> bool:
@@ -464,6 +625,16 @@ async def main_async() -> int:
     db.bootstrap()
     logger.info("[DB] ShadowDB initialized at %s", db.path)
 
+    # ── D168: DBWriterQueue consumer thread (daemon + atexit sentinel) ──────
+    writer_thread = threading.Thread(
+        target=_db_writer_thread,
+        args=(str(db.path),),
+        daemon=True,
+        name="db_writer",
+    )
+    writer_thread.start()
+    atexit.register(_shutdown_writer, writer_thread)
+
     # ── Transfer Entropy Cache [D81] ─────────────────────────────────────────
     from panopticon_py.signal.transfer_entropy_cache import get_te_cache
     te_cache = get_te_cache()
@@ -504,13 +675,10 @@ async def main_async() -> int:
     signal_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
 
     def _persist_writer_health() -> None:
-        """D119/D120: Persist AsyncDBWriter health snapshot every 30s for cross-process read."""
+        """D168: Preserve legacy async writer fields while DB writer owns the health file."""
         snap = db_writer.health()
-        snap["written_at"] = utc_now_rfc3339_ms()
-        snap_path = os.getenv("ASYNC_WRITER_HEALTH_PATH", "data/async_writer_health.json")
         try:
-            with open(snap_path, "w") as f:
-                json.dump(snap, f)
+            _writer_health_flush(async_writer_health=snap)
         except Exception as exc:
             logger.debug("[DB] Could not persist writer health: %s", exc)
 
@@ -716,6 +884,7 @@ async def main_async() -> int:
     # ── Graceful shutdown ───────────────────────────────────────────────────
     logger.info("[ORCH] Initiating shutdown")
     _close_event.set()
+    DBWriterQueue.enqueue_sentinel()
 
     for task in [radar_task, ofi_task, graph_task, se_task, insider_task, te_recompute_task]:
         task.cancel()
@@ -730,6 +899,11 @@ async def main_async() -> int:
         logger.info("[DB] AsyncDBWriter stopped")
     except Exception as exc:
         logger.warning("[DB] AsyncDBWriter stop error: %s", exc)
+
+    if writer_thread.is_alive():
+        writer_thread.join(timeout=10.0)
+        if writer_thread.is_alive():
+            logger.error("[DB_WRITER] thread did not exit within 10s during shutdown")
 
     for p in _procs:
         if p.poll() is None:

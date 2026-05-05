@@ -49,8 +49,8 @@ The doc uses "PROC-1 (WS Hub)", "PROC-3 (Wallet Engine)", "PROC-4 (Signal Engine
 | Sprint | Phase | Scope | Duration | Status |
 |---|---|---|---|---|
 | **D167** | Phase 0 + Q1 | F5 dry-run + F6 diagnostic + F9 entropy gate tuning + manifest version drift | 3 days | EXECUTABLE NOW |
-| **D168** | Phase 1 | `DBWriterQueue` in `db.py` + analysis_worker retry + `ORDER_RECON` consolidation | 3–4 days | EXECUTABLE AFTER D167 |
-| **D169** | Phase 2 | `PolygonListener` (Alchemy WSS + HTTP fallback) + Wallet Engine basics | 5 days | BLOCKED ON ARCHITECT (AQ-6) |
+| **D168** | Phase 1 | `DBWriterQueue` in `db.py` + analysis_worker retry + `ORDER_RECON` consolidation | 3–4 days | SHIPPED |
+| **D169** | Phase 2 | `PolygonListener` (Alchemy WSS + HTTP fallback) + Wallet Engine basics | 5 days | EXECUTABLE |
 | **D170** | Phase 3 | L4 signal fusion (PATH-A + PATH-B merge) | 3 days | BLOCKED ON D169 |
 | **D171** | Phase 4 | Insider score precision (fingerprint + transfer graph + entity linker) | 5–7 days | BLOCKED ON D170 + Architect (NQ-1) |
 
@@ -60,8 +60,8 @@ The doc uses "PROC-1 (WS Hub)", "PROC-3 (Wallet Engine)", "PROC-4 (Signal Engine
 flowchart TD
   D166["D166 SHIPPED<br/>radar v1.1.62-D166<br/>orchestrator v1.1.46-D166"]:::done
   D167["D167: Phase 0 + Q1<br/>diagnose F5/F6/F9 + manifest"]:::ready
-  D168["D168: Phase 1<br/>DBWriterQueue + F7/F8"]:::pending
-  D169["D169: Phase 2<br/>PolygonListener"]:::blocked
+  D168["D168: Phase 1<br/>DBWriterQueue + F7/F8"]:::done
+  D169["D169: Phase 2<br/>PolygonListener"]:::ready
   D170["D170: Phase 3<br/>L4 Signal Fusion"]:::blocked
   D171["D171: Phase 4<br/>Insider Score precision"]:::blocked
 
@@ -161,7 +161,7 @@ These must be resolved by Sonnet 4.6 (with Opus 4.7 review) before the gated spr
 - **AQ-3** [D168]: `run_radar.py` is 160 KB — wrap (no internal refactor) or split. Suggested: wrap with `DBWriterQueue.put()` adapter, defer split.
 - **AQ-4** [D169]: Windows `spawn` mode pickle constraints for cross-process Queue payloads.
 - **AQ-5** [D168]: `analysis_worker.py:upsert_wallet_market_position_lifo` — does it run in a transaction? If yes, retry must rollback first.
-- **AQ-6** [D169 BLOCKER]: `PolygonListener` — `multiprocessing.Process` (Option A) or `asyncio.create_task` in orchestrator (Option B)? **Required before P2-T1 starts.**
+- **AQ-6** [D169]: `PolygonListener` process model. **RULING (2026-05-05)**: Option B (`asyncio.create_task` in orchestrator), with timeout guards + HTTP fallback.
 
 ### Numerical questions
 

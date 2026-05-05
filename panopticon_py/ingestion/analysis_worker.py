@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Callable, TypeVar
 from uuid import uuid4
 
 from panopticon_py.contracts import build_event
@@ -13,6 +15,35 @@ from panopticon_py.ingestion.insider_ranker import rank_insider
 from panopticon_py.ingestion.wallet_features import aggregate_from_observations, WalletAggFeatures
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def _with_sync_retry(
+    func: Callable[..., T],
+    *args,
+    max_attempts: int = 3,
+    base_delay: float = 0.05,
+    **kwargs,
+) -> T:
+    """
+    Sync retry wrapper for sqlite lock contention.
+
+    Retries only sqlite3.OperationalError containing "database is locked"
+    with backoff 50/100/200ms by default.
+    """
+    last_exc: sqlite3.OperationalError | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return func(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            last_exc = exc
+            if attempt >= max_attempts:
+                break
+            time.sleep(base_delay * (2 ** (attempt - 1)))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _utc_now() -> str:
@@ -93,14 +124,23 @@ class InsiderAnalysisWorker:
                     price = payload.get("price")
                     size = payload.get("size")
                     if side in ("BUY", "SELL") and price is not None and size is not None:
-                        self.db.upsert_wallet_market_position_lifo(
-                            wallet_address=o["address"].lower(),
-                            market_id=o["market_id"],
-                            fill_price=float(price),
-                            fill_qty=float(size),
-                            side=side,
-                            updated_ts_utc=o["ingest_ts_utc"],
-                        )
+                        try:
+                            _with_sync_retry(
+                                self.db.upsert_wallet_market_position_lifo,
+                                wallet_address=o["address"].lower(),
+                                market_id=o["market_id"],
+                                fill_price=float(price),
+                                fill_qty=float(size),
+                                side=side,
+                                updated_ts_utc=o["ingest_ts_utc"],
+                            )
+                        except sqlite3.OperationalError:
+                            logger.warning(
+                                "[ANALYSIS_WORKER][SKIP] DB locked after retries (3) wallet=%s market=%s",
+                                o["address"][:10],
+                                str(o["market_id"])[:20],
+                            )
+                            continue
 
             feats = aggregate_from_observations(obs)
             score, reasons = rank_insider(feats)
@@ -202,7 +242,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     from panopticon_py.utils.process_guard import acquire_singleton
-    PROCESS_VERSION = "v1.1.16-D163"
+    PROCESS_VERSION = "v1.1.17-D168"
     acquire_singleton("analysis_worker", PROCESS_VERSION)
 
     # D147-2: Wrap all init steps so WAL lock / import failures are logged

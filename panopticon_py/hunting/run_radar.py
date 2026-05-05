@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from panopticon_py.db import ShadowDB
+from panopticon_py.db import DBWriterQueue, ShadowDB
 from panopticon_py.hunting.entropy_window import EntropyWindow
 from panopticon_py.signal_engine import SignalEvent
 from panopticon_py.hunting.trade_aggregate import aggregate_taker_sweeps, cross_wallet_burst_cluster
@@ -132,7 +132,8 @@ async def resolve_btc_5m_windows(db: ShadowDB, lookahead: int = 3) -> int:
                 continue
 
             # fetched_at is NOT NULL — include it; use INSERT with ON CONFLICT
-            db.conn.execute("""
+            ok = DBWriterQueue.put(
+                """
                 INSERT INTO polymarket_link_map
                     (slug, condition_id, token_id, market_tier, source, fetched_at, created_at)
                 VALUES (?, ?, ?, 't1', 'btc5m_resolver', datetime('now'), datetime('now'))
@@ -143,9 +144,12 @@ async def resolve_btc_5m_windows(db: ShadowDB, lookahead: int = 3) -> int:
                     market_tier = excluded.market_tier,
                     source = excluded.source,
                     fetched_at = excluded.fetched_at
-            """, (slug, cid, token_id))
-            db.conn.commit()
-            inserted += 1
+                """,
+                (slug, cid, token_id),
+                table_hint="polymarket_link_map",
+            )
+            if ok:
+                inserted += 1
             logger.info("[LINK_MAP] Resolved %s -> %s... token=%s...",
                         slug, cid[:12], token_id[:12])
         except Exception as e:
@@ -409,25 +413,29 @@ def _gamma_batch_fetch_event_names(db, token_ids: list[str]) -> int:
                         (m.get("groupSlug") or "")[:40],
                         (f"https://polymarket.com/event/{slug}" if slug else "(empty)")[:80],
                     )
-                    db.conn.execute("""
+                    ok = DBWriterQueue.put(
+                        """
                         INSERT OR IGNORE INTO polymarket_link_map
                             (token_id, event_slug, market_slug, canonical_event_url,
                              source, fetched_at)
                         VALUES (?, ?, ?, ?, ?, datetime('now'))
-                    """, (
-                        tid_str,
-                        question,
-                        m.get("slug") or "",
-                        f"https://polymarket.com/event/{slug}" if slug else "",
-                        "batch_fetch",
-                    ))
-                    inserted += 1
+                        """,
+                        (
+                            tid_str,
+                            question,
+                            m.get("slug") or "",
+                            f"https://polymarket.com/event/{slug}" if slug else "",
+                            "batch_fetch",
+                        ),
+                        table_hint="polymarket_link_map",
+                    )
+                    if ok:
+                        inserted += 1
         except Exception as exc:
             logger.warning("[EVENT_NAME_FETCH][D65] failed to parse market: %s", exc)
 
     if inserted:
-        db.conn.commit()
-        logger.info("[EVENT_NAME_FETCH][D65] inserted=%d from batch of %d", inserted, len(token_ids))
+        logger.info("[EVENT_NAME_FETCH][D65] enqueued=%d from batch of %d", inserted, len(token_ids))
     return inserted
 
 
@@ -2164,38 +2172,45 @@ async def _poll_single_market_identity(
 
             # wallet_observations with transaction_hash dedup
             if tx_hash:
-                db.conn.execute("""
+                enqueued = DBWriterQueue.put(
+                    """
                     INSERT OR IGNORE INTO wallet_observations
                         (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc, transaction_hash, order_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    str(uuid4()),
-                    proxy_wallet.lower()[:42],
-                    market_id,
-                    "clob_trade",
-                    json.dumps({"side": side, "size": size, "price": price, "source": f"data_api_{label}"}, ensure_ascii=False),
-                    _utc(),
-                    tx_hash,
-                    order_id,
-                ))
+                    """,
+                    (
+                        str(uuid4()),
+                        proxy_wallet.lower()[:42],
+                        market_id,
+                        "clob_trade",
+                        json.dumps({"side": side, "size": size, "price": price, "source": f"data_api_{label}"}, ensure_ascii=False),
+                        _utc(),
+                        tx_hash,
+                        order_id,
+                    ),
+                    table_hint="wallet_observations",
+                )
             else:
-                db.conn.execute("""
+                enqueued = DBWriterQueue.put(
+                    """
                     INSERT INTO wallet_observations
                         (obs_id, address, market_id, obs_type, payload_json, ingest_ts_utc, transaction_hash, order_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    str(uuid4()),
-                    proxy_wallet.lower()[:42],
-                    market_id,
-                    "clob_trade",
-                    json.dumps({"side": side, "size": size, "price": price, "source": f"data_api_{label}"}, ensure_ascii=False),
-                    _utc(),
-                    tx_hash,
-                    order_id,
-                ))
-            new_count += 1
-
-        db.conn.commit()
+                    """,
+                    (
+                        str(uuid4()),
+                        proxy_wallet.lower()[:42],
+                        market_id,
+                        "clob_trade",
+                        json.dumps({"side": side, "size": size, "price": price, "source": f"data_api_{label}"}, ensure_ascii=False),
+                        _utc(),
+                        tx_hash,
+                        order_id,
+                    ),
+                    table_hint="wallet_observations",
+                )
+            if enqueued:
+                new_count += 1
 
         if trades:
             max_ts = max(int(t.get("timestamp") or 0) for t in trades)
@@ -3552,7 +3567,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.1.63-D167"
+PROCESS_VERSION = "v1.2.0-D168"
 
 
 def main() -> int:

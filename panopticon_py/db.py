@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import queue
 import re
 import sqlite3
@@ -14,12 +15,13 @@ from datetime import datetime, timezone
 
 _utc_now = lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from panopticon_py.time_utils import normalize_external_ts_to_utc, utc_now_rfc3339_ms
 from panopticon_py.market_data.clob_series import fetch_settlement_price
 
 logger = logging.getLogger(__name__)
+D168_TAG = "D168-db-writer-queue"
 
 # D115: SQL injection guard for _add_column_if_missing
 _IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -3953,6 +3955,40 @@ class AsyncDBWriter:
         else:
             logger.warning("[AsyncDBWriter] unknown kind=%r — dropped", kind)
 
+    def _dispatch_with_retry(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        max_attempts: int = 5,
+        backoff_ms: tuple[int, ...] = (50, 200, 500, 1000, 2000),
+    ) -> None:
+        """
+        Retry dispatch only for transient SQLite lock contention.
+
+        Non-lock OperationalError is re-raised immediately to preserve failure visibility.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                self._dispatch(kind, payload)
+                return
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                if attempt >= max_attempts:
+                    raise
+                delay_ms = backoff_ms[min(attempt - 1, len(backoff_ms) - 1)]
+                logger.warning(
+                    "[AsyncDBWriter] lock retry kind=%s attempt=%d/%d delay_ms=%d",
+                    kind,
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                )
+                time.sleep(delay_ms / 1000.0)
+
     def _loop(self) -> None:
         """D115/D116: Sentinel-controlled shutdown; task_done guaranteed via try/finally."""
         while True:
@@ -3967,7 +4003,7 @@ class AsyncDBWriter:
                     break
                 t0 = time.monotonic()
                 try:
-                    self._dispatch(kind, payload)
+                    self._dispatch_with_retry(kind, payload)
                 finally:
                     elapsed_ms = (time.monotonic() - t0) * 1000
                     if elapsed_ms > 200:
@@ -3993,4 +4029,78 @@ class AsyncDBWriter:
                 self._q.task_done()
 
 
+
+class _DBWriteItem(NamedTuple):
+    sql: str
+    params: tuple
+    table_hint: str
+    ts_ms: str
+
+
+class DBWriterQueue:
+    """
+    Thread-safe singleton queue for orchestrator-process SQLite writes.
+
+    Producers should call `put(sql, params, table_hint)` for write statements.
+    Consumer thread integration is implemented in D168 P1-T4.
+    """
+
+    _MAXSIZE = int(os.getenv("PANOPTICON_DB_WRITER_QSIZE", "50000"))
+    _queue: "queue.Queue[_DBWriteItem | None] | None" = None
+    _lock = threading.Lock()
+    _enabled = True
+
+    @classmethod
+    def get(cls) -> "queue.Queue[_DBWriteItem | None]":
+        if cls._queue is None:
+            with cls._lock:
+                if cls._queue is None:
+                    cls._queue = queue.Queue(maxsize=cls._MAXSIZE)
+        return cls._queue
+
+    @classmethod
+    def put(cls, sql: str, params: tuple, table_hint: str = "") -> bool:
+        """Non-blocking enqueue. Returns False when disabled or full."""
+        if not cls._enabled:
+            return False
+
+        item = _DBWriteItem(
+            sql=str(sql),
+            params=tuple(params),
+            table_hint=table_hint or "",
+            ts_ms=utc_now_rfc3339_ms(),
+        )
+        try:
+            cls.get().put_nowait(item)
+            return True
+        except queue.Full:
+            logger.warning(
+                "[DB_WRITER] queue full (max=%d) dropping write table=%s",
+                cls._MAXSIZE,
+                table_hint or "",
+            )
+            return False
+
+    @classmethod
+    def enqueue_sentinel(cls) -> None:
+        """Push shutdown sentinel for consumer thread."""
+        try:
+            cls.get().put_nowait(None)
+        except queue.Full:
+            logger.warning("[DB_WRITER] sentinel enqueue failed — queue full")
+
+    @classmethod
+    def qsize_safe(cls) -> int:
+        try:
+            return cls.get().qsize()
+        except Exception:
+            return -1
+
+    @classmethod
+    def disable(cls) -> None:
+        cls._enabled = False
+
+    @classmethod
+    def enable(cls) -> None:
+        cls._enabled = True
 

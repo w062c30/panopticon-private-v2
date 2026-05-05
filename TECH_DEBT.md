@@ -1,6 +1,6 @@
 # TECH_DEBT — Panopticon Technical Debt & Decision Records
 
-> Last updated: D133 (2026-05-03)
+> Last updated: D168 (2026-05-05)
 > Source: https://github.com/w062c30/panopticon-private-v2
 
 ---
@@ -72,6 +72,12 @@
 **Unlock condition**: Run ≥24h baseline (collect ≥24 windows) confirming `real_trade_ticks_60s / trade_ticks_60s` ratio is stable in the 25%–50% range with no zero-real windows; then update `RvfMetricsPanel.tsx` in one PR. Deduplication key (trade_id or tuple) is optional but recommended.
 **Blocked by**: DR-D125-c
 
+### Debt-6: `D75_ENTROPY_GATE` observability gap (deferred to D169)
+**Files**: `panopticon_py/hunting/run_radar.py`, logging pipeline (`run/orchestrator.log`)
+**Problem**: Expected `D75_ENTROPY_GATE` diagnostic tag is intermittently missing from runtime logs during entropy gate investigations, reducing diagnosability of NQ-4 path.
+**Status (D168 close)**: **ACTIVE / DEFERRED** — architect ruling keeps D168 focused on DB write-path stabilization; observability gap moved to D169 backlog.
+**Non-blocking**: Does not block D168 infrastructure close criteria after gate revision.
+
 ---
 
 ## Decision Records (DR)
@@ -123,5 +129,12 @@
 - **Date**: 2026-05-05
 - **Decision**: `kyle_lambda_samples.window_ts=0` is by-design fallback for non-T1 samples (D97 comment in `run_radar.py`). No D167 code fix. Backlog for D168: split startup metric into `kyle_t1_count` (`window_ts>0`) and `kyle_non_t1_count` (`window_ts=0`) to avoid false stale-metric interpretation.
 - **Code**: `panopticon_py/hunting/run_radar.py:L570-L578`, `L2554-L2561`, `L2776-L2783`
+
+### DR-D168-a: DB lock contention reduced; D168 closed under revised organic gate
+- **Date**: 2026-05-05
+- **Decision**: D168 closes with architect-approved low-liquidity gate revision (Option B): either `kyle_lambda_samples >= 3 / 30min`, or (`analysis_worker database-locked < 20 / 20min` AND `consumer_alive=true` AND `drop_count<=5`).
+- **Observed improvement**: `analysis_worker.err.log` lock count reduced from `109` to `9` in post-fix soak snapshots.
+- **Implementation note**: Added lock-only retry wrapper in `AsyncDBWriter` dispatch path (`50/200/500/1000/2000ms`) while preserving non-lock failure visibility.
+- **Follow-up**: D75 entropy observability remains as D169 backlog (Debt-6).
 
 ---
