@@ -72,7 +72,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.4.0-D169"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop
+PROCESS_VERSION = "v1.5.0-D170"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop  # D170: L4 fusion prep PATH-B queue stub
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -674,6 +674,8 @@ async def main_async() -> int:
 
     # ── Signal Queue — zero-latency event bus [Invariant 1.1] ─────────────
     signal_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+    # D170 PATH-B stub — will be populated by wallet engine in D171.
+    path_b_alert_queue: asyncio.Queue = asyncio.Queue()
     polygon_outbound: asyncio.Queue = asyncio.Queue(maxsize=5000)
 
     def _persist_writer_health() -> None:

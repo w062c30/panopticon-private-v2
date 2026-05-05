@@ -1,5 +1,8 @@
 """
-Panopticon Signal Engine — zero-latency event-driven consensus Bayesian decision actor (v4-FINAL).
+Panopticon Signal Engine — zero-latency event-driven consensus Bayesian decision actor (v5.0.0-D170).
+
+D170: Added L4 signal fusion (Alert + L4Fuser) — PATH-A live, PATH-B stub.
+      Fixed dataclasses.replace import (B4 NameError in shadow mode).
 
 Event sources (via asyncio.Queue — ZERO disk I/O) [Invariant 1.1]:
   - Polymarket Radar: entropy drop event (source="radar")
@@ -25,9 +28,9 @@ import threading
 logger = logging.getLogger(__name__)
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 from uuid import uuid4
 
 # D160-2: async-safe SQLite lock retry for use inside async functions
@@ -103,6 +106,11 @@ MIN_ENTROPY_Z_THRESHOLD = float(os.getenv("MIN_ENTROPY_Z_THRESHOLD", "-4.0"))
 DEFAULT_CAPITAL = 100.0
 KELLY_FRACTION = 0.25
 D167_TAG = "D167-dry-run-signal"
+D170_TAG = "D170-l4-fusion"
+PROCESS_VERSION = "v5.0.0-D170"
+L4_WINDOW_SEC = float(os.getenv("PANOPTICON_L4_WINDOW_SEC", "300"))
+L4_BOOST_FACTOR = float(os.getenv("PANOPTICON_L4_BOOST_FACTOR", "1.5"))
+L4_BOOST_CAP = float(os.getenv("PANOPTICON_L4_BOOST_CAP", "1.0"))
 
 # D167: one-shot dry-run trigger + z-distribution observability ring
 _DRY_RUN_SIGNAL = os.getenv("PANOPTICON_DRY_RUN_SIGNAL", "0").lower() in ("1", "true", "yes")
@@ -298,6 +306,94 @@ class SignalEvent:
         if self.ofi_shock_value is not None:
             return abs(self.ofi_shock_value)
         return 0.0
+
+
+@dataclass
+class Alert:
+    source: str            # PATH_A | PATH_B
+    market_id: str
+    direction: str         # YES | NO
+    confidence: float      # 0..1 pre-normalized by caller
+    raw_z: Optional[float] = None
+    raw_wallet: Optional[str] = None
+    received_at: float = field(default_factory=time.monotonic)
+    voided: bool = False
+
+    def __post_init__(self) -> None:
+        if self.source not in ("PATH_A", "PATH_B"):
+            raise ValueError(f"[D170] Alert.source must be PATH_A or PATH_B, got {self.source!r}")
+        if self.direction not in ("YES", "NO"):
+            raise ValueError(f"[D170] Alert.direction must be YES or NO, got {self.direction!r}")
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(f"[D170] Alert.confidence must be 0..1, got {self.confidence!r}")
+
+
+class L4Fuser:
+    def __init__(self) -> None:
+        self._window: dict[str, List[Alert]] = {}
+        self._lock = threading.Lock()
+
+    def _purge_expired(self, market_id: str, now_mono: float) -> None:
+        kept = [
+            a for a in self._window.get(market_id, [])
+            if max(0.0, now_mono - a.received_at) <= L4_WINDOW_SEC and not a.voided
+        ]
+        if kept:
+            self._window[market_id] = kept
+        else:
+            self._window.pop(market_id, None)
+
+    def submit(self, alert: Alert) -> Optional[Alert]:
+        if not (0.0 < alert.confidence <= 1.0):
+            raise ValueError(f"confidence out of range: {alert.confidence}")
+
+        with self._lock:
+            now_mono = time.monotonic()
+            self._purge_expired(alert.market_id, now_mono)
+            recent = self._window.get(alert.market_id, [])
+
+            if not recent:
+                self._window.setdefault(alert.market_id, []).append(alert)
+                return alert
+
+            most_recent = recent[-1]
+            age = now_mono - most_recent.received_at
+
+            if most_recent.source == alert.source:
+                logger.info(
+                    "[L4_DEDUP] market=%s source=%s age_sec=%.1f dropping",
+                    alert.market_id, alert.source, age,
+                )
+                return None
+
+            if most_recent.direction == alert.direction:
+                boosted = min(alert.confidence * L4_BOOST_FACTOR, L4_BOOST_CAP)
+                fused = Alert(
+                    source=alert.source,
+                    market_id=alert.market_id,
+                    direction=alert.direction,
+                    confidence=boosted,
+                    raw_z=alert.raw_z,
+                    raw_wallet=alert.raw_wallet,
+                    received_at=now_mono,
+                )
+                logger.info(
+                    "[L4_BOOST] market=%s source=%s direction=%s confidence=%.2f (was %.2f) prior=%s age_sec=%.1f",
+                    alert.market_id, alert.source, alert.direction,
+                    boosted, alert.confidence, most_recent.source, age,
+                )
+                self._window[alert.market_id].append(fused)
+                return fused
+
+            most_recent.voided = True
+            logger.warning(
+                "[L4_SKIP_OPPOSITE] market=%s path_a=%s path_b=%s age_sec=%.1f",
+                alert.market_id, most_recent.direction, alert.direction, age,
+            )
+            return None
+
+
+_l4_fuser = L4Fuser()
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +750,41 @@ async def _collect_insider_sources(
 # ---------------------------------------------------------------------------
 
 
+def submit_path_a_alert(market_id: str, z: float, confidence: float) -> Optional[Alert]:
+    # AQ-7: z==0 boundary skip
+    if z == 0.0:
+        logger.debug("[L4_SKIP_ZERO_Z] market=%s z=0.0 dropping", market_id)
+        return None
+    # AQ-7 default — verify
+    direction = "NO" if z < 0 else "YES"
+    try:
+        alert = Alert(
+            source="PATH_A",
+            market_id=market_id,
+            direction=direction,
+            confidence=min(max(confidence, 0.0), 1.0),
+            raw_z=z,
+        )
+    except ValueError as exc:
+        logger.error("[D170][PATH_A_ALERT_ERROR] %s market=%s z=%s", exc, market_id, z)
+        return None
+    return _l4_fuser.submit(alert)
+
+
+def submit_path_b_alert(
+    market_id: str,
+    wallet: str,
+    side: str,
+    confidence: float,
+) -> Optional[Alert]:
+    """D170 STUB: PATH-B is a no-op until D171."""
+    logger.debug(
+        "[D170][PATH_B_STUB] market=%s wallet=%s side=%s confidence=%.3f — stub, no-op",
+        str(market_id)[:20], str(wallet)[:10], side, confidence,
+    )
+    return None
+
+
 
 
 
@@ -671,10 +802,11 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     z = event.z
     asset_short = str(event.token_id or event.market_id or "")[:14]
     _record_z_and_maybe_flush(asset_short, z)
+    market_id = event.market_id
+
     effective_z, is_dry_run_forced = _maybe_dry_run_override(z)
     if is_dry_run_forced:
         _flush_z_distribution()
-    market_id = event.market_id
 
     # D107-2/D108: Source validation — must match execution_records CHECK constraint
     safe_source = event.source if event.source in _VALID_EXECUTION_SOURCES else "radar"
@@ -740,6 +872,37 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
             "market_tier": event.market_tier,
         })
         return
+
+    # ── D170: L4 Signal Fusion — PATH-A Alert gate ──────────────────────────
+    if not is_dry_run_forced:
+        threshold_mag = abs(MIN_ENTROPY_Z_THRESHOLD) or 1.0
+        l4_confidence_a = min(abs(effective_z) / threshold_mag, 1.0)
+        l4_fused = submit_path_a_alert(market_id, effective_z, l4_confidence_a)
+        if l4_fused is None:
+            l4_decision_id = str(uuid4())
+            try:
+                db.append_execution_record({
+                    "execution_id": l4_decision_id,
+                    "decision_id": l4_decision_id,
+                    "accepted": 0,
+                    "reason": "L4_SUPPRESSED",
+                    "mode": "PAPER",
+                    "source": safe_source,
+                    "gate_reason": "L4_SUPPRESSED",
+                    "latency_ms": 5.0,
+                    "posterior": 0.0,
+                    "p_adj": 0.0,
+                    "qty": 0.0,
+                    "ev_net": 0.0,
+                    "avg_entry_price": 0.0,
+                    "created_ts_utc": _utc(),
+                    "market_id": market_id,
+                    "market_tier": event.market_tier,
+                    "asset_id": event.token_id,
+                })
+            except Exception as l4_db_exc:
+                logger.warning("[D170][L4_DB_WRITE_ERR] %s", l4_db_exc)
+            return
 
     # 3. OFI source: orchestrator already mapped HL → PM via OFI_MARKET_MAP
     #    Log for observability only — market_id is already correct
