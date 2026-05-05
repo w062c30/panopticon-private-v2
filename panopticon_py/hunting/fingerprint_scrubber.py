@@ -148,8 +148,12 @@ async def _recompute_one(client, wallet: str) -> None:
     )
 
 
-async def fingerprint_recompute_loop() -> None:
-    """D171: Periodically recompute fingerprints for recently-active watchlist wallets."""
+async def fingerprint_recompute_loop(close_event: asyncio.Event | None = None) -> None:
+    """
+    D171: Periodically recompute fingerprints for recently-active watchlist wallets.
+    Args:
+        close_event: if set, loop exits when event is triggered (D171 orchestrator wiring).
+    """
     from panopticon_py.hunting.data_api_client import DataAPIClient
 
     db_path = os.environ.get("PANOPTICON_DB_PATH", "data/panopticon.db")
@@ -158,6 +162,11 @@ async def fingerprint_recompute_loop() -> None:
 
     try:
         while True:
+            # D171 Q1-A: respect orchestrator close_event
+            if close_event is not None and close_event.is_set():
+                logger.info("[FINGERPRINT] close_event set — exiting recompute loop")
+                break
+
             try:
                 with sqlite3.connect(db_path, timeout=10) as conn:
                     rows = conn.execute("""
@@ -178,7 +187,17 @@ async def fingerprint_recompute_loop() -> None:
 
             await asyncio.gather(*[bounded(r[0]) for r in rows], return_exceptions=True)
             logger.info("[FINGERPRINT] recompute pass done wallets=%d", len(rows))
-            await asyncio.sleep(RECOMPUTE_INTERVAL_SEC)
+
+            if close_event is not None:
+                try:
+                    await asyncio.wait_for(close_event.wait(), timeout=float(RECOMPUTE_INTERVAL_SEC))
+                except asyncio.TimeoutError:
+                    pass  # normal loop continuation
+                # If we reach here without TimeoutError, event was set
+                if close_event.is_set():
+                    break
+            else:
+                await asyncio.sleep(RECOMPUTE_INTERVAL_SEC)
     finally:
         try:
             await client.close()

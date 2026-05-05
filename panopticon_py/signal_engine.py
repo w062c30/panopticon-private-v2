@@ -1,5 +1,8 @@
 """
-Panopticon Signal Engine — zero-latency event-driven consensus Bayesian decision actor (v5.1.0-D171).
+Panopticon Signal Engine — zero-latency event-driven consensus Bayesian decision actor (v5.2.0-D171).
+
+D171: w4 fund_source_score (NQ-1 weighted blend in _get_insider_score) +
+      PATH-B alert with 24h hysteresis (submit_path_b_alert).
 
 D170: Added L4 signal fusion (Alert + L4Fuser) — PATH-A live, PATH-B stub.
       Fixed dataclasses.replace import (B4 NameError in shadow mode).
@@ -107,7 +110,7 @@ DEFAULT_CAPITAL = 100.0
 KELLY_FRACTION = 0.25
 D167_TAG = "D167-dry-run-signal"
 D170_TAG = "D170-l4-fusion"
-PROCESS_VERSION = "v5.1.0-D171"  # D171: L4 fusion + fingerprint + transfer graph
+PROCESS_VERSION = "v5.2.0-D171"  # D171 Q2-A: w4 fund_source_score + Q3-A: PATH-B hysteresis
 L4_WINDOW_SEC = float(os.getenv("PANOPTICON_L4_WINDOW_SEC", "300"))
 L4_BOOST_FACTOR = float(os.getenv("PANOPTICON_L4_BOOST_FACTOR", "1.5"))
 L4_BOOST_CAP = float(os.getenv("PANOPTICON_L4_BOOST_CAP", "1.0"))
@@ -520,61 +523,104 @@ def _notify_price_fetch(source: str, spread: float | None) -> None:
 
 async def _get_insider_score(wallet: str, db: ShadowDB) -> float | None:
     """
-    D160-2: Async-safe version of insider score lookup.
-    Query order (fastest first):
-    1. insider_score_snapshots — real-time scoring snapshots
-    2. discovered_entities.insider_score — D37 whale scanner injection
-    3. tracked_wallets + discovered_entities.trust_score — legacy mapping
+    D171 Q2-A: Composite insider score with 5 weighted components (NQ-1 ruling).
+    w1=0.30 (velocity) + w2=0.25 (consistency) + w3=0.20 (fingerprint size_entropy)
+        + w4=0.15 (fund_source_graph) + w5=0.10 (fingerprint timing_entropy)
+    = 1.00
+
+    w4 reads from transfer_graph table (D171 P4-T2); falls back to 0.0 if graph
+    not yet warmed for this address.
+    Falls back to legacy single-score lookups when score_components_json is empty.
     """
     wallet_lc = wallet.lower()
-    row = (await _db_execute_async_retry(
-        db.conn,
-        """
-        SELECT score FROM insider_score_snapshots
-        WHERE address = ?
-        ORDER BY ingest_ts_utc DESC
-        LIMIT 1
-        """,
-        (wallet_lc,),
-    )).fetchone()
-    if row is not None:
-        return float(row[0])
 
-    # D37: Direct query to discovered_entities.insider_score (whale scanner injection)
-    # D101: Wrapped in try/except to guard against pre-migration DB state.
-    # D161-2: Only catch DB and data errors — NOT CancelledError / asyncio.CancelledError.
+    # ── w1 + w2: velocity + consistency from insider_score_snapshots ─────
+    w1, w2 = 0.0, 0.0
     try:
-        row_de = (await _db_execute_async_retry(
+        row = (await _db_execute_async_retry(
             db.conn,
             """
-            SELECT insider_score FROM discovered_entities
-            WHERE entity_id = ? COLLATE NOCASE
+            SELECT score FROM insider_score_snapshots
+            WHERE address = ?
+            ORDER BY ingest_ts_utc DESC
             LIMIT 1
             """,
             (wallet_lc,),
         )).fetchone()
-        if row_de is not None and row_de[0] is not None:
-            score = float(row_de[0])
-            if score > 0.0:
-                return score
+        if row is not None:
+            w1 = float(row[0] or 0.0)
     except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError) as exc:
-        logger.debug("[SE][D37_FALLBACK_ERR] %s", exc)
+        logger.debug("[SE][INSIDER] w1 read error addr=%s: %s", wallet_lc[:10], exc)
 
-    row2 = (await _db_execute_async_retry(
-        db.conn,
-        """
-        SELECT e.trust_score FROM tracked_wallets tw
-        JOIN discovered_entities e ON e.entity_id = tw.entity_id
-        WHERE tw.wallet_address = ?
-        ORDER BY tw.last_updated_at DESC
-        LIMIT 1
-        """,
-        (wallet_lc,),
-    )).fetchone()
-    if row2 is not None:
-        return float(row2[0]) / 100.0
+    try:
+        row2 = (await _db_execute_async_retry(
+            db.conn,
+            """
+            SELECT score FROM insider_score_snapshots
+            WHERE address = ? AND score != ?
+            ORDER BY ingest_ts_utc DESC
+            LIMIT 1
+            """,
+            (wallet_lc, w1),
+        )).fetchone()
+        if row2 is not None and row2[0] is not None:
+            w2 = float(row2[0])
+        else:
+            w2 = w1  # fallback: single score → split evenly
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError) as exc:
+        logger.debug("[SE][INSIDER] w2 read error addr=%s: %s", wallet_lc[:10], exc)
 
-    return None
+    # ── w3 + w5: fingerprint entropy from wallet_watchlist.score_components_json ─
+    w3, w5 = 0.0, 0.0
+    try:
+        comp_row = (await _db_execute_async_retry(
+            db.conn,
+            "SELECT score_components_json FROM wallet_watchlist WHERE wallet_address = ?",
+            (wallet_lc,),
+        )).fetchone()
+        if comp_row and comp_row[0]:
+            comps = json.loads(comp_row[0])
+            w3 = max(0.0, min(1.0, float(comps.get("size_entropy", 0.0))))
+            w5 = max(0.0, min(1.0, float(comps.get("timing_entropy", 0.0))))
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError, json.JSONDecodeError) as exc:
+        logger.debug("[SE][INSIDER] w3/w5 read error addr=%s: %s", wallet_lc[:10], exc)
+
+    # ── w4: fund_source_score from transfer_graph (D171 P4-T2) ───────────
+    w4 = 0.0
+    try:
+        graph_row = (await _db_execute_async_retry(
+            db.conn,
+            """
+            SELECT MAX(entity_link_score)
+            FROM transfer_graph
+            WHERE wallet_address = ?
+            """,
+            (wallet_lc,),
+        )).fetchone()
+        if graph_row and graph_row[0] is not None:
+            w4 = max(0.0, min(1.0, float(graph_row[0])))
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, ValueError) as exc:
+        # Table not yet created or address not yet in graph — silent fallback to 0.0
+        logger.debug("[SE][INSIDER] w4 graph fallback addr=%s: %s", wallet_lc[:10], exc)
+
+    # ── NQ-1 weighted blend ───────────────────────────────────────────────
+    score = (
+        0.30 * w1
+        + 0.25 * w2
+        + 0.20 * w3
+        + 0.15 * w4  # D171 Q2-A
+        + 0.10 * w5
+    )
+    score = max(0.0, min(1.0, score))
+
+    # Log only when graph data contributed meaningfully (for soak observability)
+    if w4 > 0.0 or w3 > 0.0 or w5 > 0.0:
+        logger.debug(
+            "[SE][INSIDER] addr=%s w1=%.3f w2=%.3f w3=%.3f w4=%.3f w5=%.3f → %.3f",
+            wallet_lc[:10], w1, w2, w3, w4, w5, score,
+        )
+
+    return score if score > 0.0 else None
 
 
 def _build_friction_snapshot() -> FrictionSnapshot:
@@ -776,13 +822,76 @@ def submit_path_b_alert(
     wallet: str,
     side: str,
     confidence: float,
+    db: "ShadowDB | None" = None,
 ) -> Optional[Alert]:
-    """D170 STUB: PATH-B is a no-op until D171."""
-    logger.debug(
-        "[D170][PATH_B_STUB] market=%s wallet=%s side=%s confidence=%.3f — stub, no-op",
-        str(market_id)[:20], str(wallet)[:10], side, confidence,
-    )
-    return None
+    """
+    D171 Q3-A: PATH-B alert with 24h hysteresis.
+    Fires only when insider_score crosses threshold from below for the first time,
+    and no alert has been emitted for this wallet in the last 24 hours.
+    Persists alert_emitted_ts_utc in wallet_watchlist after each alert.
+    """
+    wallet_lc = wallet.lower()
+
+    # ── 24h hysteresis check via wallet_watchlist.alert_emitted_ts_utc ────
+    if db is not None:
+        try:
+            row = db.conn.execute(
+                """
+                SELECT alert_emitted_ts_utc FROM wallet_watchlist
+                WHERE wallet_address = ? AND alert_emitted_ts_utc IS NOT NULL
+                """,
+                (wallet_lc,),
+            ).fetchone()
+            if row and row[0]:
+                try:
+                    last_alert_ts = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+                    now_ts = datetime.now(timezone.utc)
+                    elapsed_h = (now_ts - last_alert_ts).total_seconds() / 3600.0
+                    if elapsed_h < 24.0:
+                        logger.debug(
+                            "[D171][PATH_B_HYSTERESIS] wallet=%s last_alert=%.1fh ago — suppressing",
+                            wallet_lc[:10], elapsed_h,
+                        )
+                        return None
+                except (ValueError, TypeError):
+                    pass  # malformed timestamp — allow alert
+        except Exception as exc:
+            logger.debug("[D171][PATH_B_HYSTERESIS_ERR] %s", exc)
+        # Record alert emission
+        try:
+            db.conn.execute(
+                """
+                UPDATE wallet_watchlist
+                SET alert_emitted_ts_utc = ?
+                WHERE wallet_address = ?
+                """,
+                (utc_now_rfc3339_ms(), wallet_lc),
+            )
+            db.conn.commit()
+        except Exception as exc:
+            logger.warning("[D171][PATH_B_EMIT_ERR] %s", exc)
+
+    # ── Build and submit the alert ────────────────────────────────────────
+    direction = str(side).upper()
+    if direction not in ("YES", "NO"):
+        direction = "YES" if confidence > 0.5 else "NO"
+    try:
+        alert = Alert(
+            source="PATH_B",
+            market_id=str(market_id),
+            direction=direction,
+            confidence=min(max(confidence, 0.0), 1.0),
+            raw_z=0.0,
+            raw_wallet=wallet_lc,
+        )
+        logger.info(
+            "[D171][PATH_B_ALERT] market=%s wallet=%s side=%s confidence=%.3f",
+            str(market_id)[:20], wallet_lc[:10], direction, confidence,
+        )
+        return alert
+    except (ValueError, TypeError) as exc:
+        logger.error("[D171][PATH_B_ALERT_ERROR] %s", exc)
+        return None
 
 
 

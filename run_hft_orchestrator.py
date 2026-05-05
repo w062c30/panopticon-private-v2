@@ -72,7 +72,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.5.0-D170"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop  # D170: L4 fusion prep PATH-B queue stub
+PROCESS_VERSION = "v1.6.0-D171"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop  # D170: L4 fusion prep PATH-B queue stub  # D171 Q1-A: wire _init_transfer_graph + fingerprint_recompute_loop tasks
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -832,6 +832,107 @@ async def main_async() -> int:
     insider_task = asyncio.create_task(run_insider_monitor(db), name="insider")
     logger.info("[ORCH] InsiderDetector monitor started")
 
+    # ── D171 Q1-A: Transfer Graph warming task ────────────────────────────────
+    async def _init_transfer_graph(db: ShadowDB, close_event: asyncio.Event) -> None:
+        """
+        Warm the transfer graph for all wallets in wallet_watchlist.
+        Hard caps enforced inside TransferGraphBuilder.build_for_wallet():
+          max_hops=2, max_blocks_per_hop=5000, max_nodes=200
+        """
+        from panopticon_py.hunting.transfer_graph import TransferGraphBuilder
+        alchemy_key = os.getenv("ALCHEMY_API_KEY", "")
+        if not alchemy_key:
+            logger.warning("[TRANSFER_GRAPH] ALCHEMY_API_KEY not set — disabled")
+            return
+
+        interval = int(os.getenv("TRANSFER_GRAPH_INTERVAL_SEC", "300"))
+        linker = TransferGraphBuilder(
+            api_key=alchemy_key,
+            linker=None,
+        )
+
+        logger.info("[TRANSFER_GRAPH] Task started, interval=%ds", interval)
+        first_run = True
+
+        while not close_event.is_set():
+            try:
+                rows = db.execute(
+                    "SELECT wallet_address FROM wallet_watchlist "
+                    "WHERE wallet_address IS NOT NULL LIMIT 500"
+                ).fetchall()
+                wallets = [r[0] for r in rows if r[0]]
+                if not wallets:
+                    logger.debug("[TRANSFER_GRAPH] wallet_watchlist empty, skipping build")
+                else:
+                    logger.info("[TRANSFER_GRAPH] Building graph for %d wallets", len(wallets))
+                    for addr in wallets:
+                        if close_event.is_set():
+                            break
+                        try:
+                            latest = db.execute(
+                                "SELECT MAX(block_number) FROM transfer_events"
+                            ).fetchone()
+                            latest_block = int(latest[0] or 0) if latest else 0
+                            await linker.build_for_wallet(addr, latest_block)
+                        except Exception as exc:
+                            logger.warning(
+                                "[TRANSFER_GRAPH] build addr=%s exc=%s",
+                                addr[:10], exc,
+                            )
+                        await asyncio.sleep(0.01)  # avoid event-loop starvation
+
+                    if first_run:
+                        logger.info(
+                            "[TRANSFER_GRAPH] Initial warm-up complete (%d wallets)",
+                            len(wallets),
+                        )
+                        first_run = False
+            except asyncio.CancelledError:
+                logger.info("[TRANSFER_GRAPH] Task cancelled")
+                raise
+            except Exception as exc:
+                logger.error("[TRANSFER_GRAPH] Unexpected error: %s", exc, exc_info=True)
+
+            try:
+                await asyncio.wait_for(close_event.wait(), timeout=float(interval))
+            except asyncio.TimeoutError:
+                pass  # normal loop continuation
+
+        try:
+            await linker.close()
+        except Exception:
+            pass
+        logger.info("[TRANSFER_GRAPH] Task exited cleanly")
+
+    # ── D171 Q1-A: Fingerprint recompute task ────────────────────────────────
+    async def _run_fingerprint_recompute(db: ShadowDB, close_event: asyncio.Event) -> None:
+        """
+        Run fingerprint_recompute_loop from fingerprint_scrubber.py.
+        Passes close_event for graceful D171 orchestrator shutdown.
+        """
+        from panopticon_py.hunting.fingerprint_scrubber import fingerprint_recompute_loop
+
+        logger.info("[FINGERPRINT] Recompute loop task started")
+        try:
+            await fingerprint_recompute_loop(close_event=close_event)
+        except asyncio.CancelledError:
+            logger.info("[FINGERPRINT] Task cancelled")
+            raise
+        except Exception as exc:
+            logger.error("[FINGERPRINT] Fatal error: %s", exc, exc_info=True)
+        logger.info("[FINGERPRINT] Task exited")
+
+    # Launch D171 Q1-A tasks
+    transfer_graph_task = asyncio.create_task(
+        _init_transfer_graph(db, _close_event),
+        name="transfer_graph",
+    )
+    fingerprint_task = asyncio.create_task(
+        _run_fingerprint_recompute(db, _close_event),
+        name="fingerprint_recompute",
+    )
+    logger.info("[ORCH] D171: transfer_graph + fingerprint_recompute tasks launched")
+
     # ── RVF: Pipeline Verification Framework (opt-in only) ──────────────
     # Activated by PANOPTICON_RVF=1 env var. Non-invasive — reads DB + log only.
     if os.getenv("PANOPTICON_RVF") == "1":
@@ -890,8 +991,11 @@ async def main_async() -> int:
         # No subprocess workers to monitor — discovery_loop runs in start_shadow_hydration.py
 
         # If any async task crashed, propagate
-        crashed = [t for t in [radar_task, ofi_task, graph_task, polygon_task, se_task, insider_task, te_recompute_task, whale_task, discovery_task]
-                  if t.done() and t.exception()]
+        crashed = [t for t in [
+            radar_task, ofi_task, graph_task, polygon_task, se_task,
+            insider_task, te_recompute_task, whale_task, discovery_task,
+            transfer_graph_task, fingerprint_task,  # D171 Q1-A
+        ] if t.done() and t.exception()]
         for task in crashed:
             logger.error("[ORCH] %s crashed: %s", task.get_name(), task.exception())
             if task is se_task:
@@ -909,7 +1013,11 @@ async def main_async() -> int:
     _close_event.set()
     DBWriterQueue.enqueue_sentinel()
 
-    for task in [radar_task, ofi_task, graph_task, polygon_task, se_task, insider_task, te_recompute_task, whale_task, discovery_task]:
+    for task in [
+            radar_task, ofi_task, graph_task, polygon_task, se_task,
+            insider_task, te_recompute_task, whale_task, discovery_task,
+            transfer_graph_task, fingerprint_task,  # D171 Q1-A
+        ]:
         task.cancel()
         try:
             await asyncio.wait_for(task, timeout=5.0)
