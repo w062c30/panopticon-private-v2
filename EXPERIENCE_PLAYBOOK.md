@@ -815,3 +815,17 @@ Python class 中若同名 method 被定義兩次，後者無條件靜默覆蓋�
 **D100 修復日期**: 2026-04-30
 
 
+## D167 — Entropy Cold-Start Constraint (2026-05-05)
+
+**Design constraint (not a bug):**
+After process restart, `z_eval_ok=0` is expected for the first 10–15 minutes.
+Root cause: `_h_history` requires ≥ 5 H-samples; each H-sample requires one
+`window_sec` worth of events (T1=5s, T2/T3=60s). For T2/T3 markets, this
+accumulation takes ~5 minutes minimum.
+
+**Verified env (D167 P0-T2 best result):**
+- `HUNT_EW_UNLOCK_EVENT_COUNT=8` (D166 default — do not lower)
+- `HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC=3.0` (D166 default — rollback value)
+- `HUNT_MIN_HISTORY_FOR_Z=5` (hard floor — do not lower without Architect approval)
+
+**NQ-4 status:** z_distribution.json accumulating. Re-review when count ≥ 500.
