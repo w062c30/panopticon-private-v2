@@ -500,6 +500,8 @@ class ShadowDB:
         self._ensure_pipeline_health_table()
         self._ensure_identity_coverage_table()
         self._ensure_series_tables()
+        self._ensure_polygon_sync_table()
+        self._ensure_wallet_watchlist_table()
         self.conn.commit()
 
     # D80: Expose sqlite3.Connection.execute for callers that expect a raw cursor.
@@ -1387,6 +1389,36 @@ class ShadowDB:
               PRIMARY KEY (wallet_address)
             );
             """
+        )
+
+    def _ensure_polygon_sync_table(self) -> None:
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS polygon_sync (
+              id INTEGER PRIMARY KEY,
+              last_processed_block INTEGER NOT NULL DEFAULT 0,
+              updated_ts_utc TEXT NOT NULL
+            )
+            """
+        )
+
+    def _ensure_wallet_watchlist_table(self) -> None:
+        """D169 P2-T2: wallet watchlist populated by WhaleScanner.consume_transfers."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS wallet_watchlist (
+              wallet_address        TEXT PRIMARY KEY,
+              first_seen_block     INTEGER NOT NULL,
+              first_seen_ts_utc    TEXT NOT NULL,
+              last_seen_block      INTEGER NOT NULL,
+              last_seen_ts_utc    TEXT NOT NULL,
+              transfer_count       INTEGER NOT NULL DEFAULT 0,
+              total_usdc_in        REAL NOT NULL DEFAULT 0.0,
+              profile_json         TEXT,
+              profile_fetched_ts_utc TEXT
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_watchlist_last_seen ON wallet_watchlist(last_seen_ts_utc)"
         )
 
     def append_hunting_shadow_hit(self, row: dict[str, Any]) -> None:

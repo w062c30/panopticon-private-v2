@@ -16,14 +16,23 @@ Invariant 1.4: T2/T2-POL Smart Money signal source is wallet_observations, not O
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import sqlite3
 import urllib.parse
+from typing import Any
 
+import aiohttp
+import websockets
+
+from panopticon_py.db import DBWriterQueue
 from panopticon_py.db import ShadowDB
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 logger = logging.getLogger(__name__)
+PROCESS_VERSION = "v1.0.0-D169"
 
 # Political market keyword whitelist (slug match, lowercase)
 POL_KEYWORDS: list[str] = [
@@ -48,6 +57,15 @@ _EXCLUDE_SLUG_SEGMENTS: list[str] = [
 ]
 
 GAMMA_URL = "https://gamma-api.polymarket.com/markets"
+
+USDC_E_ADDRESS = "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"
+TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+ALCHEMY_WSS_URL = "wss://polygon-mainnet.g.alchemy.com/v2/{api_key}"
+ALCHEMY_HTTP_URL = "https://polygon-mainnet.g.alchemy.com/v2/{api_key}"
+USDC_DECIMALS = 6
+MIN_USDC_FILTER = float(os.getenv("PANOPTICON_MIN_USDC_FILTER", "100.0"))
+MAX_BLOCKS_PER_LOGS_QUERY = 9
+REORG_BUFFER = 5
 
 # D101: Concurrency guard for Gamma API calls
 # Note: semaphore is now lazily initialised inside scan_pol_markets()
@@ -329,3 +347,215 @@ def sync_scan_pol_markets(db: ShadowDB, *, max_pages: int = 5) -> int:
         logger.info("[POL_SCAN][SYNC] upserted=%d / api_total=%d political markets", count, total_from_api)
 
     return count
+
+
+class PolygonListener:
+    def __init__(self, api_key: str, outbound: asyncio.Queue, db_path: str) -> None:
+        self._api_key = api_key
+        self._outbound = outbound
+        self._db_path = db_path
+        self._http_session: aiohttp.ClientSession | None = None
+        self._last_block = self._load_last_block()
+
+    def _load_last_block(self) -> int:
+        try:
+            with sqlite3.connect(self._db_path, timeout=10) as conn:
+                row = conn.execute(
+                    "SELECT last_processed_block FROM polygon_sync WHERE id=1"
+                ).fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.Error as exc:
+            logger.warning("[POL_LISTENER] load last block failed: %s", exc)
+            return 0
+
+    def _save_last_block(self, block: int) -> None:
+        ok = DBWriterQueue.put(
+            "INSERT OR REPLACE INTO polygon_sync (id, last_processed_block, updated_ts_utc) VALUES (1, ?, ?)",
+            (int(block), utc_now_rfc3339_ms()),
+            table_hint="polygon_sync",
+        )
+        if not ok:
+            logger.warning("[POL_LISTENER] failed to enqueue polygon_sync update block=%s", block)
+
+    def _decode_transfer(self, log: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(log, dict):
+            return None
+        topics = log.get("topics")
+        if not isinstance(topics, list) or len(topics) < 3:
+            return None
+        if str(topics[0]).lower() != TRANSFER_TOPIC:
+            return None
+        try:
+            from_addr = ("0x" + str(topics[1])[-40:]).lower()
+            to_addr = ("0x" + str(topics[2])[-40:]).lower()
+            raw = int(str(log.get("data", "0x0")), 16)
+            block_num = int(str(log.get("blockNumber", "0x0")), 16)
+            log_index = int(str(log.get("logIndex", "0x0")), 16)
+        except (TypeError, ValueError):
+            return None
+
+        usdc_amount = raw / (10 ** USDC_DECIMALS)
+        if usdc_amount < MIN_USDC_FILTER:
+            return None
+
+        tx_hash = str(log.get("transactionHash") or "").lower()
+        return {
+            "tx_hash": tx_hash,
+            "block": block_num,
+            "from": from_addr,
+            "to": to_addr,
+            "usdc_amount": usdc_amount,
+            "log_index": log_index,
+            "received_ts_utc": utc_now_rfc3339_ms(),
+        }
+
+    def _put_safe(self, item: dict[str, Any]) -> None:
+        try:
+            self._outbound.put_nowait(item)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[POL_LISTENER] outbound queue full, dropping tx=%s",
+                str(item.get("tx_hash", ""))[:18],
+            )
+
+    async def _ensure_http_session(self) -> aiohttp.ClientSession:
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        return self._http_session
+
+    async def _http_post_rpc(self, payload: dict[str, Any]) -> dict[str, Any]:
+        session = await self._ensure_http_session()
+        async with session.post(ALCHEMY_HTTP_URL.format(api_key=self._api_key), json=payload) as resp:
+            return await resp.json()
+
+    async def _get_latest_block(self) -> int:
+        data = await self._http_post_rpc(
+            {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}
+        )
+        result = data.get("result")
+        if not isinstance(result, str):
+            raise RuntimeError(f"eth_blockNumber malformed response: {data}")
+        return int(result, 16)
+
+    async def _http_fallback(self) -> None:
+        try:
+            latest = await self._get_latest_block() - REORG_BUFFER
+        except Exception as exc:
+            logger.warning("[POL_LISTENER] fallback latest-block error: %s", exc)
+            return
+
+        start = max(self._last_block + 1, latest - 100)
+        if start > latest:
+            return
+
+        logger.info("[POL_LISTENER] fallback start=%d latest=%d", start, latest)
+        while start <= latest:
+            end = min(start + MAX_BLOCKS_PER_LOGS_QUERY - 1, latest)
+            try:
+                data = await self._http_post_rpc(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "eth_getLogs",
+                        "params": [
+                            {
+                                "fromBlock": hex(start),
+                                "toBlock": hex(end),
+                                "address": USDC_E_ADDRESS,
+                                "topics": [TRANSFER_TOPIC],
+                            }
+                        ],
+                    }
+                )
+                logs = data.get("result")
+                if not isinstance(logs, list):
+                    logger.warning("[POL_LISTENER] eth_getLogs malformed response: %s", data)
+                    return
+                pushed = 0
+                for raw_log in logs:
+                    item = self._decode_transfer(raw_log)
+                    if item:
+                        self._put_safe(item)
+                        pushed += 1
+                self._last_block = end
+                self._save_last_block(end)
+                logger.info(
+                    "[POL_LISTENER] eth_getLogs blocks=%d-%d items=%d",
+                    start,
+                    end,
+                    pushed,
+                )
+            except Exception as exc:
+                logger.warning("[POL_LISTENER] eth_getLogs blocks=%d-%d error=%s", start, end, exc)
+                return
+            start = end + 1
+            await asyncio.sleep(0.2)
+
+    async def _wss_loop(self) -> None:
+        backoff = 5.0
+        while True:
+            try:
+                async with websockets.connect(
+                    ALCHEMY_WSS_URL.format(api_key=self._api_key),
+                    ping_interval=30,
+                    ping_timeout=15,
+                    subprotocols=None,
+                    extensions=None,
+                ) as ws:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "eth_subscribe",
+                                "params": [
+                                    "logs",
+                                    {"address": USDC_E_ADDRESS, "topics": [TRANSFER_TOPIC]},
+                                ],
+                            }
+                        )
+                    )
+                    sub_resp = json.loads(await ws.recv())
+                    sub_id = sub_resp.get("result")
+                    if not isinstance(sub_id, str):
+                        logger.error("[POL_LISTENER] eth_subscribe failed: %s", sub_resp)
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 2, 60.0)
+                        continue
+                    logger.info("[POL_LISTENER] WSS subscribed sub_id=%s", sub_id)
+                    backoff = 5.0
+
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if msg.get("method") != "eth_subscription":
+                            continue
+                        log = (msg.get("params") or {}).get("result")
+                        item = self._decode_transfer(log)
+                        if item:
+                            self._put_safe(item)
+                            self._last_block = int(item["block"])
+                            self._save_last_block(self._last_block)
+            except Exception as exc:
+                logger.warning("[POL_LISTENER] WSS error: %s — fallback then reconnect", exc)
+                await self._http_fallback()
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+
+    async def run(self) -> None:
+        if not self._api_key:
+            logger.error("[POL_LISTENER] ALCHEMY_API_KEY missing; listener disabled")
+            return
+        logger.info(
+            "[POL_LISTENER] starting version=%s last_block=%d",
+            PROCESS_VERSION,
+            self._last_block,
+        )
+        try:
+            await self._wss_loop()
+        finally:
+            if self._http_session and not self._http_session.closed:
+                with contextlib.suppress(Exception):
+                    await self._http_session.close()

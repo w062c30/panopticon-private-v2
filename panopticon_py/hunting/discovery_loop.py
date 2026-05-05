@@ -19,21 +19,12 @@ from uuid import uuid4
 import httpx
 
 from panopticon_py.db import ShadowDB
-from panopticon_py.hunting.entity_linker import sybil_group_wallets, trace_funding_roots
-from panopticon_py.hunting.fingerprint_scrubber import (
-    WalletTradeSample,
-    fetch_wallet_history,
-    scrub_wallet_for_discovery,
-)
-from panopticon_py.hunting.moralis_client import (
-    fetch_wallet_erc20_transfers_capped,
-    map_erc20_transfers_to_history_rows,
-)
-from panopticon_py.load_env import load_repo_env
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 logger = logging.getLogger(__name__)
 
+PROCESS_VERSION = "v1.0.0-D169"
+DISCOVERY_INTERVAL_SEC = 300
 
 def _utc() -> str:
     return utc_now_rfc3339_ms()
@@ -1245,3 +1236,32 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+async def run_discovery_loop() -> None:
+    """D169 P2-T2: scan wallet_watchlist every 5 min for newly active wallets."""
+    db_path = os.getenv("PANOPTICON_DB_PATH", "data/panopticon.db")
+    last_log = time.monotonic()
+    while True:
+        try:
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect(db_path, timeout=10) as conn:
+                rows = conn.execute("""
+                    SELECT wallet_address, transfer_count, total_usdc_in, last_seen_ts_utc
+                    FROM wallet_watchlist
+                    WHERE last_seen_ts_utc >= datetime('now', '-5 minutes')
+                    ORDER BY total_usdc_in DESC
+                    LIMIT 20
+                """).fetchall()
+            if (time.monotonic() - last_log) >= 60.0:
+                logger.info("[DISCOVERY] last-5min active wallets=%d", len(rows))
+                last_log = time.monotonic()
+            for r in rows:
+                logger.info(
+                    "[DISCOVERY] wallet=%s n_transfers=%d total_usdc=%.2f last=%s",
+                    str(r[0])[:10], r[1], r[2], r[3],
+                )
+        except Exception as exc:
+            logger.warning("[DISCOVERY] loop error: %s", exc)
+        await asyncio.sleep(DISCOVERY_INTERVAL_SEC)
+

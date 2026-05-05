@@ -11,13 +11,27 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Optional
 from uuid import uuid4
 
+import aiohttp
+
 from panopticon_py import signal_engine as _signal_engine
+from panopticon_py.db import DBWriterQueue
+from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 logger = logging.getLogger("panopticon.whale")
+
+PROCESS_VERSION = "v1.0.0-D169"
+
+GAMMA_PROFILE_URL = "https://gamma-api.polymarket.com/public-profile"
+PROFILE_CACHE_TTL_SEC = 86400
+PROFILE_NEG_CACHE_TTL_SEC = 3600
+PROFILE_CACHE_MAX = 10000
+MIN_USDC_DEFENSIVE_GATE = 100.0
 
 # D31 FIX: reduced from 6.0 → 2.0 (paper trading mode — we want to see alerts firing)
 # Max achievable score: Signal1(2) + Signal2(3) + Signal3(2) + Signal4(1) + Signal5(2) + Signal6(1) = 11 pts
@@ -792,3 +806,123 @@ async def run_whale_scanner_loop(db, t2_market_getter) -> None:
         except Exception as e:
             logger.error("[WHALE] Scan error: %s", e)
         await asyncio.sleep(WHALE_SCAN_INTERVAL_SEC)
+
+
+class _TTLCache:
+    """Tiny TTL cache for profile responses — replaces cachetools if unapproved."""
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = maxsize
+        self._d: dict[str, tuple[float, dict | None]] = {}
+
+    def get(self, key: str) -> Optional[tuple[dict | None, bool]]:
+        v = self._d.get(key)
+        if not v:
+            return None
+        expires_at, value = v
+        if time.monotonic() > expires_at:
+            self._d.pop(key, None)
+            return None
+        return value, True
+
+    def set(self, key: str, value: dict | None, ttl: float) -> None:
+        if len(self._d) >= self._maxsize:
+            for k in list(self._d.keys())[: max(1, self._maxsize // 10)]:
+                self._d.pop(k, None)
+        self._d[key] = (time.monotonic() + ttl, value)
+
+
+class WhaleScanner:
+    """D169 P2-T2: consumes PolygonListener Transfer events → wallet_watchlist DB."""
+
+    def __init__(self) -> None:
+        self._profile_cache = _TTLCache(maxsize=PROFILE_CACHE_MAX)
+        self._http: aiohttp.ClientSession | None = None
+        self._stats = {"hits": 0, "misses": 0, "negatives": 0, "errors": 0}
+
+    async def _ensure_http(self) -> aiohttp.ClientSession:
+        if self._http is None or self._http.closed:
+            self._http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+        return self._http
+
+    async def _get_profile(self, wallet: str) -> Optional[dict]:
+        cached = self._profile_cache.get(wallet)
+        if cached is not None:
+            self._stats["hits"] += 1
+            return cached[0]
+        self._stats["misses"] += 1
+        session = await self._ensure_http()
+        try:
+            async with session.get(GAMMA_PROFILE_URL, params={"address": wallet}) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if not isinstance(data, dict) or not data:
+                        self._profile_cache.set(wallet, None, PROFILE_NEG_CACHE_TTL_SEC)
+                        self._stats["negatives"] += 1
+                        return None
+                    self._profile_cache.set(wallet, data, PROFILE_CACHE_TTL_SEC)
+                    return data
+                if resp.status == 404:
+                    self._profile_cache.set(wallet, None, PROFILE_NEG_CACHE_TTL_SEC)
+                    self._stats["negatives"] += 1
+                    return None
+                self._stats["errors"] += 1
+                return None
+        except Exception as exc:
+            logger.warning(
+                "[WHALE_SCANNER] profile fetch error wallet=%s err=%s",
+                wallet[:10], exc,
+            )
+            self._stats["errors"] += 1
+            return None
+
+    def _upsert_watchlist(self, transfer: dict, profile: Optional[dict]) -> bool:
+        wallet = str(transfer.get("to") or "").strip()
+        if not wallet:
+            return False
+        block = int(transfer.get("block") or 0)
+        usdc = float(transfer.get("usdc_amount") or 0.0)
+        now = utc_now_rfc3339_ms()
+        profile_json = json.dumps(profile) if profile else None
+        return DBWriterQueue.put(
+            """
+            INSERT INTO wallet_watchlist
+              (wallet_address, first_seen_block, first_seen_ts_utc,
+               last_seen_block, last_seen_ts_utc, transfer_count, total_usdc_in,
+               profile_json, profile_fetched_ts_utc)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(wallet_address) DO UPDATE SET
+              last_seen_block        = excluded.last_seen_block,
+              last_seen_ts_utc       = excluded.last_seen_ts_utc,
+              transfer_count         = transfer_count + 1,
+              total_usdc_in          = total_usdc_in + ?,
+              profile_json           = COALESCE(excluded.profile_json, profile_json),
+              profile_fetched_ts_utc = COALESCE(excluded.profile_fetched_ts_utc, profile_fetched_ts_utc)
+            """,
+            (wallet, block, now, block, now, usdc, profile_json, now if profile else None, usdc),
+            table_hint="wallet_watchlist",
+        )
+
+    async def consume_transfers(self, queue: asyncio.Queue) -> None:
+        logger.info("[WHALE_SCANNER] starting version=%s", PROCESS_VERSION)
+        last_log = time.monotonic()
+        while True:
+            transfer = await queue.get()
+            if not isinstance(transfer, dict):
+                continue
+            usdc = float(transfer.get("usdc_amount") or 0.0)
+            if usdc < MIN_USDC_DEFENSIVE_GATE:
+                continue
+            wallet = str(transfer.get("to") or "").strip()
+            if not wallet:
+                continue
+            profile = await self._get_profile(wallet)
+            self._upsert_watchlist(transfer, profile)
+
+            if (time.monotonic() - last_log) >= 60.0:
+                logger.info(
+                    "[PROFILE_CACHE] hits=%d misses=%d neg=%d err=%d",
+                    self._stats["hits"], self._stats["misses"],
+                    self._stats["negatives"], self._stats["errors"],
+                )
+                last_log = time.monotonic()

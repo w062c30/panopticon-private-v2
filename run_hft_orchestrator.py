@@ -56,6 +56,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from panopticon_py.db import DBWriterQueue, ShadowDB
 from panopticon_py.friction_state import FrictionStateWorker, GlobalFrictionState
+from panopticon_py.hunting.pol_monitor import PolygonListener
 from panopticon_py.hft.graph_linker import HiddenLinkGraphEngine
 from panopticon_py.hft.hyperliquid_ws_client import HyperliquidOFIEngine, UnderlyingShock
 from panopticon_py.load_env import load_repo_env
@@ -71,7 +72,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.2.0-D168"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown
+PROCESS_VERSION = "v1.4.0-D169"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -673,6 +674,7 @@ async def main_async() -> int:
 
     # ── Signal Queue — zero-latency event bus [Invariant 1.1] ─────────────
     signal_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+    polygon_outbound: asyncio.Queue = asyncio.Queue(maxsize=5000)
 
     def _persist_writer_health() -> None:
         """D168: Preserve legacy async writer fields while DB writer owns the health file."""
@@ -687,6 +689,14 @@ async def main_async() -> int:
     radar_task    = asyncio.create_task(run_polymarket_radar(signal_queue, db), name="radar")
     ofi_task      = asyncio.create_task(run_hyperliquid_ofi(signal_queue, db, te_cache), name="ofi")
     graph_task    = asyncio.create_task(run_graph_linker(db), name="graph")
+    polygon_task  = asyncio.create_task(
+        PolygonListener(
+            api_key=os.getenv("ALCHEMY_API_KEY", ""),
+            outbound=polygon_outbound,
+            db_path=str(db.path),
+        ).run(),
+        name="polygon",
+    )
 
     #   signal_engine as asyncio task (NOT subprocess — per Q11 ruling)
     from panopticon_py import signal_engine as se_module
@@ -696,12 +706,23 @@ async def main_async() -> int:
     )
     logger.info("[ORCH] Signal engine running as asyncio task (not subprocess)")
 
-    # NOTE: discovery_loop is NOT spawned here.
-    # It runs as a standalone process via scripts/start_shadow_hydration.py.
-    # This orchestrator focuses on real-time pipeline: Radar + OFI + Graph + Signal Engine.
-    # Spawning discovery_loop here would cause DB lock if both are run simultaneously.
+    # D169 P2-T2: WhaleScanner + discovery_loop — consume PolygonListener queue
+    from panopticon_py.hunting.whale_scanner import WhaleScanner
+    from panopticon_py.hunting.discovery_loop import run_discovery_loop as run_discovery_loop_fn
+    scanner = WhaleScanner()
+    whale_task = asyncio.create_task(
+        scanner.consume_transfers(polygon_outbound),
+        name="whale_scanner",
+    )
+    discovery_task = asyncio.create_task(
+        run_discovery_loop_fn(),
+        name="discovery_loop",
+    )
+    logger.info("[ORCH] WhaleScanner + discovery_loop launched")
 
-    logger.info("[ORCH] All 4 tracks launched — monitoring for shutdown")
+    # NOTE: legacy discovery_loop (scripts/start_shadow_hydration.py) is separate.
+
+    logger.info("[ORCH] All 7 tracks launched — monitoring for shutdown")
 
     # ── D69 Insider Detection: per-market InsiderDetector track ─────────────
     # Q3 Ruling: Integrate InsiderDetector into orchestrator main loop.
@@ -867,7 +888,7 @@ async def main_async() -> int:
         # No subprocess workers to monitor — discovery_loop runs in start_shadow_hydration.py
 
         # If any async task crashed, propagate
-        crashed = [t for t in [radar_task, ofi_task, graph_task, se_task, insider_task, te_recompute_task]
+        crashed = [t for t in [radar_task, ofi_task, graph_task, polygon_task, se_task, insider_task, te_recompute_task, whale_task, discovery_task]
                   if t.done() and t.exception()]
         for task in crashed:
             logger.error("[ORCH] %s crashed: %s", task.get_name(), task.exception())
@@ -886,7 +907,7 @@ async def main_async() -> int:
     _close_event.set()
     DBWriterQueue.enqueue_sentinel()
 
-    for task in [radar_task, ofi_task, graph_task, se_task, insider_task, te_recompute_task]:
+    for task in [radar_task, ofi_task, graph_task, polygon_task, se_task, insider_task, te_recompute_task, whale_task, discovery_task]:
         task.cancel()
         try:
             await asyncio.wait_for(task, timeout=5.0)
@@ -922,6 +943,8 @@ async def main_async() -> int:
 
 def main() -> int:
     global args
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     ap = argparse.ArgumentParser(description="Panopticon HFT Orchestrator")
     ap.add_argument(
         "--db-path",

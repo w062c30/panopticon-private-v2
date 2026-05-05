@@ -118,7 +118,6 @@ graph.json
 
 # ── Architecture handoffs (do NOT push to remote) ───────────────────────────
 temp_architect_handoffs/
-FEATURE_INDEX.md
 
 # ── OS noise ─────────────────────────────────────────────────────────────────
 .DS_Store
