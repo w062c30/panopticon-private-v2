@@ -244,7 +244,7 @@ Do NOT append caveats in favour of your original suggestion.
 ## Format Rules
 
 - Title: `temp_architect_handoffs/YYYY-MM-DD_HHMM_<tag>.md`
-- First line: `Use the "architect-response-when-receiving-handoff" skill.` (hard requirement)
+- First line: `Give step be step guide, code example, brainstorming for possible code/logic errors to give appropriate restrictions to avoid errors, to give a complete implementation plan for coding agent.` (hard requirement)
 - Prose: ≤ 350 lines (can be slightly eased if needed). Code blocks exempt.
 - Language: Traditional Chinese headers; code/logs/paths/Qs in English
 - Never commit handoff files to git
