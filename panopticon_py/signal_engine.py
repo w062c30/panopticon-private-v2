@@ -1,5 +1,5 @@
 """
-Panopticon Signal Engine — zero-latency event-driven consensus Bayesian decision actor (v5.0.0-D170).
+Panopticon Signal Engine — zero-latency event-driven consensus Bayesian decision actor (v5.1.0-D171).
 
 D170: Added L4 signal fusion (Alert + L4Fuser) — PATH-A live, PATH-B stub.
       Fixed dataclasses.replace import (B4 NameError in shadow mode).
@@ -107,7 +107,7 @@ DEFAULT_CAPITAL = 100.0
 KELLY_FRACTION = 0.25
 D167_TAG = "D167-dry-run-signal"
 D170_TAG = "D170-l4-fusion"
-PROCESS_VERSION = "v5.0.0-D170"
+PROCESS_VERSION = "v5.1.0-D171"  # D171: L4 fusion + fingerprint + transfer graph
 L4_WINDOW_SEC = float(os.getenv("PANOPTICON_L4_WINDOW_SEC", "300"))
 L4_BOOST_FACTOR = float(os.getenv("PANOPTICON_L4_BOOST_FACTOR", "1.5"))
 L4_BOOST_CAP = float(os.getenv("PANOPTICON_L4_BOOST_CAP", "1.0"))

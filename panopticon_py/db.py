@@ -502,6 +502,7 @@ class ShadowDB:
         self._ensure_series_tables()
         self._ensure_polygon_sync_table()
         self._ensure_wallet_watchlist_table()
+        self._ensure_transfer_graph_tables()
         self.conn.commit()
 
     # D80: Expose sqlite3.Connection.execute for callers that expect a raw cursor.
@@ -1403,23 +1404,58 @@ class ShadowDB:
         )
 
     def _ensure_wallet_watchlist_table(self) -> None:
-        """D169 P2-T2: wallet watchlist populated by WhaleScanner.consume_transfers."""
+        """D169 P2-T2: wallet watchlist populated by WhaleScanner.consume_transfers.
+        D171: added score_components_json column for fingerprint entropy data."""
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS wallet_watchlist (
-              wallet_address        TEXT PRIMARY KEY,
-              first_seen_block     INTEGER NOT NULL,
-              first_seen_ts_utc    TEXT NOT NULL,
-              last_seen_block      INTEGER NOT NULL,
-              last_seen_ts_utc    TEXT NOT NULL,
-              transfer_count       INTEGER NOT NULL DEFAULT 0,
-              total_usdc_in        REAL NOT NULL DEFAULT 0.0,
-              profile_json         TEXT,
-              profile_fetched_ts_utc TEXT
+              wallet_address          TEXT PRIMARY KEY,
+              first_seen_block        INTEGER NOT NULL,
+              first_seen_ts_utc       TEXT NOT NULL,
+              last_seen_block         INTEGER NOT NULL,
+              last_seen_ts_utc       TEXT NOT NULL,
+              transfer_count          INTEGER NOT NULL DEFAULT 0,
+              total_usdc_in           REAL NOT NULL DEFAULT 0.0,
+              profile_json            TEXT,
+              profile_fetched_ts_utc  TEXT,
+              score_components_json   TEXT,
+              alert_emitted_ts_utc    TEXT
             )
         """)
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_watchlist_last_seen ON wallet_watchlist(last_seen_ts_utc)"
         )
+
+    def _ensure_transfer_graph_tables(self) -> None:
+        """D171 P4-T2: transfer_graph and entity_labels tables."""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS transfer_graph (
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              root_wallet  TEXT NOT NULL,
+              from_addr    TEXT NOT NULL,
+              to_addr      TEXT NOT NULL,
+              usdc_amount  REAL NOT NULL,
+              block        INTEGER NOT NULL,
+              hop_depth    INTEGER NOT NULL,
+              tx_hash      TEXT NOT NULL,
+              created_ts_utc TEXT NOT NULL,
+              UNIQUE(root_wallet, tx_hash, hop_depth)
+            )
+        """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tg_root ON transfer_graph(root_wallet, hop_depth)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tg_to ON transfer_graph(to_addr)"
+        )
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS entity_labels (
+              address        TEXT PRIMARY KEY,
+              label          TEXT NOT NULL,
+              source         TEXT NOT NULL,
+              confidence     REAL NOT NULL DEFAULT 0.5,
+              updated_ts_utc TEXT NOT NULL
+            )
+        """)
 
     def append_hunting_shadow_hit(self, row: dict[str, Any]) -> None:
         self.conn.execute(

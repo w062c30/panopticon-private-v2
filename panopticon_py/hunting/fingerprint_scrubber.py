@@ -1,17 +1,194 @@
-"""Fingerprint scrubber: Kelly / one-hit gates, three-tier labels, uncertain-bucket lifecycle."""
+"""Fingerprint scrubber: Kelly / one-hit gates, three-tier labels, uncertain-bucket lifecycle.
+
+D171 Phase: Adds Shannon-entropy fingerprints (size, timing, market concentration)
+for per-wallet behavioral scoring."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import math
 import os
+import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Iterable, Literal
 
+from panopticon_py.db import DBWriterQueue
 from panopticon_py.hunting.four_d_classifier import EntityLabel, classify_high_frequency_wallet
 from panopticon_py.hunting.trade_aggregate import ParentTrade
+from panopticon_py.time_utils import utc_now_rfc3339_ms
+
+PROCESS_VERSION = "v1.0.0-D171"
+
+DEFAULT_SIZE_BUCKETS    = 10
+DEFAULT_TIMING_BUCKETS  = 12
+RECOMPUTE_INTERVAL_SEC  = 30 * 60
+FETCH_CONCURRENCY      = 5
+TRADES_PER_WALLET       = 500
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# D171: Shannon-entropy fingerprints for insider score w1 component
+# ---------------------------------------------------------------------------
+
+
+def _normalized_shannon(counts: Iterable[int]) -> float:
+    counts = [c for c in counts if c > 0]
+    if not counts:
+        return 0.0
+    total = float(sum(counts))
+    if total <= 0 or len(counts) <= 1:
+        return 0.0
+    h = -sum((c / total) * math.log2(c / total) for c in counts)
+    h_max = math.log2(len(counts))
+    return h / h_max if h_max > 0 else 0.0
+
+
+def size_entropy(sizes: list[float], n_buckets: int = DEFAULT_SIZE_BUCKETS) -> float:
+    """Shannon entropy of trade-size distribution, normalised to [0, 1]."""
+    if not sizes or n_buckets < 2:
+        return 0.0
+    log_sizes = [math.log10(max(s, 1e-9)) for s in sizes if s > 0]
+    if len(log_sizes) < 2:
+        return 0.0
+    lo, hi = min(log_sizes), max(log_sizes)
+    if hi - lo < 1e-9:
+        return 0.0
+    width = (hi - lo) / n_buckets
+    buckets = [0] * n_buckets
+    for x in log_sizes:
+        idx = min(int((x - lo) / width), n_buckets - 1)
+        buckets[idx] += 1
+    return _normalized_shannon(buckets)
+
+
+def timing_entropy(timestamps_sec: list[int], n_buckets: int = DEFAULT_TIMING_BUCKETS) -> float:
+    """Entropy of inter-arrival times (log-spaced bins from 1 s to 1 week)."""
+    if len(timestamps_sec) < 2:
+        return 0.0
+    sorted_ts = sorted(timestamps_sec)
+    intervals = [t2 - t1 for t1, t2 in zip(sorted_ts, sorted_ts[1:]) if t2 > t1]
+    if len(intervals) < 2:
+        return 0.0
+    lo_bound = math.log10(1)
+    hi_bound = math.log10(60 * 60 * 24 * 7)  # 1s to 1 week
+    width = (hi_bound - lo_bound) / n_buckets
+    buckets = [0] * n_buckets
+    for x in intervals:
+        log_int = math.log10(max(x, 1))
+        idx = max(0, min(int((log_int - lo_bound) / width), n_buckets - 1))
+        buckets[idx] += 1
+    return _normalized_shannon(buckets)
+
+
+def market_concentration(categories: list[str]) -> dict:
+    """Per-category share + max share (concentration ratio)."""
+    if not categories:
+        return {"max": 0.0}
+    counts = Counter(categories)
+    total = float(sum(counts.values()))
+    shares = {cat: cnt / total for cat, cnt in counts.items()}
+    shares["max"] = max(shares.values())
+    return shares
+
+
+def compute_fingerprint(wallet: str, trades: list[dict]) -> dict:
+    """
+    Build a fingerprint dict from a list of trade dicts.
+
+    Expected trade dict shape (from DataAPIClient.fetch_user_trades):
+      {size, timestamp_seconds, timestamp, market_id, category}
+    """
+    if not trades:
+        return {
+            "size_entropy":     0.0,
+            "timing_entropy":  0.0,
+            "concentration":  {"max": 0.0},
+            "computed_at_utc": utc_now_rfc3339_ms(),
+            "n_trades_sampled": 0,
+        }
+    sizes = []
+    for t in trades:
+        try:
+            s = float(t.get("size", 0))
+        except (TypeError, ValueError):
+            continue
+        if s > 0:
+            sizes.append(s)
+    timestamps = [
+        int(t.get("timestamp_seconds") or t.get("timestamp") or 0)
+        for t in trades
+    ]
+    timestamps = [t for t in timestamps if t > 0]
+    cats = [str(t.get("category", "unknown")).lower() for t in trades]
+    return {
+        "size_entropy":    size_entropy(sizes),
+        "timing_entropy": timing_entropy(timestamps),
+        "concentration":  market_concentration(cats),
+        "computed_at_utc": utc_now_rfc3339_ms(),
+        "n_trades_sampled": len(trades),
+    }
+
+
+async def _recompute_one(client, wallet: str) -> None:
+    try:
+        trades = await client.fetch_user_trades(wallet, limit=TRADES_PER_WALLET)
+    except Exception as exc:
+        logger.warning("[FINGERPRINT][RECOMPUTE_ERR] wallet=%s fetch_err=%s", wallet[:10], exc)
+        return
+    fp = compute_fingerprint(wallet, trades)
+    DBWriterQueue.put(
+        "UPDATE wallet_watchlist SET score_components_json=? WHERE wallet_address=?",
+        (json.dumps(fp), wallet),
+        table_hint="wallet_watchlist",
+    )
+
+
+async def fingerprint_recompute_loop() -> None:
+    """D171: Periodically recompute fingerprints for recently-active watchlist wallets."""
+    from panopticon_py.hunting.data_api_client import DataAPIClient
+
+    db_path = os.environ.get("PANOPTICON_DB_PATH", "data/panopticon.db")
+    client = DataAPIClient()
+    sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+    try:
+        while True:
+            try:
+                with sqlite3.connect(db_path, timeout=10) as conn:
+                    rows = conn.execute("""
+                        SELECT wallet_address FROM wallet_watchlist
+                        WHERE last_seen_ts_utc >= datetime('now', '-1 day')
+                        LIMIT 200
+                    """).fetchall()
+            except Exception as exc:
+                logger.warning("[FINGERPRINT] db read error: %s", exc)
+                rows = []
+
+            async def bounded(wallet: str) -> None:
+                async with sem:
+                    try:
+                        await _recompute_one(client, wallet)
+                    except Exception as exc:
+                        logger.warning("[FINGERPRINT] wallet=%s err=%s", wallet[:10], exc)
+
+            await asyncio.gather(*[bounded(r[0]) for r in rows], return_exceptions=True)
+            logger.info("[FINGERPRINT] recompute pass done wallets=%d", len(rows))
+            await asyncio.sleep(RECOMPUTE_INTERVAL_SEC)
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Legacy fingerprint scrubber (D70-D160)
+# ---------------------------------------------------------------------------
 
 WalletLabel = Literal["SMART_MONEY_QUANT", "LONG_TERM_INSIDER", "WATCHLIST_UNCERTAIN", "NOISE"]
 DiscoveryDropTag = Literal["MARKET_MAKER", "DEGEN_GAMBLER"]
