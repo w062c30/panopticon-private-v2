@@ -1426,7 +1426,8 @@ class ShadowDB:
         )
 
     def _ensure_transfer_graph_tables(self) -> None:
-        """D171 P4-T2: transfer_graph and entity_labels tables."""
+        """D171 P4-T2: transfer_graph and entity_labels tables.
+        D171 P2: wallet_address + entity_link_score hot migration for w4 reads."""
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS transfer_graph (
               id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1446,6 +1447,30 @@ class ShadowDB:
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tg_to ON transfer_graph(to_addr)"
+        )
+        # D171 P2: Add fields required by signal_engine w4 query.
+        self._add_column_if_missing(
+            self.conn,
+            "transfer_graph",
+            "wallet_address",
+            "TEXT",
+            on_locked="warn",
+        )
+        self._add_column_if_missing(
+            self.conn,
+            "transfer_graph",
+            "entity_link_score",
+            "REAL DEFAULT 0.0",
+            on_locked="warn",
+        )
+        # Backfill existing rows for hot migration.
+        self.conn.execute(
+            "UPDATE transfer_graph SET wallet_address = root_wallet "
+            "WHERE wallet_address IS NULL"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tg_wallet_score "
+            "ON transfer_graph(wallet_address, entity_link_score)"
         )
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS entity_labels (

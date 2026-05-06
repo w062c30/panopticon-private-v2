@@ -1,6 +1,6 @@
 # TECH_DEBT — Panopticon Technical Debt & Decision Records
 
-> Last updated: D169 (2026-05-06)
+> Last updated: D171 P2 (2026-05-06)
 > Source: https://github.com/w062c30/panopticon-private-v2
 
 ---
@@ -92,6 +92,32 @@
 **Files**: planning docs + process workflow
 **Problem**: Multi-feature sprint caused orchestrator version to advance to `v1.4.0-D169`; accepted by architect, but forward policy requires one bump target declared per PR/task.
 **Status (D169 close)**: **ACTIVE / D170 BACKLOG (B-4)**.
+
+### D171-P2: transfer_graph schema mismatch vs w4 query
+**Files**: `panopticon_py/db.py`, `panopticon_py/hunting/transfer_graph.py`, `panopticon_py/signal_engine.py`
+**Problem**: `_get_insider_score()` queried `transfer_graph.wallet_address` and `transfer_graph.entity_link_score` but table initially had neither column.
+**Status (D171 P2)**: **RESOLVED** — hot migration adds both columns with backfill + index (`idx_tg_wallet_score`), and transfer graph writes now populate both fields.
+
+---
+
+## Resolved in D171
+
+| Debt ID | Description | Resolved By |
+|---------|-------------|-------------|
+| NQ-1-w1 | velocity_score weight 0.30 not wired to `_get_insider_score` | D171 Q2-A |
+| NQ-1-w2 | consistency_score weight 0.25 not wired | D171 Q2-A |
+| NQ-1-w3 | size_entropy weight 0.20 not reading `score_components_json` | D171 Q2-A |
+| NQ-1-w4 | fund_source_graph score not integrated | D171 Q2-A (w4=0.15, transfer_graph) |
+| NQ-1-w5 | timing_entropy weight 0.10 not wired | D171 Q2-A |
+| NQ-3 | follow-threshold alert hysteresis not implemented | D171 Q3-A (24h, `alert_emitted_ts_utc`) |
+| TG-SCHEMA | transfer_graph missing `wallet_address` + `entity_link_score` | D171 P2 migration |
+
+## Remaining D171 Debt
+
+| Debt ID | Description | Owner | Target |
+|---------|-------------|-------|--------|
+| D171-SOAK | 1h soak: PATH_B_ALERT + FINGERPRINT log verification | Operator | D171 close |
+| D171-ALCHEMY | `ALCHEMY_API_KEY` required for transfer_graph warm-up | Operator | Pre-D172 |
 
 ---
 

@@ -72,7 +72,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.6.0-D171"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop  # D170: L4 fusion prep PATH-B queue stub  # D171 Q1-A: wire _init_transfer_graph + fingerprint_recompute_loop tasks
+PROCESS_VERSION = "v1.6.1-D171"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop  # D170: L4 fusion prep PATH-B queue stub  # D171 Q1-A: wire _init_transfer_graph + fingerprint_recompute_loop tasks  # D171-P2: warm transfer_graph from polygon_sync checkpoint
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -869,10 +869,18 @@ async def main_async() -> int:
                         if close_event.is_set():
                             break
                         try:
-                            latest = db.execute(
-                                "SELECT MAX(block_number) FROM transfer_events"
+                            # D171 P2: avoid dependency on non-existent transfer_events table.
+                            # Use polygon_sync checkpoint as an approximate latest block.
+                            latest_row = db.execute(
+                                """
+                                SELECT last_processed_block
+                                FROM polygon_sync
+                                ORDER BY id DESC
+                                LIMIT 1
+                                """
                             ).fetchone()
-                            latest_block = int(latest[0] or 0) if latest else 0
+                            latest_block = int(latest_row[0] or 0) if latest_row else 0
+
                             await linker.build_for_wallet(addr, latest_block)
                         except Exception as exc:
                             logger.warning(

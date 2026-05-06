@@ -105,9 +105,9 @@ class EntityLinker:
 class TransferGraphBuilder:
     """Bounded BFS traversal of USDC.e transfer graph per wallet."""
 
-    def __init__(self, api_key: str, linker: EntityLinker) -> None:
+    def __init__(self, api_key: str, linker: EntityLinker | None = None) -> None:
         self._api_key = api_key
-        self._linker  = linker
+        self._linker  = linker or EntityLinker()
         self._http: aiohttp.ClientSession | None = None
 
     async def _ensure_http(self) -> aiohttp.ClientSession:
@@ -206,9 +206,12 @@ class TransferGraphBuilder:
                     "block":       t["block"],
                     "hop_depth":   hop,
                     "tx_hash":     t["tx_hash"],
+                    "wallet_address": root_wallet.lower(),
+                    "entity_link_score": 0.0,
                 }
-                edges.append(edge)
                 label, source, conf = self._linker.classify(t["from"])
+                edge["entity_link_score"] = max(0.0, min(1.0, float(conf)))
+                edges.append(edge)
                 self._linker.persist_label(t["from"], label, source, conf)
                 if label == "EOA_PERSONAL" and t["from"] not in visited and hop < max_hops:
                     visited.add(t["from"])
@@ -223,12 +226,12 @@ class TransferGraphBuilder:
             DBWriterQueue.put(
                 """
                 INSERT OR IGNORE INTO transfer_graph
-                  (root_wallet, from_addr, to_addr, usdc_amount, block, hop_depth, tx_hash, created_ts_utc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  (root_wallet, from_addr, to_addr, usdc_amount, block, hop_depth, tx_hash, created_ts_utc, wallet_address, entity_link_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (e["root_wallet"], e["from_addr"], e["to_addr"],
                  e["usdc_amount"], e["block"], e["hop_depth"],
-                 e["tx_hash"], ts_utc),
+                 e["tx_hash"], ts_utc, e["wallet_address"], e["entity_link_score"]),
                 table_hint="transfer_graph",
             )
 
