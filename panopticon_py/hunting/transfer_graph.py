@@ -30,13 +30,14 @@ from panopticon_py.hunting.pol_monitor import (
 )
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
-PROCESS_VERSION = "v1.0.0-D171"
+PROCESS_VERSION = "v1.2.0-D171"
 
 MAX_HOPS_DEFAULT      = 2
-MAX_BLOCKS_PER_HOP   = 5000
+# Alchemy eth_getLogs practical max range is ~2000 blocks; keep bounded.
+MAX_BLOCKS_PER_HOP   = 2000
 MAX_NODES_PER_GRAPH  = 200
-ETH_GETLOGS_PAGE_SIZE = 9
-PER_HOP_TIMEOUT_SEC  = 60.0
+ETH_GETLOGS_PAGE_SIZE = 500
+PER_HOP_TIMEOUT_SEC  = 120.0
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +121,16 @@ class TransferGraphBuilder:
     async def _fetch_inbound_transfers(
         self, wallet: str, from_block: int, to_block: int,
     ) -> list[dict]:
-        """Paginated eth_getLogs in 9-block chunks, filtering to=wallet."""
+        """Paginated eth_getLogs, filtering to=wallet (recipient/inbound)."""
         results: list[dict] = []
         url = ALCHEMY_HTTP_URL.format(api_key=self._api_key)
         session = await self._ensure_http()
         cur = from_block
+        page_count = 0
+        logger.debug(
+            "[TG][DEBUG] wallet=%s from_block=%d to_block=%d range=%d",
+            wallet[:10], from_block, to_block, max(0, to_block - from_block),
+        )
         while cur <= to_block:
             end = min(cur + ETH_GETLOGS_PAGE_SIZE - 1, to_block)
             payload: dict[str, Any] = {
@@ -147,12 +153,42 @@ class TransferGraphBuilder:
                     wallet[:10], cur, end, exc,
                 )
                 break
+            if isinstance(data, dict) and data.get("error"):
+                logger.error(
+                    "[TG][RPC_ERR] wallet=%s blocks=%d-%d error=%s",
+                    wallet[:10], cur, end, data.get("error"),
+                )
+                break
             logs = data.get("result") if isinstance(data, dict) else None
             if not isinstance(logs, list):
+                logger.warning(
+                    "[TG][BAD_RESULT] wallet=%s page=%d data_type=%s keys=%s",
+                    wallet[:10],
+                    page_count,
+                    type(data).__name__,
+                    list(data.keys()) if isinstance(data, dict) else None,
+                )
                 break
+            page_count += 1
+            if logs and page_count == 1:
+                decoded = self._decode_log(logs[0])
+                logger.debug(
+                    "[TG][SAMPLE] wallet=%s decoded=%s",
+                    wallet[:10],
+                    decoded,
+                )
+            logger.debug(
+                "[TG][PAGE] wallet=%s page=%d blocks=%d-%d logs=%d",
+                wallet[:10],
+                page_count,
+                cur,
+                end,
+                len(logs),
+            )
             results.extend(logs)
             cur = end + 1
-            await asyncio.sleep(0.2)
+            # Reduce request bursts to avoid Alchemy 429 rate limits.
+            await asyncio.sleep(0.05)
         return results
 
     def _decode_log(self, log: dict) -> dict | None:
@@ -183,6 +219,7 @@ class TransferGraphBuilder:
         edges: list[dict] = []
         visited: set[str] = {root_wallet.lower()}
         frontier: list[tuple[str, int]] = [(root_wallet.lower(), 1)]
+        frontier_cap = 50
 
         while frontier:
             wallet, hop = frontier.pop()
@@ -198,6 +235,14 @@ class TransferGraphBuilder:
                 t = self._decode_log(log)
                 if not t:
                     continue
+                _label_to_fund_score = {
+                    "ANONYMIZER": 0.0,
+                    "DEX_ROUTER": 0.5,
+                    "CEX": 1.0,
+                    # EntityLinker currently doesn't emit EOA_PERSONAL; keep for compatibility.
+                    "EOA_PERSONAL": 1.0,
+                    "UNKNOWN": 0.3,
+                }
                 edge = {
                     "root_wallet": root_wallet.lower(),
                     "from_addr":   t["from"],
@@ -210,12 +255,20 @@ class TransferGraphBuilder:
                     "entity_link_score": 0.0,
                 }
                 label, source, conf = self._linker.classify(t["from"])
-                edge["entity_link_score"] = max(0.0, min(1.0, float(conf)))
+                edge["entity_link_score"] = _label_to_fund_score.get(label, 0.3)
                 edges.append(edge)
                 self._linker.persist_label(t["from"], label, source, conf)
-                if label == "EOA_PERSONAL" and t["from"] not in visited and hop < max_hops:
-                    visited.add(t["from"])
-                    frontier.append((t["from"], hop + 1))
+                # BFS expansion: follow only non-blacklisted addresses.
+                # EntityLinker only yields (ANONYMIZER/CEX/DEX_ROUTER/UNKNOWN) labels.
+                if label == "UNKNOWN" and t["from"] not in visited and hop < max_hops:
+                    if len(frontier) < frontier_cap:
+                        visited.add(t["from"])
+                        frontier.append((t["from"], hop + 1))
+                    else:
+                        logger.debug(
+                            "[TG][FRONTIER_CAP] root=%s hop=%d frontier=%d",
+                            root_wallet[:10], hop, len(frontier),
+                        )
 
         self._persist_edges(edges)
         return {"root": root_wallet.lower(), "edges": edges, "visited": list(visited)}

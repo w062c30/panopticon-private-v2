@@ -1424,6 +1424,21 @@ class ShadowDB:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_watchlist_last_seen ON wallet_watchlist(last_seen_ts_utc)"
         )
+        # D171 hot migration: ALTER TABLE needed when table already exists
+        self._add_column_if_missing(
+            self.conn,
+            "wallet_watchlist",
+            "score_components_json",
+            "TEXT",
+            on_locked="warn",
+        )
+        self._add_column_if_missing(
+            self.conn,
+            "wallet_watchlist",
+            "alert_emitted_ts_utc",
+            "TEXT",
+            on_locked="warn",
+        )
 
     def _ensure_transfer_graph_tables(self) -> None:
         """D171 P4-T2: transfer_graph and entity_labels tables.
