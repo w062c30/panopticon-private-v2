@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+from panopticon_py.db import DBWriterQueue
 from panopticon_py.hunting.moralis_client import fetch_wallet_erc20_transfers_capped
 from panopticon_py.rate_limit_governor import RateLimitGovernor
+from panopticon_py.time_utils import utc_now_rfc3339_ms
+
+PROCESS_VERSION = "v1.1.0-D171"
+BLACKLIST_PATH = os.environ.get(
+    "PANOPTICON_CEX_BLACKLIST", "config/cex_dex_routers_blacklist.json"
+)
+
+logger = logging.getLogger(__name__)
 
 
 def load_cex_blacklist(path: str | None = None) -> set[str]:
@@ -152,3 +162,85 @@ def sybil_group_wallets(
             groups.pop(source, None)
 
     return {eid: sorted(set(members)) for eid, members in groups.items() if members}
+
+
+class EntityLinker:
+    """
+    Classifies funding addresses for transfer graph scoring.
+    Instantiate once per process and share the instance.
+    """
+
+    def __init__(self, blacklist_path: str = BLACKLIST_PATH) -> None:
+        self._anonymizers: set[str] = set()
+        self._cex: set[str] = set()
+        self._dex: set[str] = set()
+        self._load(blacklist_path)
+
+    def _load(self, path: str) -> None:
+        p = Path(path).expanduser()
+        if not p.is_file():
+            p = Path(__file__).resolve().parents[2] / "config" / "cex_dex_routers_blacklist.json"
+        if not p.is_file():
+            logger.warning("[ENTITY] blacklist not found: %s", p)
+            return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.error("[ENTITY] blacklist parse error: %s", exc)
+            return
+
+        # Support both old style {"addresses":[...]} and revised structured lists.
+        if isinstance(data, dict):
+            addrs = data.get("addresses", [])
+            if isinstance(addrs, list):
+                self._anonymizers = {
+                    str(a).lower() for a in addrs if isinstance(a, str) and a.startswith("0x")
+                }
+            self._anonymizers.update(
+                {
+                    str(x.get("address", "")).lower()
+                    for x in data.get("anonymizers", [])
+                    if isinstance(x, dict) and str(x.get("address", "")).startswith("0x")
+                }
+            )
+            self._cex = {
+                str(x.get("address", x)).lower()
+                for x in data.get("cex_hot_wallets", [])
+                if (
+                    (isinstance(x, dict) and str(x.get("address", "")).startswith("0x"))
+                    or (isinstance(x, str) and x.startswith("0x"))
+                )
+            }
+            self._dex = {
+                str(x.get("address", x)).lower()
+                for x in data.get("dex_routers", [])
+                if (
+                    (isinstance(x, dict) and str(x.get("address", "")).startswith("0x"))
+                    or (isinstance(x, str) and x.startswith("0x"))
+                )
+            }
+        logger.info(
+            "[ENTITY] loaded anon=%d cex=%d dex=%d",
+            len(self._anonymizers), len(self._cex), len(self._dex),
+        )
+
+    def classify(self, address: str) -> tuple[str, str, float]:
+        addr = (address or "").lower()
+        if addr in self._anonymizers:
+            return ("ANONYMIZER", "blacklist", 1.0)
+        if addr in self._cex:
+            return ("CEX", "blacklist", 1.0)
+        if addr in self._dex:
+            return ("DEX_ROUTER", "blacklist", 1.0)
+        return ("UNKNOWN", "default", 0.3)
+
+    def persist_label(self, address: str, label: str, source: str, confidence: float) -> None:
+        DBWriterQueue.put(
+            """
+            INSERT OR REPLACE INTO entity_labels
+              (address, label, source, confidence, updated_ts_utc)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (address.lower(), label, source, float(confidence), utc_now_rfc3339_ms()),
+            table_hint="entity_labels",
+        )

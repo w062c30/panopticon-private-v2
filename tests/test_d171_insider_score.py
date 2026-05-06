@@ -3,9 +3,7 @@ D171 unit tests — Insider Score fingerprints + Transfer Graph.
 Run: pytest tests/test_d171_insider_score.py -v
 """
 
-import asyncio
-import json
-import math
+import sqlite3
 
 import pytest
 
@@ -16,12 +14,8 @@ from panopticon_py.hunting.fingerprint_scrubber import (
     size_entropy,
     timing_entropy,
 )
-from panopticon_py.hunting.transfer_graph import (
-    EntityLinker,
-    TransferGraphBuilder,
-    fund_source_score_from_graph,
-    _wallet_to_topic,
-)
+from panopticon_py.hunting.entity_linker import EntityLinker
+from panopticon_py.hunting.transfer_graph import fund_source_score_from_graph, _wallet_to_topic
 
 
 # ── P4-T1: Entropy functions ───────────────────────────────────────────────────
@@ -152,20 +146,25 @@ class TestEntityLinkerClassify:
 class TestFundSourceScore:
     def test_empty_graph(self):
         linker = EntityLinker()
-        assert fund_source_score_from_graph({}, linker) == 0.0
-        assert fund_source_score_from_graph({"edges": []}, linker) == 0.0
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE transfer_graph (root_wallet TEXT, from_addr TEXT, usdc_amount REAL, hop_depth INTEGER)")
+        assert fund_source_score_from_graph("0xabc", linker, conn) == 0.0
 
     def test_all_clean_sources(self):
         linker = EntityLinker()
-        # Use a non-blacklist address that classifies as UNKNOWN (not ANONYMIZER/DEX)
-        graph = {
-            "edges": [
-                {"from_addr": "0x1111111111111111111111111111111111111111"},
-                {"from_addr": "0x2222222222222222222222222222222222222222"},
-            ]
-        }
-        score = fund_source_score_from_graph(graph, linker)
-        # UNKNOWN → 0.3 per edge; avg = 0.3
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE transfer_graph (root_wallet TEXT, from_addr TEXT, usdc_amount REAL, hop_depth INTEGER)")
+        conn.execute(
+            "INSERT INTO transfer_graph(root_wallet, from_addr, usdc_amount, hop_depth) VALUES (?, ?, ?, 1)",
+            ("0xroot", "0x1111111111111111111111111111111111111111", 100.0),
+        )
+        conn.execute(
+            "INSERT INTO transfer_graph(root_wallet, from_addr, usdc_amount, hop_depth) VALUES (?, ?, ?, 1)",
+            ("0xroot", "0x2222222222222222222222222222222222222222", 50.0),
+        )
+        score = fund_source_score_from_graph("0xroot", linker, conn)
         assert score == 0.3
 
 

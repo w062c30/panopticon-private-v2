@@ -72,7 +72,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.6.1-D171"   # ← AGENT: bump on every change  # D162: sprint tag sync (db.py PRAGMA retry; no logic change in this file)  # D164: sprint tag sync (entropy tuning lives in config + radar; orchestrator unchanged)  # D165: sprint tag sync (D75 naming / unlock thresholds live in radar; orchestrator unchanged)  # D166: radar auto-restart loop with 5s backoff  # D167: signal-engine dry-run/z-distribution wiring sprint tag sync  # D168: DBWriterQueue consumer thread + atexit sentinel shutdown  # D169: polygon listener asyncio task (AQ-6 Option B) + whale_scanner + discovery_loop  # D170: L4 fusion prep PATH-B queue stub  # D171 Q1-A: wire _init_transfer_graph + fingerprint_recompute_loop tasks  # D171-P2: warm transfer_graph from polygon_sync checkpoint
+PROCESS_VERSION = "v1.7.0-D171"   # D171 P4-T2 revised: WSS fanout + TransferGraphIngester + one-shot cold-start
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -677,6 +677,8 @@ async def main_async() -> int:
     # D170 PATH-B stub — will be populated by wallet engine in D171.
     path_b_alert_queue: asyncio.Queue = asyncio.Queue()
     polygon_outbound: asyncio.Queue = asyncio.Queue(maxsize=5000)
+    whale_scanner_queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
+    tg_ingest_queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
 
     def _persist_writer_health() -> None:
         """D168: Preserve legacy async writer fields while DB writer owns the health file."""
@@ -712,8 +714,26 @@ async def main_async() -> int:
     from panopticon_py.hunting.whale_scanner import WhaleScanner
     from panopticon_py.hunting.discovery_loop import run_discovery_loop as run_discovery_loop_fn
     scanner = WhaleScanner()
+
+    async def _fanout_polygon(
+        polygon_outbound_q: asyncio.Queue,
+        whale_queue_q: asyncio.Queue,
+        tg_queue_q: asyncio.Queue,
+    ) -> None:
+        while not _close_event.is_set():
+            item = await polygon_outbound_q.get()
+            try:
+                await whale_queue_q.put(item)
+                await tg_queue_q.put(item)
+            finally:
+                polygon_outbound_q.task_done()
+
+    fanout_task = asyncio.create_task(
+        _fanout_polygon(polygon_outbound, whale_scanner_queue, tg_ingest_queue),
+        name="polygon_fanout",
+    )
     whale_task = asyncio.create_task(
-        scanner.consume_transfers(polygon_outbound),
+        scanner.consume_transfers(whale_scanner_queue),
         name="whale_scanner",
     )
     discovery_task = asyncio.create_task(
@@ -832,85 +852,56 @@ async def main_async() -> int:
     insider_task = asyncio.create_task(run_insider_monitor(db), name="insider")
     logger.info("[ORCH] InsiderDetector monitor started")
 
-    # ── D171 Q1-A: Transfer Graph warming task ────────────────────────────────
-    async def _init_transfer_graph(db: ShadowDB, close_event: asyncio.Event) -> None:
-        """
-        Warm the transfer graph for all wallets in wallet_watchlist.
-        Hard caps enforced inside TransferGraphBuilder.build_for_wallet():
-          max_hops=2, max_blocks_per_hop=5000, max_nodes=200
-        """
-        from panopticon_py.hunting.transfer_graph import TransferGraphBuilder
+    # ── D171 P4-T2 revised: transfer graph (WSS ingester + one-shot cold-start) ──
+    async def _init_transfer_graph_once(db: ShadowDB) -> None:
+        from panopticon_py.hunting.entity_linker import EntityLinker
+        from panopticon_py.hunting.transfer_graph import (
+            TransferGraphIngester,
+            init_transfer_graph,
+        )
         alchemy_key = os.getenv("ALCHEMY_API_KEY", "")
         if not alchemy_key:
             logger.warning("[TRANSFER_GRAPH] ALCHEMY_API_KEY not set — disabled")
-            return
+            async def _noop() -> None:
+                return
+            noop_ingest = asyncio.create_task(_noop(), name="transfer_graph_ingester")
+            noop_init = asyncio.create_task(_noop(), name="transfer_graph_init")
+            return noop_ingest, noop_init
+        linker = EntityLinker()
 
-        interval = int(os.getenv("TRANSFER_GRAPH_INTERVAL_SEC", "300"))
-        linker = TransferGraphBuilder(
-            api_key=alchemy_key,
-            linker=None,
+        def _watchlist_snapshot() -> set[str]:
+            rows = db.execute(
+                "SELECT wallet_address FROM wallet_watchlist WHERE wallet_address IS NOT NULL"
+            ).fetchall()
+            return {str(r[0]).lower() for r in rows if r and r[0]}
+
+        async def _latest_block() -> int:
+            row = db.execute(
+                "SELECT last_processed_block FROM polygon_sync ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return int(row[0] or 0) if row else 0
+
+        tg_ingester = TransferGraphIngester(linker=linker, watchlist_fn=_watchlist_snapshot)
+        transfer_graph_ingest_task = asyncio.create_task(
+            tg_ingester.run(tg_ingest_queue),
+            name="transfer_graph_ingester",
         )
 
-        logger.info("[TRANSFER_GRAPH] Task started, interval=%ds", interval)
-        first_run = True
-
-        while not close_event.is_set():
-            try:
-                rows = db.execute(
-                    "SELECT wallet_address FROM wallet_watchlist "
-                    "WHERE wallet_address IS NOT NULL LIMIT 500"
-                ).fetchall()
-                wallets = [r[0] for r in rows if r[0]]
-                if not wallets:
-                    logger.debug("[TRANSFER_GRAPH] wallet_watchlist empty, skipping build")
-                else:
-                    logger.info("[TRANSFER_GRAPH] Building graph for %d wallets", len(wallets))
-                    for addr in wallets:
-                        if close_event.is_set():
-                            break
-                        try:
-                            # D171 P2: avoid dependency on non-existent transfer_events table.
-                            # Use polygon_sync checkpoint as an approximate latest block.
-                            latest_row = db.execute(
-                                """
-                                SELECT last_processed_block
-                                FROM polygon_sync
-                                ORDER BY id DESC
-                                LIMIT 1
-                                """
-                            ).fetchone()
-                            latest_block = int(latest_row[0] or 0) if latest_row else 0
-
-                            await linker.build_for_wallet(addr, latest_block)
-                        except Exception as exc:
-                            logger.warning(
-                                "[TRANSFER_GRAPH] build addr=%s exc=%s",
-                                addr[:10], exc,
-                            )
-                        await asyncio.sleep(0.01)  # avoid event-loop starvation
-
-                    if first_run:
-                        logger.info(
-                            "[TRANSFER_GRAPH] Initial warm-up complete (%d wallets)",
-                            len(wallets),
-                        )
-                        first_run = False
-            except asyncio.CancelledError:
-                logger.info("[TRANSFER_GRAPH] Task cancelled")
-                raise
-            except Exception as exc:
-                logger.error("[TRANSFER_GRAPH] Unexpected error: %s", exc, exc_info=True)
-
-            try:
-                await asyncio.wait_for(close_event.wait(), timeout=float(interval))
-            except asyncio.TimeoutError:
-                pass  # normal loop continuation
-
-        try:
-            await linker.close()
-        except Exception:
-            pass
-        logger.info("[TRANSFER_GRAPH] Task exited cleanly")
+        wallets = sorted(_watchlist_snapshot())
+        transfer_graph_init_task = asyncio.create_task(
+            init_transfer_graph(
+                watchlist=wallets,
+                alchemy_key=alchemy_key,
+                linker=linker,
+                get_latest_block_fn=_latest_block,
+            ),
+            name="transfer_graph_init",
+        )
+        logger.info(
+            "[TRANSFER_GRAPH] revised tasks launched (ingester + one-shot init), wallets=%d",
+            len(wallets),
+        )
+        return transfer_graph_ingest_task, transfer_graph_init_task
 
     # ── D171 Q1-A: Fingerprint recompute task ────────────────────────────────
     async def _run_fingerprint_recompute(db: ShadowDB, close_event: asyncio.Event) -> None:
@@ -931,10 +922,7 @@ async def main_async() -> int:
         logger.info("[FINGERPRINT] Task exited")
 
     # Launch D171 Q1-A tasks
-    transfer_graph_task = asyncio.create_task(
-        _init_transfer_graph(db, _close_event),
-        name="transfer_graph",
-    )
+    transfer_graph_ingest_task, transfer_graph_init_task = await _init_transfer_graph_once(db)
     fingerprint_task = asyncio.create_task(
         _run_fingerprint_recompute(db, _close_event),
         name="fingerprint_recompute",
@@ -1002,7 +990,7 @@ async def main_async() -> int:
         crashed = [t for t in [
             radar_task, ofi_task, graph_task, polygon_task, se_task,
             insider_task, te_recompute_task, whale_task, discovery_task,
-            transfer_graph_task, fingerprint_task,  # D171 Q1-A
+            fanout_task, transfer_graph_ingest_task, fingerprint_task,
         ] if t.done() and t.exception()]
         for task in crashed:
             logger.error("[ORCH] %s crashed: %s", task.get_name(), task.exception())
@@ -1024,7 +1012,7 @@ async def main_async() -> int:
     for task in [
             radar_task, ofi_task, graph_task, polygon_task, se_task,
             insider_task, te_recompute_task, whale_task, discovery_task,
-            transfer_graph_task, fingerprint_task,  # D171 Q1-A
+            fanout_task, transfer_graph_ingest_task, transfer_graph_init_task, fingerprint_task,
         ]:
         task.cancel()
         try:

@@ -1,43 +1,39 @@
-"""Transfer Graph Builder — D171 Phase 4 P4-T2.
+"""Transfer graph ingestion for D171 P4-T2 (revised, WSS-first).
 
-Builds directed graphs of USDC.e fund flows per watchlisted wallet.
-Persists edges in `transfer_graph` table; classifies entities via
-`entity_labels` table using `config/cex_dex_routers_blacklist.json`.
-
-Rules:
-  - R-7: graph analysis outputs ONLY feed insider_score.
-    Never consumed by Graphify, decision, or execution paths.
-  - HARD CAPS: max_hops=2, max_blocks_per_hop=5000, max_nodes_per_graph=200.
-  - CEX_ANONYMIZED: hop hits blacklist → weight=0, fall back on 4D + shadow PnL.
+Architecture rulings:
+- WSS is the long-running primary path (CU ~= 0).
+- HTTP eth_getLogs is cold-start one-shot only.
+- Query window must align with pol_monitor MAX_BLOCKS_PER_LOGS_QUERY (9).
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 import aiohttp
 
 from panopticon_py.db import DBWriterQueue
+from panopticon_py.hunting.entity_linker import EntityLinker
 from panopticon_py.hunting.pol_monitor import (
     ALCHEMY_HTTP_URL,
+    MAX_BLOCKS_PER_LOGS_QUERY,
     TRANSFER_TOPIC,
     USDC_DECIMALS,
     USDC_E_ADDRESS,
 )
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
-PROCESS_VERSION = "v1.3.0-D171"
+PROCESS_VERSION = "v1.1.0-D171"
 
-MAX_HOPS_DEFAULT      = 2
-# Alchemy eth_getLogs practical max range is ~2000 blocks; keep bounded.
-MAX_BLOCKS_PER_HOP   = 2000
-MAX_NODES_PER_GRAPH  = 200
-ETH_GETLOGS_PAGE_SIZE = 500
-PER_HOP_TIMEOUT_SEC  = 120.0
+MAX_BLOCKS_PER_HOP = MAX_BLOCKS_PER_LOGS_QUERY
+MAX_NODES_PER_GRAPH = 200
+PER_HOP_TIMEOUT_SEC = 10.0
+INTER_REQUEST_SLEEP_SEC = float(os.getenv("TG_INTER_REQ_SLEEP", "1.0"))
+RATE_LIMIT_BACKOFF_SEC = float(os.getenv("TG_RATE_LIMIT_BACKOFF", "120.0"))
+BATCH_WALLETS_PER_CYCLE = int(os.getenv("TG_BATCH_WALLETS", "50"))
 
 logger = logging.getLogger(__name__)
 
@@ -47,314 +43,228 @@ def _wallet_to_topic(wallet: str) -> str:
     return "0x" + addr.rjust(64, "0")
 
 
-class EntityLinker:
-    """Classify wallet addresses using config/cex_dex_routers_blacklist.json."""
+class _RateLimitExceeded(Exception):
+    pass
 
-    def __init__(self, blacklist_path: str | None = None) -> None:
-        self._anonymizers: set[str] = set()
-        self._cex: set[str] = set()
-        self._dex: set[str] = set()
-        self._load(blacklist_path)
 
-    def _load(self, path: str | None) -> None:
-        import pathlib
-        p = pathlib.Path(path) if path else None
-        if p is None or not p.is_file():
-            root = pathlib.Path(__file__).resolve().parents[2]
-            p = root / "config" / "cex_dex_routers_blacklist.json"
-        if not p.is_file():
-            logger.warning("[ENTITY] blacklist not found at %s — running with empty sets", p)
-            return
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            logger.error("[ENTITY] blacklist parse error: %s", exc)
-            return
-        addrs = data.get("addresses", []) if isinstance(data, dict) else []
-        if isinstance(addrs, list):
-            self._anonymizers = {str(a).lower() for a in addrs if isinstance(a, str) and a.startswith("0x")}
-        self._cex = {a.lower() for a in data.get("cex_hot_wallets", []) if isinstance(a, str) and a.startswith("0x")}
-        self._dex = {a.lower() for a in data.get("dex_routers", []) if isinstance(a, str) and a.startswith("0x")}
-        logger.info(
-            "[ENTITY] blacklist loaded anon=%d cex=%d dex=%d",
-            len(self._anonymizers), len(self._cex), len(self._dex),
-        )
+def _decode_log(log: dict) -> dict | None:
+    topics = log.get("topics") or []
+    if len(topics) < 3:
+        return None
+    try:
+        from_addr = ("0x" + topics[1][-40:]).lower()
+        to_addr = ("0x" + topics[2][-40:]).lower()
+        raw = int(log.get("data", "0x0"), 16)
+        usdc = raw / (10 ** USDC_DECIMALS)
+        block = int(str(log.get("blockNumber", "0x0")), 16)
+        tx_hash = str(log.get("transactionHash", ""))
+    except (ValueError, TypeError, KeyError):
+        return None
+    return {
+        "from": from_addr,
+        "to": to_addr,
+        "usdc_amount": usdc,
+        "block": block,
+        "tx_hash": tx_hash,
+    }
 
-    def classify(self, address: str) -> tuple[str, str, float]:
-        """Return (label, source, confidence)."""
-        addr = address.lower()
-        if addr in self._anonymizers:
-            return ("ANONYMIZER", "blacklist", 1.0)
-        if addr in self._cex:
-            return ("CEX", "blacklist", 1.0)
-        if addr in self._dex:
-            return ("DEX_ROUTER", "blacklist", 1.0)
-        return ("UNKNOWN", "default", 0.3)
 
-    def persist_label(self, address: str, label: str, source: str, confidence: float) -> None:
+def _persist_logs(logs: list[dict], root_wallet: str, hop_depth: int, linker: EntityLinker) -> None:
+    ts_utc = utc_now_rfc3339_ms()
+    label_to_score = {
+        "ANONYMIZER": 0.0,
+        "DEX_ROUTER": 0.5,
+        "CEX": 1.0,
+        "EOA_PERSONAL": 1.0,
+        "UNKNOWN": 0.3,
+    }
+    for log in logs:
+        t = _decode_log(log)
+        if not t or t["usdc_amount"] <= 0:
+            continue
+        label, source, confidence = linker.classify(t["from"])
+        linker.persist_label(t["from"], label, source, confidence)
         DBWriterQueue.put(
             """
-            INSERT OR REPLACE INTO entity_labels
-              (address, label, source, confidence, updated_ts_utc)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO transfer_graph
+              (root_wallet, from_addr, to_addr, usdc_amount, block, hop_depth,
+               tx_hash, created_ts_utc, wallet_address, entity_link_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (address.lower(), label, source, confidence, utc_now_rfc3339_ms()),
-            table_hint="entity_labels",
+            (
+                root_wallet.lower(),
+                t["from"],
+                t["to"],
+                t["usdc_amount"],
+                t["block"],
+                hop_depth,
+                t["tx_hash"],
+                ts_utc,
+                root_wallet.lower(),
+                label_to_score.get(label, 0.3),
+            ),
+            table_hint="transfer_graph",
         )
 
 
-class TransferGraphBuilder:
-    """Bounded BFS traversal of USDC.e transfer graph per wallet."""
-
-    def __init__(self, api_key: str, linker: EntityLinker | None = None) -> None:
-        self._api_key = api_key
-        self._linker  = linker or EntityLinker()
-        self._http: aiohttp.ClientSession | None = None
-
-    async def _ensure_http(self) -> aiohttp.ClientSession:
-        if self._http is None or self._http.closed:
-            self._http = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=PER_HOP_TIMEOUT_SEC),
-            )
-        return self._http
-
-    async def _fetch_inbound_transfers(
-        self, wallet: str, from_block: int, to_block: int,
-    ) -> list[dict]:
-        """Paginated eth_getLogs, filtering to=wallet (recipient/inbound)."""
-        results: list[dict] = []
-        url = ALCHEMY_HTTP_URL.format(api_key=self._api_key)
-        session = await self._ensure_http()
-        cur = from_block
-        page_count = 0
-        logger.debug(
-            "[TG][DEBUG] wallet=%s from_block=%d to_block=%d range=%d",
-            wallet[:10], from_block, to_block, max(0, to_block - from_block),
-        )
-        while cur <= to_block:
-            end = min(cur + ETH_GETLOGS_PAGE_SIZE - 1, to_block)
-            payload: dict[str, Any] = {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "eth_getLogs",
-                "params": [{
-                    "fromBlock": hex(cur),
-                    "toBlock":   hex(end),
-                    "address":   USDC_E_ADDRESS,
-                    "topics": [TRANSFER_TOPIC, None, _wallet_to_topic(wallet)],
-                }],
-            }
-            async with session.post(url, json=payload) as resp:
-                # Capture HTTP status; Alchemy may return non-JSON bodies for errors/rate limits.
-                status = resp.status
-                content_type = resp.headers.get("Content-Type", "")
-                try:
-                    data = await resp.json()
-                except Exception as json_exc:
-                    # Read short snippet for diagnosis (avoid logging secrets).
-                    try:
-                        body = await resp.text()
-                    except Exception:
-                        body = ""
-                    logger.warning(
-                        "[TG][FETCH_ERR] wallet=%s blocks=%d-%d status=%s ct=%s json_exc=%s body_snip=%r",
-                        wallet[:10],
-                        cur,
-                        end,
-                        status,
-                        content_type,
-                        json_exc,
-                        (body or "")[:200],
-                    )
-                    # backoff on rate limiting
-                    if status in (429, 403):
-                        await asyncio.sleep(1.0)
-                    break
-
-            # Non-200 responses may still be JSON, but handle both cases.
-            if not isinstance(data, dict):
-                logger.warning(
-                    "[TG][BAD_RESULT] wallet=%s blocks=%d-%d data_type=%s",
-                    wallet[:10],
-                    cur,
-                    end,
-                    type(data).__name__,
-                )
-                break
-
-            if status != 200:
-                logger.error(
-                    "[TG][HTTP_ERR] wallet=%s blocks=%d-%d status=%s error=%s",
-                    wallet[:10],
-                    cur,
-                    end,
-                    status,
-                    data.get("error") if isinstance(data, dict) else None,
-                )
-                if status in (429, 403):
-                    await asyncio.sleep(1.0)
-                break
-
-            if data.get("error"):
-                logger.error(
-                    "[TG][RPC_ERR] wallet=%s blocks=%d-%d error=%s",
-                    wallet[:10],
-                    cur,
-                    end,
-                    data.get("error"),
-                )
-                break
-            logs = data.get("result") if isinstance(data, dict) else None
-            if not isinstance(logs, list):
-                logger.warning(
-                    "[TG][BAD_RESULT] wallet=%s page=%d data_type=%s keys=%s",
-                    wallet[:10],
-                    page_count,
-                    type(data).__name__,
-                    list(data.keys()) if isinstance(data, dict) else None,
-                )
-                break
-            page_count += 1
-            if logs and page_count == 1:
-                decoded = self._decode_log(logs[0])
-                logger.debug(
-                    "[TG][SAMPLE] wallet=%s decoded=%s",
-                    wallet[:10],
-                    decoded,
-                )
-            logger.debug(
-                "[TG][PAGE] wallet=%s page=%d blocks=%d-%d logs=%d",
-                wallet[:10],
-                page_count,
-                cur,
-                end,
-                len(logs),
-            )
-            results.extend(logs)
-            cur = end + 1
-            # Reduce request bursts to avoid Alchemy 429 rate limits.
-            await asyncio.sleep(0.05)
-        return results
-
-    def _decode_log(self, log: dict) -> dict | None:
-        topics = log.get("topics") or []
-        if len(topics) < 3:
-            return None
+async def _cold_start_fetch(
+    wallet: str,
+    latest_block: int,
+    api_key: str,
+    session: aiohttp.ClientSession,
+) -> list[dict]:
+    """Single request for latest 9 blocks only."""
+    from_block = max(0, latest_block - MAX_BLOCKS_PER_HOP + 1)
+    payload: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "eth_getLogs",
+        "params": [{
+            "fromBlock": hex(from_block),
+            "toBlock": hex(latest_block),
+            "address": USDC_E_ADDRESS,
+            "topics": [TRANSFER_TOPIC, None, _wallet_to_topic(wallet)],
+        }],
+    }
+    url = ALCHEMY_HTTP_URL.format(api_key=api_key)
+    async with session.post(url, json=payload) as resp:
+        if resp.status in (429, 403):
+            raise _RateLimitExceeded(f"HTTP {resp.status}")
         try:
-            from_addr  = ("0x" + topics[1][-40:]).lower()
-            to_addr    = ("0x" + topics[2][-40:]).lower()
-            raw        = int(log.get("data", "0x0"), 16)
-            usdc       = raw / (10 ** USDC_DECIMALS)
-            block      = int(str(log.get("blockNumber", "0x0")), 16)
-            tx_hash    = str(log.get("transactionHash", ""))
-        except (ValueError, TypeError, KeyError):
-            return None
-        return {
-            "from": from_addr,
-            "to":   to_addr,
-            "usdc_amount": usdc,
-            "block":      block,
-            "tx_hash":     tx_hash,
-        }
-
-    async def build_for_wallet(
-        self, root_wallet: str, latest_block: int,
-        max_hops: int = MAX_HOPS_DEFAULT,
-    ) -> dict:
-        edges: list[dict] = []
-        visited: set[str] = {root_wallet.lower()}
-        frontier: list[tuple[str, int]] = [(root_wallet.lower(), 1)]
-        frontier_cap = 50
-
-        while frontier:
-            wallet, hop = frontier.pop()
-            if hop > max_hops:
-                continue
-            if len(visited) >= MAX_NODES_PER_GRAPH:
-                logger.warning("[TG][NODE_CAP] wallet=%s visited=%d cap=%d",
-                              root_wallet[:10], len(visited), MAX_NODES_PER_GRAPH)
-                break
-            from_block = max(0, latest_block - MAX_BLOCKS_PER_HOP)
-            logs = await self._fetch_inbound_transfers(wallet, from_block, latest_block)
-            for log in logs:
-                t = self._decode_log(log)
-                if not t:
-                    continue
-                _label_to_fund_score = {
-                    "ANONYMIZER": 0.0,
-                    "DEX_ROUTER": 0.5,
-                    "CEX": 1.0,
-                    # EntityLinker currently doesn't emit EOA_PERSONAL; keep for compatibility.
-                    "EOA_PERSONAL": 1.0,
-                    "UNKNOWN": 0.3,
-                }
-                edge = {
-                    "root_wallet": root_wallet.lower(),
-                    "from_addr":   t["from"],
-                    "to_addr":     t["to"],
-                    "usdc_amount": t["usdc_amount"],
-                    "block":       t["block"],
-                    "hop_depth":   hop,
-                    "tx_hash":     t["tx_hash"],
-                    "wallet_address": root_wallet.lower(),
-                    "entity_link_score": 0.0,
-                }
-                label, source, conf = self._linker.classify(t["from"])
-                edge["entity_link_score"] = _label_to_fund_score.get(label, 0.3)
-                edges.append(edge)
-                self._linker.persist_label(t["from"], label, source, conf)
-                # BFS expansion: follow only non-blacklisted addresses.
-                # EntityLinker only yields (ANONYMIZER/CEX/DEX_ROUTER/UNKNOWN) labels.
-                if label == "UNKNOWN" and t["from"] not in visited and hop < max_hops:
-                    if len(frontier) < frontier_cap:
-                        visited.add(t["from"])
-                        frontier.append((t["from"], hop + 1))
-                    else:
-                        logger.debug(
-                            "[TG][FRONTIER_CAP] root=%s hop=%d frontier=%d",
-                            root_wallet[:10], hop, len(frontier),
-                        )
-
-        self._persist_edges(edges)
-        return {"root": root_wallet.lower(), "edges": edges, "visited": list(visited)}
-
-    def _persist_edges(self, edges: list[dict]) -> None:
-        ts_utc = utc_now_rfc3339_ms()
-        for e in edges:
-            DBWriterQueue.put(
-                """
-                INSERT OR IGNORE INTO transfer_graph
-                  (root_wallet, from_addr, to_addr, usdc_amount, block, hop_depth, tx_hash, created_ts_utc, wallet_address, entity_link_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (e["root_wallet"], e["from_addr"], e["to_addr"],
-                 e["usdc_amount"], e["block"], e["hop_depth"],
-                 e["tx_hash"], ts_utc, e["wallet_address"], e["entity_link_score"]),
-                table_hint="transfer_graph",
+            data = await resp.json(content_type=None)
+        except Exception as exc:
+            body = await resp.text()
+            logger.warning(
+                "[TG][COLD_FETCH_ERR] wallet=%s status=%s exc=%s body=%r",
+                wallet[:10],
+                resp.status,
+                exc,
+                body[:160],
             )
+            return []
+    if not isinstance(data, dict):
+        return []
+    if data.get("error"):
+        logger.warning("[TG][COLD_RPC_ERR] wallet=%s err=%s", wallet[:10], data.get("error"))
+        return []
+    logs = data.get("result")
+    return logs if isinstance(logs, list) else []
 
-    async def close(self) -> None:
-        if self._http and not self._http.closed:
-            await self._http.close()
+
+async def init_transfer_graph(
+    watchlist: list[str],
+    alchemy_key: str,
+    linker: EntityLinker,
+    get_latest_block_fn: Callable[[], Any],
+) -> None:
+    """One-shot cold-start task; exits naturally once done."""
+    if not watchlist:
+        logger.info("[TG] cold-start: watchlist empty")
+        return
+    timeout = aiohttp.ClientTimeout(total=PER_HOP_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        latest_block = int(await get_latest_block_fn())
+        logger.info("[TG] cold-start begin wallets=%d latest_block=%d", len(watchlist), latest_block)
+        for i in range(0, len(watchlist), max(1, BATCH_WALLETS_PER_CYCLE)):
+            batch = watchlist[i:i + max(1, BATCH_WALLETS_PER_CYCLE)]
+            for wallet in batch:
+                try:
+                    logs = await _cold_start_fetch(wallet, latest_block, alchemy_key, session)
+                    _persist_logs(logs, wallet, hop_depth=1, linker=linker)
+                except _RateLimitExceeded:
+                    logger.warning("[TG] cold-start rate-limited; backoff %.0fs", RATE_LIMIT_BACKOFF_SEC)
+                    await asyncio.sleep(RATE_LIMIT_BACKOFF_SEC)
+                await asyncio.sleep(INTER_REQUEST_SLEEP_SEC)
+    logger.info("[TG] cold-start complete wallets=%d", len(watchlist))
 
 
-def fund_source_score_from_graph(graph: dict, linker: EntityLinker) -> float:
-    """
-    Aggregate fund_source_score (w4 component) from built graph dict.
-    Returns 0..1: 1.0 = clean source, 0.0 = anonymizer present.
-    """
-    edges = graph.get("edges", [])
-    if not edges:
+class TransferGraphIngester:
+    """WSS-driven transfer graph ingester (long-running)."""
+
+    def __init__(self, linker: EntityLinker, watchlist_fn: Callable[[], set[str]]) -> None:
+        self._linker = linker
+        self._watchlist_fn = watchlist_fn
+        self._events_seen = 0
+
+    async def run(self, tg_ingest_queue: asyncio.Queue) -> None:
+        logger.info("[TGI] ingester started")
+        while True:
+            try:
+                event: dict = await asyncio.wait_for(tg_ingest_queue.get(), timeout=30.0)
+            except asyncio.TimeoutError:
+                continue
+            try:
+                await self._handle_event(event)
+            except Exception as exc:
+                logger.exception("[TGI] handle_event failed: %s", exc)
+            finally:
+                tg_ingest_queue.task_done()
+
+    async def _handle_event(self, event: dict) -> None:
+        to_addr = str(event.get("to") or "").lower()
+        if to_addr not in self._watchlist_fn():
+            return
+        from_addr = str(event.get("from") or "").lower()
+        usdc_amount = float(event.get("usdc_amount") or 0.0)
+        block = int(event.get("block") or 0)
+        tx_hash = str(event.get("tx_hash") or "")
+        if usdc_amount <= 0:
+            return
+        label, source, confidence = self._linker.classify(from_addr)
+        self._linker.persist_label(from_addr, label, source, confidence)
+        label_to_score = {
+            "ANONYMIZER": 0.0,
+            "DEX_ROUTER": 0.5,
+            "CEX": 1.0,
+            "EOA_PERSONAL": 1.0,
+            "UNKNOWN": 0.3,
+        }
+        DBWriterQueue.put(
+            """
+            INSERT OR IGNORE INTO transfer_graph
+              (root_wallet, from_addr, to_addr, usdc_amount, block, hop_depth,
+               tx_hash, created_ts_utc, wallet_address, entity_link_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                to_addr,
+                from_addr,
+                to_addr,
+                usdc_amount,
+                block,
+                1,
+                tx_hash,
+                utc_now_rfc3339_ms(),
+                to_addr,
+                label_to_score.get(label, 0.3),
+            ),
+            table_hint="transfer_graph",
+        )
+        self._events_seen += 1
+        if self._events_seen % 100 == 0:
+            logger.info("[TGI] events_seen=%d", self._events_seen)
+
+
+def fund_source_score_from_graph(root_wallet: str, linker: EntityLinker, db_conn) -> float:
+    """Compute weighted fund source score for w4."""
+    rows = db_conn.execute(
+        "SELECT from_addr, usdc_amount FROM transfer_graph WHERE root_wallet = ? AND hop_depth = 1",
+        (root_wallet.lower(),),
+    ).fetchall()
+    if not rows:
         return 0.0
-    weights: list[float] = []
-    for e in edges:
-        label, _, _ = linker.classify(e["from_addr"])
-        if label == "ANONYMIZER":
-            weights.append(0.0)
-        elif label == "DEX_ROUTER":
-            weights.append(0.5)
-        elif label in ("CEX", "EOA_PERSONAL"):
-            weights.append(1.0)
-        else:
-            weights.append(0.3)
-    return sum(weights) / len(weights) if weights else 0.0
+    total_usdc = sum(float(r["usdc_amount"]) for r in rows)
+    if total_usdc <= 0:
+        return 0.0
+    weights = {
+        "ANONYMIZER": 0.0,
+        "DEX_ROUTER": 0.5,
+        "CEX": 1.0,
+        "EOA_PERSONAL": 1.0,
+        "UNKNOWN": 0.3,
+    }
+    weighted = 0.0
+    for r in rows:
+        label, _, _ = linker.classify(str(r["from_addr"]))
+        weighted += weights.get(label, 0.3) * float(r["usdc_amount"])
+    return max(0.0, min(1.0, weighted / total_usdc))

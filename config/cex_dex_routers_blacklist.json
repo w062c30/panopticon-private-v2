@@ -1,6 +1,37 @@
 {
   "version": 1,
   "description": "Lowercase 0x-prefixed Polygon addresses: CEX hot wallets, large routers, mixers. Extend locally; never commit secrets.",
+  "anonymizers": [
+    {
+      "address": "0xdfd5293d8e347dfe59e90efd55b2956a1343963d",
+      "name": "Tornado-like mixer sink",
+      "source": "local-curated"
+    }
+  ],
+  "cex_hot_wallets": [
+    {
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "name": "Binance hot wallet (curated)",
+      "source": "local-curated"
+    },
+    {
+      "address": "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
+      "name": "CEX hot wallet (curated)",
+      "source": "local-curated"
+    }
+  ],
+  "dex_routers": [
+    {
+      "address": "0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff",
+      "name": "QuickSwap V2 Router",
+      "source": "local-curated"
+    },
+    {
+      "address": "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+      "name": "SushiSwap Router",
+      "source": "local-curated"
+    }
+  ],
   "addresses": [
     "0x28c6c06298d514db089934071355e5743bf21d60",
     "0x21a31ee1afc51d94c2efccaa2092ad1028285549",
