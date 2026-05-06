@@ -77,7 +77,7 @@ class TestTimingEntropy:
 class TestMarketConcentration:
     def test_empty(self):
         result = market_concentration([])
-        assert result == {"max": 0.0}
+        assert result == {"max": 0.0, "all_unknown": True}
 
     def test_all_same_category(self):
         result = market_concentration(["politics", "politics", "politics"])

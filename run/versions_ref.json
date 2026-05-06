@@ -1,5 +1,5 @@
 {
-  "_doc": "SOURCE OF TRUTH for process versions. Agents MUST update this file when modifying any process. See AGENTS.md \u00a7PROCESS-VERSION-PROTOCOL.",
+  "_doc": "SOURCE OF TRUTH for process versions. Agents MUST update this file when modifying any process. See AGENTS.md §PROCESS-VERSION-PROTOCOL.",
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
   "radar": "v1.2.0-D168",
   "orchestrator": "v1.7.3-D171",
@@ -10,7 +10,7 @@
   "arb_scanner": "v0.5.11-D150",
   "process_guard": "v1.1.1-D162",
   "signal_engine": "v5.2.0-D171",
-  "fingerprint_scrubber": "v1.0.0-D171",
+  "fingerprint_scrubber": "v1.1.0-D171",
   "transfer_graph": "v1.2.0-D171",
   "last_updated": "2026-05-06T09:41:12Z",
   "updated_by_sprint": "D171",

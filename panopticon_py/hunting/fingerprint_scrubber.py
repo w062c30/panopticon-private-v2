@@ -21,13 +21,16 @@ from panopticon_py.hunting.four_d_classifier import EntityLabel, classify_high_f
 from panopticon_py.hunting.trade_aggregate import ParentTrade
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
-PROCESS_VERSION = "v1.0.0-D171"
+PROCESS_VERSION = "v1.1.0-D171"
 
 DEFAULT_SIZE_BUCKETS    = 10
 DEFAULT_TIMING_BUCKETS  = 12
-RECOMPUTE_INTERVAL_SEC  = 30 * 60
-FETCH_CONCURRENCY      = 5
+RECOMPUTE_INTERVAL_SEC  = int(os.getenv("FINGERPRINT_RECOMPUTE_INTERVAL_SEC", str(30 * 60)))
+FETCH_CONCURRENCY       = 5
 TRADES_PER_WALLET       = 500
+MIN_TRADES_FOR_ENTROPY  = 5
+MAX_CATEGORIES_STORED   = 10
+MAX_WALLETS_PER_PASS    = 200
 
 logger = logging.getLogger(__name__)
 
@@ -86,123 +89,187 @@ def timing_entropy(timestamps_sec: list[int], n_buckets: int = DEFAULT_TIMING_BU
 
 
 def market_concentration(categories: list[str]) -> dict:
-    """Per-category share + max share (concentration ratio)."""
+    """Per-category share + max share with category cap and unknown marker."""
     if not categories:
-        return {"max": 0.0}
-    counts = Counter(categories)
+        return {"max": 0.0, "all_unknown": True}
+    cats = [str(c).lower().strip() or "unknown" for c in categories]
+    counts = Counter(cats)
     total = float(sum(counts.values()))
-    shares = {cat: cnt / total for cat, cnt in counts.items()}
-    shares["max"] = max(shares.values())
+    sorted_cats = sorted(counts.items(), key=lambda x: -x[1])
+    top = sorted_cats[:MAX_CATEGORIES_STORED]
+    other = sum(v for _, v in sorted_cats[MAX_CATEGORIES_STORED:])
+    shares: dict[str, float] = {k: v / total for k, v in top}
+    if other > 0:
+        shares["other"] = other / total
+    shares["max"] = max((v for k, v in shares.items() if k not in ("max", "all_unknown")), default=0.0)
+    shares["all_unknown"] = (len(counts) == 1 and "unknown" in counts)
     return shares
 
 
 def compute_fingerprint(wallet: str, trades: list[dict]) -> dict:
-    """
-    Build a fingerprint dict from a list of trade dicts.
-
-    Expected trade dict shape (from DataAPIClient.fetch_user_trades):
-      {size, timestamp_seconds, timestamp, market_id, category}
-    """
-    if not trades:
+    """Aggregate three dimensions from trade history."""
+    n = len(trades)
+    base = {
+        "computed_at_utc": utc_now_rfc3339_ms(),
+        "n_trades_sampled": n,
+    }
+    if n < MIN_TRADES_FOR_ENTROPY:
         return {
-            "size_entropy":     0.0,
-            "timing_entropy":  0.0,
-            "concentration":  {"max": 0.0},
-            "computed_at_utc": utc_now_rfc3339_ms(),
-            "n_trades_sampled": 0,
+            **base,
+            "size_entropy": 0.0,
+            "timing_entropy": 0.0,
+            "concentration": {"max": 0.0, "all_unknown": True},
+            "insufficient_data": True,
         }
-    sizes = []
+
+    usd_sizes: list[float] = []
+    timestamps: list[int] = []
+    cats: list[str] = []
+
     for t in trades:
         try:
-            s = float(t.get("size", 0))
+            raw_size = float(t.get("size") or 0)
+            price = float(t.get("price") or 0)
+            if raw_size > 0:
+                notional = raw_size * price if price > 0 else raw_size
+                usd_sizes.append(notional)
         except (TypeError, ValueError):
-            continue
-        if s > 0:
-            sizes.append(s)
-    timestamps = [
-        int(t.get("timestamp_seconds") or t.get("timestamp") or 0)
-        for t in trades
-    ]
-    timestamps = [t for t in timestamps if t > 0]
-    cats = [str(t.get("category", "unknown")).lower() for t in trades]
+            pass
+
+        try:
+            ts = int(t.get("timestamp_seconds") or t.get("timestamp") or 0)
+            if ts > 0:
+                timestamps.append(ts)
+        except (TypeError, ValueError):
+            pass
+
+        cats.append(str(t.get("category", "unknown")).lower() or "unknown")
+
     return {
-        "size_entropy":    size_entropy(sizes),
+        **base,
+        "size_entropy": size_entropy(usd_sizes),
         "timing_entropy": timing_entropy(timestamps),
-        "concentration":  market_concentration(cats),
-        "computed_at_utc": utc_now_rfc3339_ms(),
-        "n_trades_sampled": len(trades),
+        "concentration": market_concentration(cats),
+        "insufficient_data": False,
     }
 
 
-async def _recompute_one(client, wallet: str) -> None:
+def _ensure_wallet_watchlist_schema_v2(conn: sqlite3.Connection) -> None:
+    """Ensure score_components_json exists; idempotent migration guard."""
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(wallet_watchlist)").fetchall()}
+        if "score_components_json" not in existing:
+            conn.execute("ALTER TABLE wallet_watchlist ADD COLUMN score_components_json TEXT")
+            conn.commit()
+            logger.info("[FINGERPRINT] schema migration: added wallet_watchlist.score_components_json")
+    except Exception as exc:
+        logger.warning("[FINGERPRINT] schema guard failed: %s", exc)
+
+
+async def _recompute_one(client, wallet: str, db_path: str) -> None:
     try:
         trades = await client.fetch_user_trades(wallet, limit=TRADES_PER_WALLET)
     except Exception as exc:
         logger.warning("[FINGERPRINT][RECOMPUTE_ERR] wallet=%s fetch_err=%s", wallet[:10], exc)
         return
+
+    if trades and all(not t.get("category") for t in trades):
+        logger.debug(
+            "[FINGERPRINT] no category field in Data API response for wallet=%s ? concentration all_unknown=True",
+            wallet[:12],
+        )
+
     fp = compute_fingerprint(wallet, trades)
+    fp_json = json.dumps(fp, separators=(",", ":"))
+
+    try:
+        parsed = json.loads(fp_json)
+        assert isinstance(parsed, dict)
+    except Exception as exc:
+        logger.warning("[FINGERPRINT] JSON validation failed wallet=%s: %s", wallet[:12], exc)
+        return
+
     DBWriterQueue.put(
         "UPDATE wallet_watchlist SET score_components_json=? WHERE wallet_address=?",
-        (json.dumps(fp), wallet),
+        (fp_json, wallet.lower()),
         table_hint="wallet_watchlist",
     )
 
 
 async def fingerprint_recompute_loop(close_event: asyncio.Event | None = None) -> None:
-    """
-    D171: Periodically recompute fingerprints for recently-active watchlist wallets.
-    Args:
-        close_event: if set, loop exits when event is triggered (D171 orchestrator wiring).
-    """
+    """Periodic task: recompute fingerprints for recently-active wallets."""
     from panopticon_py.hunting.data_api_client import DataAPIClient
 
     db_path = os.environ.get("PANOPTICON_DB_PATH", "data/panopticon.db")
     client = DataAPIClient()
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+    _schema_ensured = False
 
     try:
         while True:
-            # D171 Q1-A: respect orchestrator close_event
             if close_event is not None and close_event.is_set():
-                logger.info("[FINGERPRINT] close_event set — exiting recompute loop")
+                logger.info("[FINGERPRINT] close_event set ? exiting loop")
                 break
 
+            if not _schema_ensured:
+                try:
+                    with sqlite3.connect(db_path, timeout=10) as conn:
+                        _ensure_wallet_watchlist_schema_v2(conn)
+                    _schema_ensured = True
+                except Exception as exc:
+                    logger.warning("[FINGERPRINT] schema guard failed: %s", exc)
+
+            wallets: list[str] = []
             try:
                 with sqlite3.connect(db_path, timeout=10) as conn:
-                    rows = conn.execute("""
+                    rows = conn.execute(
+                        """
                         SELECT wallet_address FROM wallet_watchlist
-                        WHERE last_seen_ts_utc >= datetime('now', '-1 day')
-                        LIMIT 200
-                    """).fetchall()
+                        WHERE wallet_address IS NOT NULL
+                          AND last_seen_ts_utc >= datetime('now', '-1 day', 'utc')
+                        ORDER BY last_seen_ts_utc DESC
+                        LIMIT ?
+                        """,
+                        (MAX_WALLETS_PER_PASS,),
+                    ).fetchall()
+                    wallets = [r[0] for r in rows if r and r[0]]
             except Exception as exc:
                 logger.warning("[FINGERPRINT] db read error: %s", exc)
-                rows = []
 
-            async def bounded(wallet: str) -> None:
-                async with sem:
-                    try:
-                        await _recompute_one(client, wallet)
-                    except Exception as exc:
-                        logger.warning("[FINGERPRINT] wallet=%s err=%s", wallet[:10], exc)
+            if wallets:
+                async def _bounded(w: str) -> None:
+                    async with sem:
+                        try:
+                            await _recompute_one(client, w, db_path)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.warning("[FINGERPRINT] wallet=%s err=%s", w[:12], exc)
 
-            await asyncio.gather(*[bounded(r[0]) for r in rows], return_exceptions=True)
-            logger.info("[FINGERPRINT] recompute pass done wallets=%d", len(rows))
+                await asyncio.gather(*[_bounded(w) for w in wallets])
+                logger.info("[FINGERPRINT] recompute pass done wallets=%d", len(wallets))
+            else:
+                logger.debug("[FINGERPRINT] no active wallets in last 24h ? skipping pass")
 
             if close_event is not None:
                 try:
                     await asyncio.wait_for(close_event.wait(), timeout=float(RECOMPUTE_INTERVAL_SEC))
-                except asyncio.TimeoutError:
-                    pass  # normal loop continuation
-                # If we reach here without TimeoutError, event was set
-                if close_event.is_set():
+                    logger.info("[FINGERPRINT] close_event during sleep ? exiting")
                     break
+                except asyncio.TimeoutError:
+                    pass
             else:
                 await asyncio.sleep(RECOMPUTE_INTERVAL_SEC)
+
+    except asyncio.CancelledError:
+        logger.info("[FINGERPRINT] Task cancelled (CancelledError)")
+        raise
     finally:
         try:
             await client.close()
         except Exception:
             pass
+        logger.info("[FINGERPRINT] fingerprint_recompute_loop exited cleanly")
 
 
 # ---------------------------------------------------------------------------
