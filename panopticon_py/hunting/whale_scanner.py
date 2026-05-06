@@ -892,6 +892,11 @@ class WhaleScanner:
                profile_json, profile_fetched_ts_utc)
             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
             ON CONFLICT(wallet_address) DO UPDATE SET
+              # INVARIANT: first_seen_ts_utc MUST NOT be in this UPDATE clause.
+              # cold-start lookback (D171 Q1 Option B) queries first_seen_ts_utc
+              # to determine which wallets are eligible. If first_seen_ts_utc were
+              # updated on conflict, wallets would appear "new" each time and the
+              # lookback filter would misclassify them.
               last_seen_block        = excluded.last_seen_block,
               last_seen_ts_utc       = excluded.last_seen_ts_utc,
               transfer_count         = transfer_count + 1,

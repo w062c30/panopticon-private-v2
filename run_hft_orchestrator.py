@@ -73,7 +73,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.1-D171"   # D171 P4-T2 revised: eth_blockNumber fallback + lookback filter + fanout put_nowait + TTL cache + CU report
+PROCESS_VERSION = "v1.7.2-D171"   # D171 Q1: Option B — cold-start uses first_seen_ts_utc, whale_scanner INVARIANT comment
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -940,7 +940,15 @@ async def main_async() -> int:
             return SAFE_FALLBACK_BLOCK
 
         def _recently_added_wallets() -> list[str]:
-            """Return wallets added within cold-start lookback window."""
+            """
+            Returns wallets first observed within the cold-start lookback window.
+            Uses first_seen_ts_utc (written by WhaleScanner on first INSERT) as the
+            cold-start eligibility timestamp. Semantically identical to added_ts_utc
+            in this system — first_seen IS the add event.
+
+            Falls back to 100 most recent wallets (ORDER BY first_seen_ts_utc DESC) if
+            the query fails, preventing cold-start with 3000+ wallets.
+            """
             import time as _time
 
             cutoff_epoch = _time.time() - COLD_START_LOOKBACK_HOURS * 3600
@@ -949,13 +957,15 @@ async def main_async() -> int:
                     """
                     SELECT wallet_address FROM wallet_watchlist
                     WHERE wallet_address IS NOT NULL
-                      AND added_ts_utc >= datetime(?, 'unixepoch')
+                      AND first_seen_ts_utc IS NOT NULL
+                      AND first_seen_ts_utc >= datetime(?, 'unixepoch', 'utc')
+                    ORDER BY first_seen_ts_utc DESC
                     """,
                     (cutoff_epoch,),
                 ).fetchall()
                 wallets = [str(r[0]).lower() for r in rows if r and r[0]]
                 logger.info(
-                    "[TRANSFER_GRAPH] cold-start: %d wallets added in last %.0fh "
+                    "[TRANSFER_GRAPH] cold-start: %d wallets first_seen in last %.0fh "
                     "(of %d total)",
                     len(wallets),
                     COLD_START_LOOKBACK_HOURS,
@@ -963,12 +973,28 @@ async def main_async() -> int:
                 )
                 return sorted(wallets)
             except Exception as exc:
+                # Fallback: most recent 100 wallets by first_seen_ts_utc DESC
                 logger.warning(
-                    "[TRANSFER_GRAPH] added_ts_utc query failed (%s) — "
-                    "falling back to first 100 wallets",
+                    "[TRANSFER_GRAPH] first_seen_ts_utc query failed (%s) — "
+                    "falling back to 100 most recent wallets",
                     exc,
                 )
-                return sorted(_watchlist_snapshot())[:100]
+                try:
+                    rows = db.execute(
+                        """
+                        SELECT wallet_address FROM wallet_watchlist
+                        WHERE wallet_address IS NOT NULL
+                          AND first_seen_ts_utc IS NOT NULL
+                        ORDER BY first_seen_ts_utc DESC
+                        LIMIT 100
+                        """,
+                    ).fetchall()
+                    return sorted(str(r[0]).lower() for r in rows if r and r[0])
+                except Exception as exc2:
+                    logger.error(
+                        "[TRANSFER_GRAPH] fallback query also failed: %s", exc2
+                    )
+                    return []
 
         tg_ingester = TransferGraphIngester(linker=linker, watchlist_fn=_watchlist_snapshot)
         transfer_graph_ingest_task = asyncio.create_task(

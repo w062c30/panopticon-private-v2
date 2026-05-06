@@ -167,9 +167,13 @@ async def init_transfer_graph(
     Returns (wallets_attempted, wallets_completed, rate_limit_count).
     Caller writes CU report from these values.
 
-    added_after_epoch: Unix timestamp (seconds). If provided, only wallets
-    added after this time are cold-started. Older wallets rely on WSS ingestion.
-    This keeps cold-start tractable on Free tier.
+    D171 Q1 Option B ruling: cold-start lookback uses first_seen_ts_utc
+    (written by WhaleScanner on first INSERT), NOT added_ts_utc.
+    Semantics are equivalent — first_seen IS the add event.
+    Caller (_recently_added_wallets) applies the first_seen_ts_utc filter
+    before passing watchlist here. This function receives a pre-filtered list.
+
+    added_after_epoch: informational only (not used inside this function).
     """
     if not watchlist:
         logger.info("[TG] cold-start: watchlist empty")

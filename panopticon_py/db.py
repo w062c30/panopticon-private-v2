@@ -1439,7 +1439,10 @@ class ShadowDB:
             "TEXT",
             on_locked="warn",
         )
-        # D171 P4-T2 revised: cold-start lookback needs added_ts_utc column
+        # D171 Q1 Option B ruling: added_ts_utc column exists but is UNUSED.
+        # cold-start lookback uses first_seen_ts_utc (written by WhaleScanner on first INSERT).
+        # added_ts_utc was added by previous migration run — harmless but not read.
+        # DO NOT backfill added_ts_utc — Option B semantics rely only on first_seen_ts_utc.
         self._add_column_if_missing(
             self.conn,
             "wallet_watchlist",
@@ -1447,12 +1450,6 @@ class ShadowDB:
             "TEXT",
             on_locked="warn",
         )
-        # Backfill existing rows with a very old epoch so they are never cold-started
-        self.conn.execute("""
-            UPDATE wallet_watchlist
-            SET added_ts_utc = '2000-01-01T00:00:00.000Z'
-            WHERE added_ts_utc IS NULL
-        """)
 
     def _ensure_transfer_graph_tables(self) -> None:
         """D171 P4-T2: transfer_graph and entity_labels tables.
