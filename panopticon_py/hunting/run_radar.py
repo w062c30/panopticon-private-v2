@@ -86,7 +86,6 @@ _RADAR_BOOT_STATE_PATH = Path(os.getenv("RADAR_BOOT_STATE_PATH", "data/radar_boo
 _BOOT_TIMEOUT_SEC = float(os.getenv("RADAR_BOOT_TIMEOUT_SEC", "45"))
 _radar_boot_lock = asyncio.Lock()
 _radar_boot_state: RadarBootState | None = None
-_radar_boot_in_progress = False
 _ALLOWED_TRANSITIONS: dict[RadarState, set[RadarState]] = {
     RadarState.STARTING: {RadarState.CONNECTING, RadarState.FAILED},
     RadarState.CONNECTING: {RadarState.SYNCING, RadarState.FAILED},
@@ -140,14 +139,18 @@ def _set_radar_state(new_state: RadarState, *, error: str | None = None, force: 
 
 
 def mark_radar_boot_failure(error: str) -> None:
-    global _radar_boot_in_progress
-    _radar_boot_in_progress = False
     _set_radar_state(RadarState.FAILED, error=error, force=True)
 
 
 def mark_radar_boot_released() -> None:
-    global _radar_boot_in_progress
-    _radar_boot_in_progress = False
+    if _radar_boot_lock.locked():
+        _radar_boot_lock.release()
+
+
+async def _acquire_radar_boot_lock() -> None:
+    if _radar_boot_lock.locked():
+        raise RadarBootError("already_initializing")
+    await _radar_boot_lock.acquire()
 
 
 # ── BTC 5m Dynamic Window Resolution (D70 Q1) ───────────────────────────────
@@ -2485,11 +2488,9 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
     global _d75_hb_last, _d77_tick_last, _d77_tick_n
     global _d75_hb_trade_base, _d75_hb_entropy_base
     global _last_pol_refresh  # D112: added missing declaration — crash at L2736 if absent
-    global _radar_boot_state, _radar_boot_in_progress
+    global _radar_boot_state
 
-    if _radar_boot_in_progress:
-        raise RadarBootError("already_initializing")
-    _radar_boot_in_progress = True
+    await _acquire_radar_boot_lock()
     _radar_boot_state = RadarBootState(boot_id=_new_boot_id(), state=RadarState.STARTING)
     _dump_radar_boot_state()
 
@@ -3732,7 +3733,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.0-D172"
+PROCESS_VERSION = "v1.3.1-D173"
 
 
 def main() -> int:

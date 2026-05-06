@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 
 from panopticon_py.db import ShadowDB
 from panopticon_py.hunting.entity_linker import load_cex_blacklist, trace_funding_roots
-from panopticon_py.hunting.four_d_classifier import classify_high_frequency_wallet
+from panopticon_py.hunting.four_d_classifier import (
+    classify_high_frequency_wallet,
+    compute_insider_score,
+    load_fingerprint_from_watchlist,
+)
 from panopticon_py.hunting.moralis_client import fetch_wallet_erc20_transfers_capped
 from panopticon_py.hunting.redis_seed import RedisSeedStore
 from panopticon_py.hunting.trade_aggregate import aggregate_taker_sweeps
@@ -65,12 +69,14 @@ def _rows_to_synthetic_trades(wallet: str, rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda x: x["timestamp"])
 
 
-def _score_wallet(wallet: str, governor: RateLimitGovernor) -> tuple[float, dict]:
+def _score_wallet(wallet: str, governor: RateLimitGovernor, db_conn) -> tuple[float, dict]:
     rows = fetch_wallet_erc20_transfers_capped(wallet, governor=governor)
     trace = trace_funding_roots(wallet, governor=governor)
     syn = _rows_to_synthetic_trades(wallet, rows)
     parents = aggregate_taker_sweeps(syn)
-    label, scores, reasons = classify_high_frequency_wallet(parents)
+    fingerprint = load_fingerprint_from_watchlist(wallet, db_conn)
+    label, scores, reasons = classify_high_frequency_wallet(parents, fingerprint=fingerprint)
+    insider_score_5d = compute_insider_score(scores)
     base = sum(float(r.get("value") or 0) for r in rows if isinstance(r, dict)) ** 0.5 / (1.0 + len(rows) * 0.05)
     bonus = 0.0
     if label == "INSIDER_ALGO_SLICING":
@@ -79,8 +85,14 @@ def _score_wallet(wallet: str, governor: RateLimitGovernor) -> tuple[float, dict
         bonus = 2.0
     if trace["cex_anonymized"]:
         base *= 0.35
-    score = base + bonus + scores.idi * 2.0
-    meta = {"label": label, "reasons": reasons, "trace": trace, "parents": len(parents)}
+    score = base + bonus + scores.idi * 2.0 + insider_score_5d
+    meta = {
+        "label": label,
+        "reasons": reasons,
+        "trace": trace,
+        "parents": len(parents),
+        "insider_score_5d": insider_score_5d,
+    }
     return score, meta
 
 
@@ -113,7 +125,7 @@ def main() -> int:
     ranked: list[tuple[str, float, dict]] = []
     for addr in candidates:
         try:
-            sc, meta = _score_wallet(addr, gov)
+            sc, meta = _score_wallet(addr, gov, db.conn)
             ranked.append((addr, sc, meta))
         except Exception as exc:
             # Log but continue so one bad wallet doesn't halt the entire bootstrap

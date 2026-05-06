@@ -70,10 +70,19 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
+# OBS-1: ensure orchestrator INFO logs are always persisted to run/orchestrator.log
+_ORCH_LOG_PATH = os.path.join("run", "orchestrator.log")
+os.makedirs(os.path.dirname(_ORCH_LOG_PATH), exist_ok=True)
+_orch_file_handler = logging.FileHandler(_ORCH_LOG_PATH, encoding="utf-8")
+_orch_file_handler.setLevel(logging.INFO)
+_orch_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+)
+logging.getLogger().addHandler(_orch_file_handler)
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.4-D172"   # D172: radar boot state machine + restart cooldown
+PROCESS_VERSION = "v1.7.5-D173"   # D173: radar boot lock upgrade + 5D integration plumbing
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -445,6 +454,7 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
     from panopticon_py.hunting.run_radar import (
         _live_ticks,
         mark_radar_boot_failure,
+        mark_radar_boot_released,
     )
     from panopticon_py.hunting.run_radar import _sync_pol_tokens_from_watchlist  # D109: POL immediate startup scan
 
@@ -470,6 +480,7 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
             raise
         except Exception as exc:
             mark_radar_boot_failure(f"boot_failed:{exc!r}")
+            mark_radar_boot_released()
             logger.error("[RADAR] Fatal error: %s", exc, exc_info=True)
             now = time.monotonic()
             failures = [ts for ts in failures if now - ts <= restart_window_sec]

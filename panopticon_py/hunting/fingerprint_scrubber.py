@@ -390,7 +390,8 @@ def scrub_candidates(
         parents = _parents_from_trades(trades, addr) if trades else []
         label_4d: EntityLabel | None = None
         if parents:
-            label_4d, scores, r4 = classify_high_frequency_wallet(parents)
+            fp = compute_fingerprint(addr, trades) if trades else None
+            label_4d, scores, r4 = classify_high_frequency_wallet(parents, fingerprint=fp)
             reasons.extend(r4)
         else:
             reasons.append("no_trade_history")
