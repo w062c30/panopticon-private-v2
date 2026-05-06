@@ -36,6 +36,11 @@ INTER_REQUEST_SLEEP_SEC = float(os.getenv("TG_INTER_REQ_SLEEP", "3.0"))
 RATE_LIMIT_BACKOFF_SEC = float(os.getenv("TG_RATE_LIMIT_BACKOFF", "120.0"))
 BATCH_WALLETS_PER_CYCLE = int(os.getenv("TG_BATCH_WALLETS", "5"))
 COLD_START_LOOKBACK_HOURS = float(os.getenv("TG_COLD_START_LOOKBACK_HOURS", "24.0"))
+MAX_COLD_START_WALLETS = int(os.getenv("TG_COLD_START_MAX_WALLETS", "50"))
+# TG_COLD_START_MAX_WALLETS: hard cap on cold-start wallet count.
+# Default 50 = Free-tier safe (50 * 75 CU = 3,750 CU per cold-start).
+# Set to 0 to disable cold-start entirely (WSS-only mode).
+# Set to -1 to disable cap (use lookback window only — NOT recommended for Free-tier).
 SAFE_FALLBACK_BLOCK = 86_400_000
 
 logger = logging.getLogger(__name__)
@@ -164,16 +169,12 @@ async def init_transfer_graph(
     """
     One-shot cold-start task; exits naturally when done.
 
-    Returns (wallets_attempted, wallets_completed, rate_limit_count).
-    Caller writes CU report from these values.
+    Returns (attempted, completed, rate_limits) for CU reporting.
 
-    D171 Q1 Option B ruling: cold-start lookback uses first_seen_ts_utc
-    (written by WhaleScanner on first INSERT), NOT added_ts_utc.
-    Semantics are equivalent — first_seen IS the add event.
-    Caller (_recently_added_wallets) applies the first_seen_ts_utc filter
-    before passing watchlist here. This function receives a pre-filtered list.
-
-    added_after_epoch: informational only (not used inside this function).
+    D171 Q1 Option B ruling: caller pre-filters watchlist using
+    first_seen_ts_utc and MAX_COLD_START_WALLETS cap before passing in.
+    This function does NOT apply its own filter — it processes all wallets
+    in the provided list.
     """
     if not watchlist:
         logger.info("[TG] cold-start: watchlist empty")

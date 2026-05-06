@@ -73,7 +73,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.2-D171"   # D171 Q1: Option B — cold-start uses first_seen_ts_utc, whale_scanner INVARIANT comment
+PROCESS_VERSION = "v1.7.3-D171"   # D171 Q1 follow-up: MAX_COLD_START_WALLETS cap + _tg_init_reported flag
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -941,43 +941,78 @@ async def main_async() -> int:
 
         def _recently_added_wallets() -> list[str]:
             """
-            Returns wallets first observed within the cold-start lookback window.
-            Uses first_seen_ts_utc (written by WhaleScanner on first INSERT) as the
-            cold-start eligibility timestamp. Semantically identical to added_ts_utc
-            in this system — first_seen IS the add event.
+            Returns wallets eligible for cold-start, applying:
+              1. Time window filter: first_seen_ts_utc within COLD_START_LOOKBACK_HOURS
+              2. Hard cap: at most MAX_COLD_START_WALLETS wallets (most recent first)
+                 to ensure Free-tier CU budget is not exceeded.
 
-            Falls back to 100 most recent wallets (ORDER BY first_seen_ts_utc DESC) if
-            the query fails, preventing cold-start with 3000+ wallets.
+            Architect Q1 Option B ruling: uses first_seen_ts_utc, not added_ts_utc.
+
+            INVARIANT: This function MUST NOT return more than MAX_COLD_START_WALLETS
+                       wallets regardless of time window results.
             """
             import time as _time
+            from panopticon_py.hunting.transfer_graph import (
+                COLD_START_LOOKBACK_HOURS as _LOOKBACK,
+                MAX_COLD_START_WALLETS as _CAP,
+            )
 
-            cutoff_epoch = _time.time() - COLD_START_LOOKBACK_HOURS * 3600
+            # Hard cap = 0 means cold-start is disabled (WSS-only mode)
+            if _CAP == 0:
+                logger.info(
+                    "[TRANSFER_GRAPH] cold-start disabled "
+                    "(TG_COLD_START_MAX_WALLETS=0 — WSS-only mode)"
+                )
+                return []
+
+            if _CAP < 0:
+                logger.warning(
+                    "[TRANSFER_GRAPH] cold-start cap is disabled (TG_COLD_START_MAX_WALLETS=%d) "
+                    "— Free-tier CU budget may be exceeded",
+                    _CAP,
+                )
+
+            cutoff_epoch = _time.time() - _LOOKBACK * 3600
+            total_count = len(_watchlist_snapshot())
+
             try:
+                # Apply time window first, then LIMIT to cap
+                # ORDER BY first_seen_ts_utc DESC: most recently added wallets get priority
+                limit_clause = (
+                    f"LIMIT {_CAP}"
+                    if _CAP > 0
+                    else ""
+                )
                 rows = db.execute(
-                    """
+                    f"""
                     SELECT wallet_address FROM wallet_watchlist
                     WHERE wallet_address IS NOT NULL
                       AND first_seen_ts_utc IS NOT NULL
                       AND first_seen_ts_utc >= datetime(?, 'unixepoch', 'utc')
                     ORDER BY first_seen_ts_utc DESC
+                    {limit_clause}
                     """,
                     (cutoff_epoch,),
                 ).fetchall()
                 wallets = [str(r[0]).lower() for r in rows if r and r[0]]
                 logger.info(
-                    "[TRANSFER_GRAPH] cold-start: %d wallets first_seen in last %.0fh "
-                    "(of %d total)",
+                    "[TRANSFER_GRAPH] cold-start eligible: %d wallets "
+                    "(lookback=%.0fh, cap=%d, total_watchlist=%d)",
                     len(wallets),
-                    COLD_START_LOOKBACK_HOURS,
-                    len(_watchlist_snapshot()),
+                    _LOOKBACK,
+                    _CAP,
+                    total_count,
                 )
                 return sorted(wallets)
+
             except Exception as exc:
-                # Fallback: most recent 100 wallets by first_seen_ts_utc DESC
+                # Fallback: most recent wallets capped by safe limit
+                safe_cap = min(100, _CAP if _CAP > 0 else 50)
                 logger.warning(
                     "[TRANSFER_GRAPH] first_seen_ts_utc query failed (%s) — "
-                    "falling back to 100 most recent wallets",
+                    "falling back to %d most recent wallets",
                     exc,
+                    safe_cap,
                 )
                 try:
                     rows = db.execute(
@@ -986,8 +1021,9 @@ async def main_async() -> int:
                         WHERE wallet_address IS NOT NULL
                           AND first_seen_ts_utc IS NOT NULL
                         ORDER BY first_seen_ts_utc DESC
-                        LIMIT 100
+                        LIMIT ?
                         """,
+                        (safe_cap,),
                     ).fetchall()
                     return sorted(str(r[0]).lower() for r in rows if r and r[0])
                 except Exception as exc2:
@@ -1089,6 +1125,8 @@ async def main_async() -> int:
 
     # persist writer health every 30s (5s loop × 6)
     _health_persist_counter = 0
+    # D171 Q1 follow-up: one-shot cold-start report flag (prevents double-write)
+    _tg_init_reported = False
 
     while True:
         await asyncio.sleep(5.0)
@@ -1117,20 +1155,24 @@ async def main_async() -> int:
             # For other tasks: log and continue (they are long-running loops)
             # radar/graph are expected to run indefinitely
 
-        # D171 P4-T2 revised: log cold-start init task completion (one-shot, no restart)
-        if transfer_graph_init_task.done() and not transfer_graph_init_task.cancelled():
+        # D171 P4-T2 revised: one-shot cold-start completion reporting (only once)
+        # _tg_init_reported flag ensures _write_cu_report is called at most once
+        if not _tg_init_reported and transfer_graph_init_task.done() and not transfer_graph_init_task.cancelled():
+            _tg_init_reported = True  # set BEFORE await to prevent double-write on exception
             exc = transfer_graph_init_task.exception()
             if exc:
                 logger.error("[TG] cold-start init task failed: %s", exc)
             else:
                 result = transfer_graph_init_task.result()
-                if result:
+                if isinstance(result, tuple) and len(result) == 3:
                     attempted, completed, rate_limits = result
                     logger.info(
                         "[TG] cold-start init done: attempted=%d completed=%d rate_limits=%d",
                         attempted, completed, rate_limits,
                     )
                     await _write_cu_report(attempted, completed, rate_limits)
+                else:
+                    logger.info("[TG] cold-start init done (no stats returned)")
 
         if _close_event.is_set():
             break
