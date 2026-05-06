@@ -1439,6 +1439,20 @@ class ShadowDB:
             "TEXT",
             on_locked="warn",
         )
+        # D171 P4-T2 revised: cold-start lookback needs added_ts_utc column
+        self._add_column_if_missing(
+            self.conn,
+            "wallet_watchlist",
+            "added_ts_utc",
+            "TEXT",
+            on_locked="warn",
+        )
+        # Backfill existing rows with a very old epoch so they are never cold-started
+        self.conn.execute("""
+            UPDATE wallet_watchlist
+            SET added_ts_utc = '2000-01-01T00:00:00.000Z'
+            WHERE added_ts_utc IS NULL
+        """)
 
     def _ensure_transfer_graph_tables(self) -> None:
         """D171 P4-T2: transfer_graph and entity_labels tables.

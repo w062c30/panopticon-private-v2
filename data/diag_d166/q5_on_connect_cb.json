@@ -1,0 +1,77 @@
+{
+  "run_radar_relevant_lines": [
+    {
+      "line_no": 741,
+      "content": "def _reconnect_all_entropy_windows() -> None:"
+    },
+    {
+      "line_no": 747,
+      "content": "        ew_obj.mark_reconnect(reason=\"ws_disconnect\")"
+    },
+    {
+      "line_no": 2306,
+      "content": "    from panopticon_py.hunting.clob_ws_client import run_ws_loop"
+    },
+    {
+      "line_no": 3079,
+      "content": "    async def _ws_runner() -> None:"
+    },
+    {
+      "line_no": 3128,
+      "content": "            # D123-1: Lifecycle log ¡X every entry to run_ws_loop"
+    },
+    {
+      "line_no": 3129,
+      "content": "            _ws_attempt_count = getattr(_ws_runner, \"_attempt_count\", 0) + 1"
+    },
+    {
+      "line_no": 3130,
+      "content": "            _ws_runner._attempt_count = _ws_attempt_count  # type: ignore[attr-defined]"
+    },
+    {
+      "line_no": 3139,
+      "content": "                await run_ws_loop("
+    },
+    {
+      "line_no": 3142,
+      "content": "                    on_reconnect=lambda: _reconnect_all_entropy_windows(),  # D157-3: reconnect all per-token windows"
+    },
+    {
+      "line_no": 3143,
+      "content": "                    on_connect_cb=(lambda: (mc.on_ws_connected() if mc else None)) if mc else None,"
+    },
+    {
+      "line_no": 3144,
+      "content": "                    on_disconnect_cb=(lambda: (mc.on_ws_disconnected() if mc else None)) if mc else None,"
+    },
+    {
+      "line_no": 3147,
+      "content": "                # D121: run_ws_loop returned normally ¡X reset 1009 flag so next attempt can proceed"
+    },
+    {
+      "line_no": 3150,
+      "content": "                logger.info(\"[WS_RUNNER][EXIT_CLEAN] run_ws_loop returned normally\")"
+    },
+    {
+      "line_no": 3173,
+      "content": "    ws_task = asyncio.create_task(_ws_runner())"
+    },
+    {
+      "line_no": 3245,
+      "content": "                # D155: mark_reconnect removed ¡X adding new tokens to an existing WS subscription"
+    },
+    {
+      "line_no": 3247,
+      "content": "                # WS reconnect (clob_ws_client.on_reconnect) still calls mark_reconnect"
+    },
+    {
+      "line_no": 3248,
+      "content": "                # via the lambda in _ws_runner if the actual connection drops."
+    },
+    {
+      "line_no": 3495,
+      "content": "    PROCESS_VERSION = \"v1.1.61-D165\"   # ¡ö AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal ¡÷ proper ISO millisecond  # D151: canonical_event_url fix ¡X groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block ¡X preserve _h_history across heartbeats  # D156-1: refresh_subscription() ¡X no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics  # D165: D75 naming ¡X z_eval_ok / hist_not_ready / z_below_thr; HUNT_EW_UNLOCK_* env vars in entropy_window"
+    }
+  ],
+  "total_hits": 18
+}

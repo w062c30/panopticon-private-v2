@@ -1,0 +1,662 @@
+[
+  {
+    "updated_ts": "2026-05-04T19:49:55.065Z",
+    "total": 117,
+    "z_ready_count": 1,
+    "locked_count": 46,
+    "_collected_at": "2026-05-04T19:49:55Z",
+    "_snapshot_index": 0,
+    "_token_stats": {
+      "events_min": 0,
+      "events_p50": 1,
+      "events_max": 3,
+      "h_hist_min": 0,
+      "h_hist_p50": 0,
+      "h_hist_max": 200,
+      "locked_count": 46,
+      "ready_count": 1,
+      "lowest_5_by_events": [
+        [
+          "5480321080498857532783127229326189836912347874636491000740569431035994537878",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "53025407417681945456185047676360075611826200496368613397879165138143915677371",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "73083834887377107801592683856673267332315203181938871574273424329272995510656",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "9833308678587206305570654589332448119253829312051844794728681935830256711497",
+          {
+            "h_hist": 167,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "17315855948307265544442131042807030031856069078904192611019631793989040536462",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ],
+      "closest_to_unlock": [
+        [
+          "94476829201604408463453426454480212459887267917122244941405244686637914508323",
+          {
+            "h_hist": 1,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "97787606698093663746310161655083884268863593082956469376386743061399298825100",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "87037476560262355019736573472997730954875286944171789280729969665019434635807",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "25869296386911654049715489068824757745174681288397238521780118949553760488529",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "updated_ts": "2026-05-04T19:50:10.807Z",
+    "total": 118,
+    "z_ready_count": 1,
+    "locked_count": 46,
+    "_collected_at": "2026-05-04T19:50:10Z",
+    "_snapshot_index": 1,
+    "_token_stats": {
+      "events_min": 0,
+      "events_p50": 1,
+      "events_max": 3,
+      "h_hist_min": 0,
+      "h_hist_p50": 0,
+      "h_hist_max": 200,
+      "locked_count": 46,
+      "ready_count": 1,
+      "lowest_5_by_events": [
+        [
+          "5480321080498857532783127229326189836912347874636491000740569431035994537878",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "53025407417681945456185047676360075611826200496368613397879165138143915677371",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "73083834887377107801592683856673267332315203181938871574273424329272995510656",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "9833308678587206305570654589332448119253829312051844794728681935830256711497",
+          {
+            "h_hist": 167,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "17315855948307265544442131042807030031856069078904192611019631793989040536462",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ],
+      "closest_to_unlock": [
+        [
+          "94476829201604408463453426454480212459887267917122244941405244686637914508323",
+          {
+            "h_hist": 1,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "97787606698093663746310161655083884268863593082956469376386743061399298825100",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "87037476560262355019736573472997730954875286944171789280729969665019434635807",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "25869296386911654049715489068824757745174681288397238521780118949553760488529",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "updated_ts": "2026-05-04T19:50:21.322Z",
+    "total": 118,
+    "z_ready_count": 1,
+    "locked_count": 46,
+    "_collected_at": "2026-05-04T19:50:25Z",
+    "_snapshot_index": 2,
+    "_token_stats": {
+      "events_min": 0,
+      "events_p50": 1,
+      "events_max": 3,
+      "h_hist_min": 0,
+      "h_hist_p50": 0,
+      "h_hist_max": 200,
+      "locked_count": 46,
+      "ready_count": 1,
+      "lowest_5_by_events": [
+        [
+          "5480321080498857532783127229326189836912347874636491000740569431035994537878",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "53025407417681945456185047676360075611826200496368613397879165138143915677371",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "73083834887377107801592683856673267332315203181938871574273424329272995510656",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "9833308678587206305570654589332448119253829312051844794728681935830256711497",
+          {
+            "h_hist": 167,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "17315855948307265544442131042807030031856069078904192611019631793989040536462",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ],
+      "closest_to_unlock": [
+        [
+          "94476829201604408463453426454480212459887267917122244941405244686637914508323",
+          {
+            "h_hist": 1,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "97787606698093663746310161655083884268863593082956469376386743061399298825100",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "87037476560262355019736573472997730954875286944171789280729969665019434635807",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "25869296386911654049715489068824757745174681288397238521780118949553760488529",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "updated_ts": "2026-05-04T19:50:37.087Z",
+    "total": 118,
+    "z_ready_count": 1,
+    "locked_count": 46,
+    "_collected_at": "2026-05-04T19:50:40Z",
+    "_snapshot_index": 3,
+    "_token_stats": {
+      "events_min": 0,
+      "events_p50": 1,
+      "events_max": 3,
+      "h_hist_min": 0,
+      "h_hist_p50": 0,
+      "h_hist_max": 200,
+      "locked_count": 46,
+      "ready_count": 1,
+      "lowest_5_by_events": [
+        [
+          "5480321080498857532783127229326189836912347874636491000740569431035994537878",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "53025407417681945456185047676360075611826200496368613397879165138143915677371",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "73083834887377107801592683856673267332315203181938871574273424329272995510656",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "9833308678587206305570654589332448119253829312051844794728681935830256711497",
+          {
+            "h_hist": 167,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "17315855948307265544442131042807030031856069078904192611019631793989040536462",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ],
+      "closest_to_unlock": [
+        [
+          "94476829201604408463453426454480212459887267917122244941405244686637914508323",
+          {
+            "h_hist": 1,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "97787606698093663746310161655083884268863593082956469376386743061399298825100",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "87037476560262355019736573472997730954875286944171789280729969665019434635807",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "25869296386911654049715489068824757745174681288397238521780118949553760488529",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "updated_ts": "2026-05-04T19:50:52.852Z",
+    "total": 118,
+    "z_ready_count": 1,
+    "locked_count": 46,
+    "_collected_at": "2026-05-04T19:50:55Z",
+    "_snapshot_index": 4,
+    "_token_stats": {
+      "events_min": 0,
+      "events_p50": 1,
+      "events_max": 3,
+      "h_hist_min": 0,
+      "h_hist_p50": 0,
+      "h_hist_max": 200,
+      "locked_count": 46,
+      "ready_count": 1,
+      "lowest_5_by_events": [
+        [
+          "5480321080498857532783127229326189836912347874636491000740569431035994537878",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "53025407417681945456185047676360075611826200496368613397879165138143915677371",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "73083834887377107801592683856673267332315203181938871574273424329272995510656",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "9833308678587206305570654589332448119253829312051844794728681935830256711497",
+          {
+            "h_hist": 167,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "17315855948307265544442131042807030031856069078904192611019631793989040536462",
+          {
+            "h_hist": 200,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 0,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ],
+      "closest_to_unlock": [
+        [
+          "94476829201604408463453426454480212459887267917122244941405244686637914508323",
+          {
+            "h_hist": 1,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "40081275558852222228080198821361202017557872256707631666334039001378518619916",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "97787606698093663746310161655083884268863593082956469376386743061399298825100",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "87037476560262355019736573472997730954875286944171789280729969665019434635807",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ],
+        [
+          "25869296386911654049715489068824757745174681288397238521780118949553760488529",
+          {
+            "h_hist": 0,
+            "need": 5,
+            "trigger_locked": true,
+            "events": 1,
+            "healthy_span": 0.0,
+            "z_ready": false
+          }
+        ]
+      ]
+    }
+  }
+]

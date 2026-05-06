@@ -1,0 +1,8 @@
+D168 P1-T3 progress
+
+line 135: WRITE — converted (polymarket_link_map upsert)
+line 412: WRITE — converted (polymarket_link_map event-name fill)
+line 2167: WRITE — converted (wallet_observations insert-or-ignore)
+line 2182: WRITE — converted (wallet_observations insert)
+
+All remaining db.conn.execute call-sites classified READ and intentionally unchanged.

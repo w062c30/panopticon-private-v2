@@ -1,1 +1,1 @@
-{"running": true, "thread_alive": true, "queue_depth": 0, "queue_unfinished": 0, "written_at": "2026-05-04T03:38:40.761Z"}
+{"written_at":"2026-05-06T11:45:54.388Z","queue_size":0,"batch_count":190,"drop_count":0,"last_batch_size":1,"last_batch_duration_ms":0,"consumer_alive":true}

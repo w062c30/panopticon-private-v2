@@ -1,0 +1,282 @@
+{
+  "entropy_window_z_logic": [
+    {
+      "line_no": 3,
+      "content": "D164-1 (z_ready / gate diagnostics, radar ``run_radar.py``):"
+    },
+    {
+      "line_no": 4,
+      "content": "``zscore_of_latest_delta`` returns (None, None) when ``_trigger_locked`` is True"
+    },
+    {
+      "line_no": 5,
+      "content": "(reconnect / gap flush), or when ``len(_h_history) < min_history_for_z``, or when"
+    },
+    {
+      "line_no": 12,
+      "content": "``_trigger_locked`` is cleared when EITHER condition is met (tested after each push):"
+    },
+    {
+      "line_no": 54,
+      "content": "    min_history_for_z: int = 5"
+    },
+    {
+      "line_no": 58,
+      "content": "    _h_history: Deque[float] = field(default_factory=deque)"
+    },
+    {
+      "line_no": 59,
+      "content": "    _trigger_locked: bool = False"
+    },
+    {
+      "line_no": 67,
+      "content": "        # D159: single source ¡X config.get_min_history_for_z() (HUNT_MIN_HISTORY_FOR_Z, default 5)"
+    },
+    {
+      "line_no": 68,
+      "content": "        from config import get_min_history_for_z"
+    },
+    {
+      "line_no": 70,
+      "content": "        self.min_history_for_z = get_min_history_for_z()"
+    },
+    {
+      "line_no": 96,
+      "content": "        Does NOT flush _events or set _trigger_locked."
+    },
+    {
+      "line_no": 99,
+      "content": "        _h_history is preserved ¡X H distribution is market-level state."
+    },
+    {
+      "line_no": 103,
+      "content": "            reason, len(self._h_history), len(self._events), self._trigger_locked,"
+    },
+    {
+      "line_no": 111,
+      "content": "        D154: _h_history intentionally NOT cleared ¡X H distribution is market-level"
+    },
+    {
+      "line_no": 114,
+      "content": "        _trigger_locked is still set to ensure 30-event warm-up before next signal."
+    },
+    {
+      "line_no": 120,
+      "content": "        self._trigger_locked = True"
+    },
+    {
+      "line_no": 126,
+      "content": "            reason, len(self._h_history),"
+    },
+    {
+      "line_no": 154,
+      "content": "        if self._trigger_locked and len(self._events) >= self._unlock_event_count:"
+    },
+    {
+      "line_no": 155,
+      "content": "            self._trigger_locked = False"
+    },
+    {
+      "line_no": 157,
+      "content": "        if self._trigger_locked and self._healthy_span >= self._unlock_healthy_span_sec:"
+    },
+    {
+      "line_no": 158,
+      "content": "            self._trigger_locked = False"
+    },
+    {
+      "line_no": 163,
+      "content": "        if self._trigger_locked or len(self._events) < 2:"
+    },
+    {
+      "line_no": 175,
+      "content": "        self._h_history.append(h)"
+    },
+    {
+      "line_no": 176,
+      "content": "        while len(self._h_history) > 200:"
+    },
+    {
+      "line_no": 177,
+      "content": "            self._h_history.popleft()"
+    },
+    {
+      "line_no": 179,
+      "content": "    def zscore_of_latest_delta(self) -> tuple[float | None, float | None]:"
+    },
+    {
+      "line_no": 181,
+      "content": "        if self._trigger_locked or len(self._h_history) < self.min_history_for_z:"
+    },
+    {
+      "line_no": 183,
+      "content": "        hs = list(self._h_history)"
+    },
+    {
+      "line_no": 199,
+      "content": "        if self._trigger_locked:"
+    },
+    {
+      "line_no": 201,
+      "content": "        _d, z = self.zscore_of_latest_delta()"
+    },
+    {
+      "line_no": 208,
+      "content": "            \"trigger_locked\": self._trigger_locked,"
+    },
+    {
+      "line_no": 211,
+      "content": "            \"h_hist\": len(self._h_history),"
+    }
+  ],
+  "run_radar_gate_logic": [
+    {
+      "line_no": 208,
+      "content": "        z_ready_count = 0"
+    },
+    {
+      "line_no": 218,
+      "content": "                \"z_ready\": is_ready,"
+    },
+    {
+      "line_no": 221,
+      "content": "                z_ready_count += 1"
+    },
+    {
+      "line_no": 228,
+      "content": "            \"z_ready_count\": z_ready_count,"
+    },
+    {
+      "line_no": 1962,
+      "content": "        ew.record_H_sample(recv)"
+    },
+    {
+      "line_no": 1963,
+      "content": "        d, z = ew.zscore_of_latest_delta()"
+    },
+    {
+      "line_no": 2352,
+      "content": "    # D75/D81: _evt_count and _entropy_* are now module-level (initialized above _live_ticks)"
+    },
+    {
+      "line_no": 2357,
+      "content": "    _entropy_hist_not_ready_count = 0"
+    },
+    {
+      "line_no": 2358,
+      "content": "    _entropy_z_eval_ok_count = 0"
+    },
+    {
+      "line_no": 2359,
+      "content": "    _entropy_z_below_threshold_count = 0"
+    },
+    {
+      "line_no": 2366,
+      "content": "        nonlocal _entropy_hist_not_ready_count, _entropy_z_eval_ok_count"
+    },
+    {
+      "line_no": 2367,
+      "content": "        nonlocal _entropy_z_below_threshold_count, _entropy_z_samples"
+    },
+    {
+      "line_no": 2670,
+      "content": "                    t1_ew.record_H_sample(recv)"
+    },
+    {
+      "line_no": 2824,
+      "content": "                token_ew.record_H_sample(recv)"
+    },
+    {
+      "line_no": 2825,
+      "content": "                # D75: Entropy gate pre/post diagnostics to explain why fire doesn't happen."
+    },
+    {
+      "line_no": 2827,
+      "content": "                _d_diag, z_diag = token_ew.zscore_of_latest_delta()"
+    },
+    {
+      "line_no": 2833,
+      "content": "                        _entropy_hist_not_ready_count += 1"
+    },
+    {
+      "line_no": 2835,
+      "content": "                    _entropy_z_eval_ok_count += 1"
+    },
+    {
+      "line_no": 2838,
+      "content": "                        _entropy_z_below_threshold_count += 1"
+    },
+    {
+      "line_no": 2890,
+      "content": "                    z_score = token_ew.zscore_of_latest_delta()"
+    },
+    {
+      "line_no": 2993,
+      "content": "                        # D158-1: z_ready in entropy_status.json ¡Ú enqueue; this log confirms L1¡÷queue"
+    },
+    {
+      "line_no": 3195,
+      "content": "                \"[D75_HEARTBEAT] uptime_s=%.0f trade_ticks_60s=%d real_trade_ticks_60s=%d \""
+    },
+    {
+      "line_no": 3303,
+      "content": "                # D165: D75_ENTROPY_GATE ¡X renamed to disambiguate:"
+    },
+    {
+      "line_no": 3304,
+      "content": "                #   z_eval_ok = 60s counter of tokens whose zscore_of_latest_delta() returned finite (d, z)"
+    },
+    {
+      "line_no": 3305,
+      "content": "                #   z_ready in entropy_status.json = per-token flag (h_hist >= min_history_for_z, not locked)"
+    },
+    {
+      "line_no": 3306,
+      "content": "                #   hist_not_ready = z is None & not locked (short H history)"
+    },
+    {
+      "line_no": 3307,
+      "content": "                #   z_below_thr = z computed but above threshold (not a signal)"
+    },
+    {
+      "line_no": 3309,
+      "content": "                # D75: minute-level z-score distribution stats"
+    },
+    {
+      "line_no": 3319,
+      "content": "                # D83: D75_ENTROPY_GATE reverted to logger.info (log handler confirmed working)"
+    },
+    {
+      "line_no": 3321,
+      "content": "                    \"[D75_ENTROPY_GATE] event_type_60s={last_trade_price:%d,book:%d,price_change:%d,other:%d} \""
+    },
+    {
+      "line_no": 3322,
+      "content": "                    \"gate_60s={eval:%d,locked:%d,hist_not_ready:%d,z_eval_ok:%d,z_below_thr:%d,fired:%d} \""
+    },
+    {
+      "line_no": 3325,
+      "content": "                    _entropy_eval_total, _entropy_locked_count, _entropy_hist_not_ready_count,"
+    },
+    {
+      "line_no": 3326,
+      "content": "                    _entropy_z_eval_ok_count, _entropy_z_below_threshold_count, _ws_entropy_fire_count,"
+    },
+    {
+      "line_no": 3332,
+      "content": "                _entropy_hist_not_ready_count = 0"
+    },
+    {
+      "line_no": 3333,
+      "content": "                _entropy_z_eval_ok_count = 0"
+    },
+    {
+      "line_no": 3334,
+      "content": "                _entropy_z_below_threshold_count = 0"
+    },
+    {
+      "line_no": 3495,
+      "content": "    PROCESS_VERSION = \"v1.1.61-D165\"   # ¡ö AGENT: bump on every change  # D131: +on_real_trade_tick hook + mc.on_real_trade_tick() calls in _ws_runner  # D145: fix updated_ts %%03dZ literal ¡÷ proper ISO millisecond  # D151: canonical_event_url fix ¡X groupSlug + /event/ path  # D154: mark_reconnect(reason=) + subscription_refresh preserve _h_history  # D155: remove mark_reconnect from new_tokens block ¡X preserve _h_history across heartbeats  # D156-1: refresh_subscription() ¡X no trigger lock on sub refresh  # D157-1: _write_entropy_snapshot() writes to data/entropy_status.json every 5s  # D157-2: GET /api/entropy/status reads from JSON file (cross-process IPC)  # D157-3: per-token EntropyWindow in _entropy_windows dict; _get_or_create_ew() hot path  # D157-3: _reconnect_all_entropy_windows() + _refresh_subscription_all() helpers  # D157-4: ENTROPY_STATUS_PATH env var for JSON snapshot path  # D158-1: [SIGNAL_FIRED] log after entropy SignalEvent queued to signal_engine  # D159-1: HUNT_MIN_HISTORY_FOR_Z via config (default 5)  # D159-2C: _detect_and_persist_series SQLite lock retry / skip series  # D160: PROCESS_VERSION bump only (logic unchanged in this file)  # D164-1: D75_ENTROPY_GATE doc + config HUNT_MIN_ENTROPY_Z_THRESHOLD / min_history diagnostics  # D165: D75 naming ¡X z_eval_ok / hist_not_ready / z_below_thr; HUNT_EW_UNLOCK_* env vars in entropy_window"
+    }
+  ]
+}

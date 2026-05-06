@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Callable
 
 import aiohttp
@@ -31,9 +32,11 @@ PROCESS_VERSION = "v1.1.0-D171"
 MAX_BLOCKS_PER_HOP = MAX_BLOCKS_PER_LOGS_QUERY
 MAX_NODES_PER_GRAPH = 200
 PER_HOP_TIMEOUT_SEC = 10.0
-INTER_REQUEST_SLEEP_SEC = float(os.getenv("TG_INTER_REQ_SLEEP", "1.0"))
+INTER_REQUEST_SLEEP_SEC = float(os.getenv("TG_INTER_REQ_SLEEP", "3.0"))
 RATE_LIMIT_BACKOFF_SEC = float(os.getenv("TG_RATE_LIMIT_BACKOFF", "120.0"))
-BATCH_WALLETS_PER_CYCLE = int(os.getenv("TG_BATCH_WALLETS", "50"))
+BATCH_WALLETS_PER_CYCLE = int(os.getenv("TG_BATCH_WALLETS", "5"))
+COLD_START_LOOKBACK_HOURS = float(os.getenv("TG_COLD_START_LOOKBACK_HOURS", "24.0"))
+SAFE_FALLBACK_BLOCK = 86_400_000
 
 logger = logging.getLogger(__name__)
 
@@ -156,26 +159,114 @@ async def init_transfer_graph(
     alchemy_key: str,
     linker: EntityLinker,
     get_latest_block_fn: Callable[[], Any],
-) -> None:
-    """One-shot cold-start task; exits naturally once done."""
+    added_after_epoch: float | None = None,
+) -> tuple[int, int, int]:
+    """
+    One-shot cold-start task; exits naturally when done.
+
+    Returns (wallets_attempted, wallets_completed, rate_limit_count).
+    Caller writes CU report from these values.
+
+    added_after_epoch: Unix timestamp (seconds). If provided, only wallets
+    added after this time are cold-started. Older wallets rely on WSS ingestion.
+    This keeps cold-start tractable on Free tier.
+    """
     if not watchlist:
         logger.info("[TG] cold-start: watchlist empty")
-        return
+        return 0, 0, 0
+
+    total = len(watchlist)
+    wallets_attempted = 0
+    wallets_completed = 0
+    rate_limit_count = 0
+    consecutive_rate_limits = 0
+
     timeout = aiohttp.ClientTimeout(total=PER_HOP_TIMEOUT_SEC)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         latest_block = int(await get_latest_block_fn())
-        logger.info("[TG] cold-start begin wallets=%d latest_block=%d", len(watchlist), latest_block)
-        for i in range(0, len(watchlist), max(1, BATCH_WALLETS_PER_CYCLE)):
+        if latest_block < 1_000_000:
+            logger.error(
+                "[TG] cold-start aborted: latest_block=%d looks invalid",
+                latest_block,
+            )
+            return 0, 0, 0
+
+        logger.info(
+            "[TG] cold-start begin wallets=%d latest_block=%d lookback=%.0fh",
+            total,
+            latest_block,
+            COLD_START_LOOKBACK_HOURS,
+        )
+
+        for i in range(0, total, max(1, BATCH_WALLETS_PER_CYCLE)):
             batch = watchlist[i:i + max(1, BATCH_WALLETS_PER_CYCLE)]
             for wallet in batch:
+                wallets_attempted += 1
                 try:
                     logs = await _cold_start_fetch(wallet, latest_block, alchemy_key, session)
                     _persist_logs(logs, wallet, hop_depth=1, linker=linker)
+                    wallets_completed += 1
+                    consecutive_rate_limits = 0
                 except _RateLimitExceeded:
-                    logger.warning("[TG] cold-start rate-limited; backoff %.0fs", RATE_LIMIT_BACKOFF_SEC)
-                    await asyncio.sleep(RATE_LIMIT_BACKOFF_SEC)
+                    rate_limit_count += 1
+                    consecutive_rate_limits += 1
+                    backoff = RATE_LIMIT_BACKOFF_SEC * min(consecutive_rate_limits, 5)
+                    logger.warning(
+                        "[TG] cold-start rate-limited (consecutive=%d, total=%d); "
+                        "backoff %.0fs",
+                        consecutive_rate_limits,
+                        rate_limit_count,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    if consecutive_rate_limits >= 2:
+                        try:
+                            latest_block = int(await get_latest_block_fn())
+                        except Exception:
+                            pass
+                    continue
                 await asyncio.sleep(INTER_REQUEST_SLEEP_SEC)
-    logger.info("[TG] cold-start complete wallets=%d", len(watchlist))
+
+    logger.info(
+        "[TG] cold-start complete attempted=%d completed=%d rate_limits=%d",
+        wallets_attempted,
+        wallets_completed,
+        rate_limit_count,
+    )
+    return wallets_attempted, wallets_completed, rate_limit_count
+
+
+async def _write_cu_report(
+    wallet_count_attempted: int,
+    wallet_count_completed: int,
+    rate_limit_count: int,
+) -> None:
+    cu_per_req = 75
+    total_cu = wallet_count_completed * cu_per_req
+    report = f"""# D171 Alchemy CU Report (P4-T2 Revised — Runtime)
+
+## Cold-start Execution Summary
+- Wallets attempted : {wallet_count_attempted}
+- Wallets completed : {wallet_count_completed}
+- Rate limit events : {rate_limit_count}
+- CU consumed       : {total_cu:,} ({wallet_count_completed} × {cu_per_req} CU)
+- Free-tier budget  : 300,000,000 CU/month (10,000,000 CU/day)
+
+## Ongoing (WSS)
+- CU per event      : ~0 (eth_subscribe, not counted in request CU)
+
+## Notes
+- TG_BATCH_WALLETS             = {BATCH_WALLETS_PER_CYCLE}
+- TG_INTER_REQ_SLEEP           = {INTER_REQUEST_SLEEP_SEC}
+- TG_RATE_LIMIT_BACKOFF        = {RATE_LIMIT_BACKOFF_SEC}
+- TG_COLD_START_LOOKBACK_HOURS = {COLD_START_LOOKBACK_HOURS}
+"""
+    path = "temp_architect_handoffs/d171_alchemy_cu_report.md"
+    import os
+    os.makedirs("temp_architect_handoffs", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(report)
+    logger.info("[TG] CU report written: %s", path)
 
 
 class TransferGraphIngester:
@@ -184,7 +275,18 @@ class TransferGraphIngester:
     def __init__(self, linker: EntityLinker, watchlist_fn: Callable[[], set[str]]) -> None:
         self._linker = linker
         self._watchlist_fn = watchlist_fn
+        self._watchlist_cache: set[str] = set()
+        self._watchlist_cache_ts: float = 0.0
+        self._WATCHLIST_CACHE_TTL = 60.0  # seconds — rebuild set every 60s
         self._events_seen = 0
+
+    def _get_watchlist(self) -> set[str]:
+        """Cached watchlist with 60s TTL to avoid per-event DB queries."""
+        now = time.monotonic()
+        if now - self._watchlist_cache_ts > self._WATCHLIST_CACHE_TTL:
+            self._watchlist_cache = self._watchlist_fn()
+            self._watchlist_cache_ts = now
+        return self._watchlist_cache
 
     async def run(self, tg_ingest_queue: asyncio.Queue) -> None:
         logger.info("[TGI] ingester started")
@@ -202,7 +304,7 @@ class TransferGraphIngester:
 
     async def _handle_event(self, event: dict) -> None:
         to_addr = str(event.get("to") or "").lower()
-        if to_addr not in self._watchlist_fn():
+        if to_addr not in self._get_watchlist():
             return
         from_addr = str(event.get("from") or "").lower()
         usdc_amount = float(event.get("usdc_amount") or 0.0)

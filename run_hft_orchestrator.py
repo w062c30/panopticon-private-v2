@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from panopticon_py.db import DBWriterQueue, ShadowDB
 from panopticon_py.friction_state import FrictionStateWorker, GlobalFrictionState
 from panopticon_py.hunting.pol_monitor import PolygonListener
+from panopticon_py.hunting.transfer_graph import _write_cu_report
 from panopticon_py.hft.graph_linker import HiddenLinkGraphEngine
 from panopticon_py.hft.hyperliquid_ws_client import HyperliquidOFIEngine, UnderlyingShock
 from panopticon_py.load_env import load_repo_env
@@ -72,7 +73,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.0-D171"   # D171 P4-T2 revised: WSS fanout + TransferGraphIngester + one-shot cold-start
+PROCESS_VERSION = "v1.7.1-D171"   # D171 P4-T2 revised: eth_blockNumber fallback + lookback filter + fanout put_nowait + TTL cache + CU report
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -723,8 +724,15 @@ async def main_async() -> int:
         while not _close_event.is_set():
             item = await polygon_outbound_q.get()
             try:
-                await whale_queue_q.put(item)
-                await tg_queue_q.put(item)
+                # Use put_nowait + drop-on-full to prevent fanout from blocking
+                for q, name in [
+                    (whale_queue_q, "whale"),
+                    (tg_queue_q, "tg"),
+                ]:
+                    try:
+                        q.put_nowait(item)
+                    except asyncio.QueueFull:
+                        logger.warning("[FANOUT] %s queue full — dropping event", name)
             finally:
                 polygon_outbound_q.task_done()
 
@@ -853,33 +861,114 @@ async def main_async() -> int:
     logger.info("[ORCH] InsiderDetector monitor started")
 
     # ── D171 P4-T2 revised: transfer graph (WSS ingester + one-shot cold-start) ──
-    async def _init_transfer_graph_once(db: ShadowDB) -> None:
+    # D171 P4-T2 revised: v1.7.1 — fixes: eth_blockNumber fallback, lookback filter,
+    #   fanout put_nowait, noop return, init task monitor
+    async def _init_transfer_graph_once(db: ShadowDB):
         from panopticon_py.hunting.entity_linker import EntityLinker
         from panopticon_py.hunting.transfer_graph import (
             TransferGraphIngester,
             init_transfer_graph,
+            _write_cu_report,
+            COLD_START_LOOKBACK_HOURS,
+            SAFE_FALLBACK_BLOCK,
         )
+        import aiohttp
+
         alchemy_key = os.getenv("ALCHEMY_API_KEY", "")
         if not alchemy_key:
             logger.warning("[TRANSFER_GRAPH] ALCHEMY_API_KEY not set — disabled")
-            async def _noop() -> None:
-                return
-            noop_ingest = asyncio.create_task(_noop(), name="transfer_graph_ingester")
-            noop_init = asyncio.create_task(_noop(), name="transfer_graph_init")
-            return noop_ingest, noop_init
+            async def _noop():
+                pass
+            return (
+                asyncio.create_task(_noop(), name="transfer_graph_ingester"),
+                asyncio.create_task(_noop(), name="transfer_graph_init"),
+            )
+
         linker = EntityLinker()
 
         def _watchlist_snapshot() -> set[str]:
             rows = db.execute(
-                "SELECT wallet_address FROM wallet_watchlist WHERE wallet_address IS NOT NULL"
+                "SELECT wallet_address FROM wallet_watchlist "
+                "WHERE wallet_address IS NOT NULL"
             ).fetchall()
             return {str(r[0]).lower() for r in rows if r and r[0]}
 
         async def _latest_block() -> int:
-            row = db.execute(
-                "SELECT last_processed_block FROM polygon_sync ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            return int(row[0] or 0) if row else 0
+            """Triple fallback: eth_blockNumber (priority 1) → polygon_sync (2) → safe block (3)."""
+            if alchemy_key:
+                try:
+                    url = f"https://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}"
+                    timeout = aiohttp.ClientTimeout(total=5.0)
+                    async with aiohttp.ClientSession(timeout=timeout) as s:
+                        async with s.post(
+                            url,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "eth_blockNumber",
+                                "params": [],
+                            },
+                        ) as resp:
+                            data = await resp.json(content_type=None)
+                            if isinstance(data, dict) and data.get("result"):
+                                block = int(data["result"], 16)
+                                if block > 1_000_000:
+                                    logger.info(
+                                        "[TG] latest_block from eth_blockNumber: %d",
+                                        block,
+                                    )
+                                    return block
+                except Exception as exc:
+                    logger.warning(
+                        "[TG] eth_blockNumber failed: %s — trying polygon_sync",
+                        exc,
+                    )
+            try:
+                row = db.execute(
+                    "SELECT last_processed_block FROM polygon_sync "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                if row and row[0] and int(row[0]) > 1_000_000:
+                    logger.info("[TG] latest_block from polygon_sync: %d", int(row[0]))
+                    return int(row[0])
+            except Exception as exc:
+                logger.warning("[TG] polygon_sync query failed: %s", exc)
+            logger.warning(
+                "[TG] using SAFE_FALLBACK_BLOCK=%d",
+                SAFE_FALLBACK_BLOCK,
+            )
+            return SAFE_FALLBACK_BLOCK
+
+        def _recently_added_wallets() -> list[str]:
+            """Return wallets added within cold-start lookback window."""
+            import time as _time
+
+            cutoff_epoch = _time.time() - COLD_START_LOOKBACK_HOURS * 3600
+            try:
+                rows = db.execute(
+                    """
+                    SELECT wallet_address FROM wallet_watchlist
+                    WHERE wallet_address IS NOT NULL
+                      AND added_ts_utc >= datetime(?, 'unixepoch')
+                    """,
+                    (cutoff_epoch,),
+                ).fetchall()
+                wallets = [str(r[0]).lower() for r in rows if r and r[0]]
+                logger.info(
+                    "[TRANSFER_GRAPH] cold-start: %d wallets added in last %.0fh "
+                    "(of %d total)",
+                    len(wallets),
+                    COLD_START_LOOKBACK_HOURS,
+                    len(_watchlist_snapshot()),
+                )
+                return sorted(wallets)
+            except Exception as exc:
+                logger.warning(
+                    "[TRANSFER_GRAPH] added_ts_utc query failed (%s) — "
+                    "falling back to first 100 wallets",
+                    exc,
+                )
+                return sorted(_watchlist_snapshot())[:100]
 
         tg_ingester = TransferGraphIngester(linker=linker, watchlist_fn=_watchlist_snapshot)
         transfer_graph_ingest_task = asyncio.create_task(
@@ -887,7 +976,7 @@ async def main_async() -> int:
             name="transfer_graph_ingester",
         )
 
-        wallets = sorted(_watchlist_snapshot())
+        wallets = _recently_added_wallets()
         transfer_graph_init_task = asyncio.create_task(
             init_transfer_graph(
                 watchlist=wallets,
@@ -898,7 +987,8 @@ async def main_async() -> int:
             name="transfer_graph_init",
         )
         logger.info(
-            "[TRANSFER_GRAPH] revised tasks launched (ingester + one-shot init), wallets=%d",
+            "[TRANSFER_GRAPH] revised tasks launched (ingester + one-shot init), "
+            "cold_start_wallets=%d",
             len(wallets),
         )
         return transfer_graph_ingest_task, transfer_graph_init_task
@@ -1000,6 +1090,21 @@ async def main_async() -> int:
                 await _restart_signal_engine()
             # For other tasks: log and continue (they are long-running loops)
             # radar/graph are expected to run indefinitely
+
+        # D171 P4-T2 revised: log cold-start init task completion (one-shot, no restart)
+        if transfer_graph_init_task.done() and not transfer_graph_init_task.cancelled():
+            exc = transfer_graph_init_task.exception()
+            if exc:
+                logger.error("[TG] cold-start init task failed: %s", exc)
+            else:
+                result = transfer_graph_init_task.result()
+                if result:
+                    attempted, completed, rate_limits = result
+                    logger.info(
+                        "[TG] cold-start init done: attempted=%d completed=%d rate_limits=%d",
+                        attempted, completed, rate_limits,
+                    )
+                    await _write_cu_report(attempted, completed, rate_limits)
 
         if _close_event.is_set():
             break

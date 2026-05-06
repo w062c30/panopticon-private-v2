@@ -168,6 +168,76 @@ class TestFundSourceScore:
         assert score == 0.3
 
 
+class TestColdStartLookbackFilter:
+    """Verify cold-start lookback filters wallet list correctly."""
+
+    def test_fund_source_score_returns_zero_when_no_edges(self):
+        """fund_source_score_from_graph returns 0.0 when there are no edges for that wallet."""
+        from panopticon_py.hunting.entity_linker import EntityLinker
+        from panopticon_py.hunting.transfer_graph import fund_source_score_from_graph
+
+        linker = EntityLinker()
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE transfer_graph "
+            "(root_wallet TEXT, from_addr TEXT, usdc_amount REAL, hop_depth INTEGER)"
+        )
+        # Insert an edge for a DIFFERENT root_wallet — "0xabc" has no edges
+        conn.execute(
+            "INSERT INTO transfer_graph(root_wallet, from_addr, usdc_amount, hop_depth) "
+            "VALUES (?, ?, ?, 1)",
+            ("0xother", "0x1111111111111111111111111111111111111111", 100.0),
+        )
+        # 0xabc has no edges → should return 0.0
+        score = fund_source_score_from_graph("0xabc", linker, conn)
+        assert score == 0.0
+
+
+class TestTransferGraphIngesterWatchlistCache:
+    """Verify TransferGraphIngester watchlist TTL cache behavior."""
+
+    def test_ingester_accepts_watchlist_fn(self):
+        """TransferGraphIngester initialises with a watchlist callable."""
+        from panopticon_py.hunting.transfer_graph import TransferGraphIngester
+
+        called = False
+
+        def fn() -> set[str]:
+            nonlocal called
+            called = True
+            return {"0xaaa"}
+
+        ingester = TransferGraphIngester(linker=None, watchlist_fn=fn)
+        result = ingester._get_watchlist()
+        assert result == {"0xaaa"}
+        assert called
+
+    def test_ingester_caches_watchlist(self):
+        """Subsequent _get_watchlist() calls use cache within TTL."""
+        from panopticon_py.hunting.transfer_graph import TransferGraphIngester
+        import time
+
+        call_count = 0
+
+        def fn() -> set[str]:
+            nonlocal call_count
+            call_count += 1
+            return {"0xbbb"}
+
+        ingester = TransferGraphIngester(linker=None, watchlist_fn=fn)
+        ingester._WATCHLIST_CACHE_TTL = 10.0  # short TTL for test
+
+        _ = ingester._get_watchlist()
+        _ = ingester._get_watchlist()
+        assert call_count == 1  # second call uses cache
+
+        # Advance time past TTL
+        ingester._watchlist_cache_ts -= 11.0
+        _ = ingester._get_watchlist()
+        assert call_count == 2  # cache expired, fn called again
+
+
 # ── D171 integration note ─────────────────────────────────────────────────────
 
 # These tests verify the building blocks are in place.

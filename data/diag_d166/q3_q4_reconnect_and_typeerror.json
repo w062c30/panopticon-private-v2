@@ -1,0 +1,5 @@
+{
+  "logs/orchestrator.err.log": "FILE_NOT_FOUND",
+  "logs/radar.err.log": "FILE_NOT_FOUND",
+  "logs/arb_scanner.err.log": "FILE_NOT_FOUND"
+}
