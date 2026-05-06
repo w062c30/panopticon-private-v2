@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
+from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 from panopticon_py.hunting.trade_aggregate import ParentTrade, VirtualEntity
+logger = logging.getLogger(__name__)
 
 EntityLabel = Literal[
     "POTENTIAL_INSIDER",
@@ -60,6 +63,21 @@ def _extract_fingerprint_dims(fingerprint: dict | None) -> tuple[float, float, f
     )
 
 
+def _compute_taker_ratio(parents: list[ParentTrade], assume_all_taker: bool) -> float:
+    """
+    Estimate taker ratio from directional imbalance.
+    TODO(D174/NQ-1): calibrate soft floor from backtest baseline.
+    """
+    if assume_all_taker:
+        return 1.0
+    if not parents:
+        return 0.5
+    net = sum(p.side * p.volume for p in parents)
+    tot = sum(p.volume for p in parents) or 1.0
+    directional_ratio = abs(net) / tot
+    return _clamp01(max(0.3, directional_ratio))
+
+
 def scores_from_parents(
     parents: list[ParentTrade],
     *,
@@ -74,7 +92,7 @@ def scores_from_parents(
         return FourDScores(
             idi=0.0,
             burst=0.0,
-            taker_ratio=0.0,
+            taker_ratio=_compute_taker_ratio([], assume_all_taker),
             size_entropy=size_entropy,
             concentration=concentration,
             funding_source=funding_source,
@@ -89,7 +107,7 @@ def scores_from_parents(
         g = max(0.0, b.first_ts_ms - a.last_ts_ms)
         gaps.append(g)
     burst = _gini(gaps) if gaps else 0.0
-    taker_ratio = 1.0 if assume_all_taker else 0.8
+    taker_ratio = _compute_taker_ratio(parents, assume_all_taker)
     size_entropy, concentration, funding_source, insufficient_data = _extract_fingerprint_dims(
         fingerprint
     )
@@ -126,7 +144,54 @@ def _weights() -> tuple[float, float, float, float, float, float]:
     )
 
 
-def compute_insider_score(scores: FourDScores) -> float:
+def _log_score_inference(
+    wallet_address: str,
+    scores: FourDScores,
+    insider_score: float,
+    db_conn=None,
+) -> None:
+    """D174 NQ-1 scaffold: persist online inference config for backtesting."""
+    try:
+        if db_conn is None:
+            return
+        w_idi, w_burst, w_taker, w_size, w_conc, w_fund = _weights()
+        payload = json.dumps(
+            {
+                "w_idi": w_idi,
+                "w_burst": w_burst,
+                "w_taker": w_taker,
+                "w_size": w_size,
+                "w_conc": w_conc,
+                "w_fund": w_fund,
+                "idi": scores.idi,
+                "burst": scores.burst,
+                "taker_ratio": scores.taker_ratio,
+                "size_entropy": scores.size_entropy,
+                "concentration": scores.concentration,
+                "funding_source": scores.funding_source,
+                "insufficient_data": scores.insufficient_data,
+                "insider_score": insider_score,
+                "created_at_utc": utc_now_rfc3339_ms(),
+            },
+            separators=(",", ":"),
+        )
+        db_conn.execute(
+            """
+            INSERT INTO insider_score_inference_log (wallet_address, inference_payload, created_at)
+            VALUES (?, ?, datetime('now'))
+            """,
+            ((wallet_address or "").lower()[:42], payload),
+        )
+    except Exception:
+        pass
+
+
+def compute_insider_score(
+    scores: FourDScores,
+    *,
+    wallet_address: str = "",
+    db_conn=None,
+) -> float:
     w_idi, w_burst, w_taker, w_size, w_conc, w_fund = _weights()
     raw = (
         (w_idi * scores.idi)
@@ -137,7 +202,9 @@ def compute_insider_score(scores: FourDScores) -> float:
         + (w_fund * scores.funding_source)
     )
     confidence_factor = 0.5 if scores.insufficient_data else 1.0
-    return _clamp01(raw * confidence_factor)
+    result = _clamp01(raw * confidence_factor)
+    _log_score_inference(wallet_address, scores, result, db_conn=db_conn)
+    return result
 
 
 def load_fingerprint_from_watchlist(wallet_address: str, db_conn) -> dict | None:
@@ -154,7 +221,15 @@ def load_fingerprint_from_watchlist(wallet_address: str, db_conn) -> dict | None
             return None
         if isinstance(raw, str):
             payload = json.loads(raw)
-            return payload if isinstance(payload, dict) else None
+            if isinstance(payload, dict):
+                logger.debug(
+                    "[FP_LOAD] wallet=%s keys=%s has_funding_source=%s",
+                    wallet_address[:20],
+                    sorted(payload.keys()),
+                    "funding_source" in payload,
+                )
+                return payload
+            return None
     except Exception:
         return None
     return None

@@ -14,20 +14,21 @@ def test_boot_lock_prevents_reentry():
     async def _run():
         await _radar_boot_lock.acquire()
         try:
-            with pytest.raises(RadarBootError, match="already_initializing"):
+            with pytest.raises(RadarBootError, match="deprecated_boot_lock_path"):
                 await _acquire_radar_boot_lock()
         finally:
-            mark_radar_boot_released()
+            _radar_boot_lock.release()
 
     asyncio.run(_run())
 
 
-def test_boot_lock_releases_via_mark_released():
+def test_boot_lock_release_helper_is_noop():
     async def _run():
-        await _acquire_radar_boot_lock()
+        await _radar_boot_lock.acquire()
         assert _radar_boot_lock.locked()
         mark_radar_boot_released()
-        assert not _radar_boot_lock.locked()
+        assert _radar_boot_lock.locked()
+        _radar_boot_lock.release()
 
     asyncio.run(_run())
 

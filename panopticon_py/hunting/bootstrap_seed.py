@@ -76,7 +76,11 @@ def _score_wallet(wallet: str, governor: RateLimitGovernor, db_conn) -> tuple[fl
     parents = aggregate_taker_sweeps(syn)
     fingerprint = load_fingerprint_from_watchlist(wallet, db_conn)
     label, scores, reasons = classify_high_frequency_wallet(parents, fingerprint=fingerprint)
-    insider_score_5d = compute_insider_score(scores)
+    insider_score_5d = compute_insider_score(
+        scores,
+        wallet_address=wallet,
+        db_conn=db_conn,
+    )
     base = sum(float(r.get("value") or 0) for r in rows if isinstance(r, dict)) ** 0.5 / (1.0 + len(rows) * 0.05)
     bonus = 0.0
     if label == "INSIDER_ALGO_SLICING":

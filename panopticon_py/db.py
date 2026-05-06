@@ -743,6 +743,15 @@ class ShadowDB:
             );
             CREATE INDEX IF NOT EXISTS idx_insider_address ON insider_score_snapshots(address);
             CREATE INDEX IF NOT EXISTS idx_insider_ingest ON insider_score_snapshots(ingest_ts_utc);
+
+            CREATE TABLE IF NOT EXISTS insider_score_inference_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              wallet_address TEXT NOT NULL,
+              inference_payload TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_isil_wallet
+              ON insider_score_inference_log(wallet_address, created_at DESC);
             """
         )
 

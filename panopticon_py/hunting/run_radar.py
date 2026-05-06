@@ -143,14 +143,13 @@ def mark_radar_boot_failure(error: str) -> None:
 
 
 def mark_radar_boot_released() -> None:
-    if _radar_boot_lock.locked():
-        _radar_boot_lock.release()
+    """D174: lock release handled by async-with context in _live_ticks."""
+    return None
 
 
 async def _acquire_radar_boot_lock() -> None:
-    if _radar_boot_lock.locked():
-        raise RadarBootError("already_initializing")
-    await _radar_boot_lock.acquire()
+    """Deprecated in D174. Use `async with _radar_boot_lock` inside _live_ticks."""
+    raise RadarBootError("deprecated_boot_lock_path")
 
 
 # ── BTC 5m Dynamic Window Resolution (D70 Q1) ───────────────────────────────
@@ -2465,7 +2464,7 @@ def _pctl(values: list[float], pct: float) -> float | None:
     return arr[idx]
 
 
-async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -> None:
+async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -> None:
     """
     D157-3: Radar live tick loop — now uses per-token _entropy_windows dict.
     No single shared EntropyWindow — each token has its own buffer in _entropy_windows.
@@ -2490,7 +2489,6 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
     global _last_pol_refresh  # D112: added missing declaration — crash at L2736 if absent
     global _radar_boot_state
 
-    await _acquire_radar_boot_lock()
     _radar_boot_state = RadarBootState(boot_id=_new_boot_id(), state=RadarState.STARTING)
     _dump_radar_boot_state()
 
@@ -3396,7 +3394,6 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 await asyncio.sleep(5)
 
     ws_task = asyncio.create_task(_ws_runner())
-    mark_radar_boot_released()
 
     # ── Phase 5: Whale Scanner — starts once, runs independently on 300s cadence ─
     if os.getenv("PANOPTICON_WHALE"):
@@ -3602,6 +3599,27 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
         await asyncio.sleep(0.1)
 
 
+async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -> None:
+    """
+    D174 Option B: full boot flow runs under async lock context.
+    This guarantees lock release on normal exit, exception, or cancellation.
+    """
+    if _radar_boot_lock.locked():
+        raise RadarBootError("already_initializing")
+
+    async with _radar_boot_lock:
+        try:
+            await _live_ticks_unlocked(db, signal_queue=signal_queue)
+        except asyncio.CancelledError:
+            _set_radar_state(RadarState.FAILED, error="cancelled", force=True)
+            raise
+        except RadarBootError:
+            raise
+        except Exception as exc:
+            mark_radar_boot_failure(str(exc))
+            raise
+
+
 async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | None = None) -> int:
     import os as _os
     _os.makedirs("data", exist_ok=True)
@@ -3733,7 +3751,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.1-D173"
+PROCESS_VERSION = "v1.3.2-D174"
 
 
 def main() -> int:
