@@ -30,7 +30,7 @@ from panopticon_py.hunting.pol_monitor import (
 )
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
-PROCESS_VERSION = "v1.2.0-D171"
+PROCESS_VERSION = "v1.3.0-D171"
 
 MAX_HOPS_DEFAULT      = 2
 # Alchemy eth_getLogs practical max range is ~2000 blocks; keep bounded.
@@ -144,19 +144,64 @@ class TransferGraphBuilder:
                     "topics": [TRANSFER_TOPIC, None, _wallet_to_topic(wallet)],
                 }],
             }
-            try:
-                async with session.post(url, json=payload) as resp:
+            async with session.post(url, json=payload) as resp:
+                # Capture HTTP status; Alchemy may return non-JSON bodies for errors/rate limits.
+                status = resp.status
+                content_type = resp.headers.get("Content-Type", "")
+                try:
                     data = await resp.json()
-            except Exception as exc:
+                except Exception as json_exc:
+                    # Read short snippet for diagnosis (avoid logging secrets).
+                    try:
+                        body = await resp.text()
+                    except Exception:
+                        body = ""
+                    logger.warning(
+                        "[TG][FETCH_ERR] wallet=%s blocks=%d-%d status=%s ct=%s json_exc=%s body_snip=%r",
+                        wallet[:10],
+                        cur,
+                        end,
+                        status,
+                        content_type,
+                        json_exc,
+                        (body or "")[:200],
+                    )
+                    # backoff on rate limiting
+                    if status in (429, 403):
+                        await asyncio.sleep(1.0)
+                    break
+
+            # Non-200 responses may still be JSON, but handle both cases.
+            if not isinstance(data, dict):
                 logger.warning(
-                    "[TG][FETCH_ERR] wallet=%s blocks=%d-%d exc=%s",
-                    wallet[:10], cur, end, exc,
+                    "[TG][BAD_RESULT] wallet=%s blocks=%d-%d data_type=%s",
+                    wallet[:10],
+                    cur,
+                    end,
+                    type(data).__name__,
                 )
                 break
-            if isinstance(data, dict) and data.get("error"):
+
+            if status != 200:
+                logger.error(
+                    "[TG][HTTP_ERR] wallet=%s blocks=%d-%d status=%s error=%s",
+                    wallet[:10],
+                    cur,
+                    end,
+                    status,
+                    data.get("error") if isinstance(data, dict) else None,
+                )
+                if status in (429, 403):
+                    await asyncio.sleep(1.0)
+                break
+
+            if data.get("error"):
                 logger.error(
                     "[TG][RPC_ERR] wallet=%s blocks=%d-%d error=%s",
-                    wallet[:10], cur, end, data.get("error"),
+                    wallet[:10],
+                    cur,
+                    end,
+                    data.get("error"),
                 )
                 break
             logs = data.get("result") if isinstance(data, dict) else None
