@@ -73,7 +73,7 @@ logging.basicConfig(
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.3-D171"   # D171 Q1 follow-up: MAX_COLD_START_WALLETS cap + _tg_init_reported flag
+PROCESS_VERSION = "v1.7.4-D172"   # D172: radar boot state machine + restart cooldown
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -442,7 +442,10 @@ args: argparse.Namespace | None = None   # set in main()
 
 async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> None:
     """Run Polymarket Radar, feeding SignalEvents into signal_queue (zero disk I/O)."""
-    from panopticon_py.hunting.run_radar import _live_ticks
+    from panopticon_py.hunting.run_radar import (
+        _live_ticks,
+        mark_radar_boot_failure,
+    )
     from panopticon_py.hunting.run_radar import _sync_pol_tokens_from_watchlist  # D109: POL immediate startup scan
 
     # ── D109: POL immediate startup scan (not in _main_async — orchestrator bypasses it) ──
@@ -453,6 +456,10 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
         logger.warning("[POL][D109] startup scan failed: %s", exc)
 
     logger.info("[RADAR] Starting Polymarket CLOB WebSocket feed → signal_queue")
+    failures: list[float] = []
+    restart_window_sec = float(os.getenv("RADAR_BOOT_RESTART_WINDOW_SEC", "300"))
+    max_failures = int(os.getenv("RADAR_BOOT_MAX_RESTARTS", "3"))
+    cooldown_sec = float(os.getenv("RADAR_BOOT_COOLDOWN_SEC", "120"))
     while True:
         try:
             await _live_ticks(db, signal_queue=signal_queue)
@@ -462,7 +469,21 @@ async def run_polymarket_radar(signal_queue: asyncio.Queue, db: ShadowDB) -> Non
             logger.info("[RADAR] Cancelled")
             raise
         except Exception as exc:
+            mark_radar_boot_failure(f"boot_failed:{exc!r}")
             logger.error("[RADAR] Fatal error: %s", exc, exc_info=True)
+            now = time.monotonic()
+            failures = [ts for ts in failures if now - ts <= restart_window_sec]
+            failures.append(now)
+            if len(failures) >= max_failures:
+                logger.error(
+                    "[RADAR] Circuit open: %d failures in %.0fs, cooldown %.0fs",
+                    len(failures),
+                    restart_window_sec,
+                    cooldown_sec,
+                )
+                await asyncio.sleep(cooldown_sec)
+                failures.clear()
+                continue
             await asyncio.sleep(5.0)
 
 

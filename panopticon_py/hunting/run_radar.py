@@ -12,7 +12,9 @@ import sqlite3
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from uuid import uuid4
 
@@ -51,6 +53,101 @@ logger = logging.getLogger(__name__)
 def _utc() -> str:
     """Canonical UTC timestamp for persisted/internal contract fields."""
     return utc_now_rfc3339_ms()
+
+
+class RadarState(str, Enum):
+    STARTING = "starting"
+    CONNECTING = "connecting"
+    SYNCING = "syncing"
+    READY = "ready"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
+@dataclass
+class RadarBootState:
+    boot_id: str
+    state: RadarState = RadarState.STARTING
+    ws_connected: bool = False
+    first_payload_seen: bool = False
+    entropy_window_count: int = 0
+    last_payload_at: float = 0.0
+    last_error: str | None = None
+    last_transition_at: float = field(default_factory=time.time)
+    subscription_sync_ok: bool = False
+    ws_attempt_count: int = 0
+
+
+class RadarBootError(RuntimeError):
+    """Raised when radar boot stage fails and should trigger restart."""
+
+
+_RADAR_BOOT_STATE_PATH = Path(os.getenv("RADAR_BOOT_STATE_PATH", "data/radar_boot_state.json"))
+_BOOT_TIMEOUT_SEC = float(os.getenv("RADAR_BOOT_TIMEOUT_SEC", "45"))
+_radar_boot_lock = asyncio.Lock()
+_radar_boot_state: RadarBootState | None = None
+_radar_boot_in_progress = False
+_ALLOWED_TRANSITIONS: dict[RadarState, set[RadarState]] = {
+    RadarState.STARTING: {RadarState.CONNECTING, RadarState.FAILED},
+    RadarState.CONNECTING: {RadarState.SYNCING, RadarState.FAILED},
+    RadarState.SYNCING: {RadarState.READY, RadarState.DEGRADED, RadarState.FAILED},
+    RadarState.READY: {RadarState.DEGRADED, RadarState.FAILED},
+    RadarState.DEGRADED: {RadarState.SYNCING, RadarState.FAILED},
+    RadarState.FAILED: {RadarState.STARTING},
+}
+
+
+def _new_boot_id() -> str:
+    return f"radar-{int(time.time() * 1000)}-{uuid4().hex[:8]}"
+
+
+def _dump_radar_boot_state() -> None:
+    if _radar_boot_state is None:
+        return
+    _RADAR_BOOT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "boot_id": _radar_boot_state.boot_id,
+        "state": _radar_boot_state.state.value,
+        "ws_connected": _radar_boot_state.ws_connected,
+        "first_payload_seen": _radar_boot_state.first_payload_seen,
+        "entropy_window_count": _radar_boot_state.entropy_window_count,
+        "last_payload_at": _radar_boot_state.last_payload_at,
+        "last_error": _radar_boot_state.last_error,
+        "last_transition_at": _radar_boot_state.last_transition_at,
+        "subscription_sync_ok": _radar_boot_state.subscription_sync_ok,
+        "ws_attempt_count": _radar_boot_state.ws_attempt_count,
+        "written_at": _utc(),
+    }
+    tmp = _RADAR_BOOT_STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(_RADAR_BOOT_STATE_PATH)
+
+
+def _set_radar_state(new_state: RadarState, *, error: str | None = None, force: bool = False) -> None:
+    global _radar_boot_state
+    if _radar_boot_state is None:
+        _radar_boot_state = RadarBootState(boot_id=_new_boot_id(), state=new_state)
+    old_state = _radar_boot_state.state
+    if not force and new_state != old_state and new_state not in _ALLOWED_TRANSITIONS.get(old_state, set()):
+        logger.warning("[RADAR_BOOT] invalid transition ignored: %s -> %s", old_state.value, new_state.value)
+        return
+    _radar_boot_state.state = new_state
+    _radar_boot_state.last_transition_at = time.time()
+    if error:
+        _radar_boot_state.last_error = error
+    logger.info("[RADAR_BOOT] state=%s boot_id=%s", new_state.value, _radar_boot_state.boot_id)
+    _dump_radar_boot_state()
+
+
+def mark_radar_boot_failure(error: str) -> None:
+    global _radar_boot_in_progress
+    _radar_boot_in_progress = False
+    _set_radar_state(RadarState.FAILED, error=error, force=True)
+
+
+def mark_radar_boot_released() -> None:
+    global _radar_boot_in_progress
+    _radar_boot_in_progress = False
 
 
 # ── BTC 5m Dynamic Window Resolution (D70 Q1) ───────────────────────────────
@@ -1876,7 +1973,11 @@ def _refresh_active_subscription(db) -> list[str]:
         return []
 
 
-async def _refresh_all_subscriptions(db) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+async def _refresh_all_subscriptions(
+    db,
+    *,
+    strict: bool = False,
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     """
     Concurrently refresh all market tiers and return merged deduplicated token list
     plus individual tier token lists for logging.
@@ -1902,19 +2003,24 @@ async def _refresh_all_subscriptions(db) -> tuple[list[str], list[str], list[str
         return_exceptions=True,
     )
     tier1_tokens, tier2_tokens, tier5_tokens, tier3_tokens = results
+    stage_errors: list[str] = []
 
     # Handle any exceptions — treat failed refreshes as empty list
     if isinstance(tier1_tokens, Exception):
         logger.warning("[L1_SUBSCRIPTION] T1 refresh failed: %s", tier1_tokens)
+        stage_errors.append(f"t1:{tier1_tokens!r}")
         tier1_tokens = []
     if isinstance(tier2_tokens, Exception):
         logger.warning("[L1_SUBSCRIPTION] T2 refresh failed: %s", tier2_tokens)
+        stage_errors.append(f"t2:{tier2_tokens!r}")
         tier2_tokens = []
     if isinstance(tier5_tokens, Exception):
         logger.warning("[L1_SUBSCRIPTION] T5 refresh failed: %s", tier5_tokens)
+        stage_errors.append(f"t5:{tier5_tokens!r}")
         tier5_tokens = []
     if isinstance(tier3_tokens, Exception):
         logger.warning("[L1_SUBSCRIPTION] T3 refresh failed: %s", tier3_tokens)
+        stage_errors.append(f"t3:{tier3_tokens!r}")
         tier3_tokens = []
 
     # D30: if a refresh call returns [] (e.g., rate-limited), keep last good set.
@@ -1972,6 +2078,9 @@ async def _refresh_all_subscriptions(db) -> tuple[list[str], list[str], list[str
                               t3=len(tier3_tokens), t5=len(tier5_tokens))
         # ── L1 Window: active EntropyWindow count ─────────────────────
         mc.on_entropy_window_active(len(_entropy_windows))
+
+    if strict and stage_errors:
+        raise RadarBootError("subscription_refresh_failed:" + ";".join(stage_errors))
 
     return combined, tier1_tokens, tier2_tokens, tier5_tokens, tier3_tokens
 
@@ -2376,6 +2485,13 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
     global _d75_hb_last, _d77_tick_last, _d77_tick_n
     global _d75_hb_trade_base, _d75_hb_entropy_base
     global _last_pol_refresh  # D112: added missing declaration — crash at L2736 if absent
+    global _radar_boot_state, _radar_boot_in_progress
+
+    if _radar_boot_in_progress:
+        raise RadarBootError("already_initializing")
+    _radar_boot_in_progress = True
+    _radar_boot_state = RadarBootState(boot_id=_new_boot_id(), state=RadarState.STARTING)
+    _dump_radar_boot_state()
 
     # ── MetricsCollector: get singleton + baseline sync ──────────────────────────
     mc = _mc()
@@ -2443,6 +2559,17 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
         for item in batch:
             if not isinstance(item, dict):
                 continue
+            if _radar_boot_state is not None:
+                _radar_boot_state.last_payload_at = time.time()
+                _radar_boot_state.entropy_window_count = len(_entropy_windows)
+                if (
+                    not _radar_boot_state.first_payload_seen
+                    and (item.get("event_type") in {"book", "price_change", "last_trade_price"})
+                ):
+                    _radar_boot_state.first_payload_seen = True
+                    if _radar_boot_state.subscription_sync_ok:
+                        _set_radar_state(RadarState.READY)
+                _dump_radar_boot_state()
 
             # D29: elapsed_since_last_ws_msg fix — update on every WS frame
             # before any event-type filtering so snapshot staleness does not drift.
@@ -3090,10 +3217,15 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
 
     # ── Boot: concurrent token load from all tiers via asyncio.gather ──────
     global _current_tokens
+    _set_radar_state(RadarState.CONNECTING, force=True)
     combined_tokens, tier1_tokens, tier2_tokens, tier5_tokens, tier3_tokens = (
-        await _refresh_all_subscriptions(db)
+        await _refresh_all_subscriptions(db, strict=True)
     )
     _current_tokens = combined_tokens
+    if _radar_boot_state is not None:
+        _radar_boot_state.subscription_sync_ok = True
+        _radar_boot_state.entropy_window_count = len(_entropy_windows)
+    _set_radar_state(RadarState.SYNCING)
     _close_event.clear()
     _refresh_subscription_all("boot_subscription_refresh")  # D156-1 + D157-3: refresh all per-token windows, no trigger lock
 
@@ -3144,6 +3276,24 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
     _d75_hb_entropy_base = 0
     _d77_tick_last = _live_loop_started
     _d77_tick_n = 0
+    _first_payload_deadline = time.monotonic() + _BOOT_TIMEOUT_SEC
+
+    def _on_ws_connected() -> None:
+        if mc:
+            mc.on_ws_connected()
+        if _radar_boot_state is not None:
+            _radar_boot_state.ws_connected = True
+            _radar_boot_state.last_error = None
+            _dump_radar_boot_state()
+
+    def _on_ws_disconnected() -> None:
+        if mc:
+            mc.on_ws_disconnected()
+        if _radar_boot_state is not None:
+            _radar_boot_state.ws_connected = False
+            if _radar_boot_state.state == RadarState.READY:
+                _set_radar_state(RadarState.DEGRADED)
+            _dump_radar_boot_state()
 
     # ── Run WS persistently (restarts when reconnect_now is set) ──────────
     async def _ws_runner() -> None:
@@ -3199,6 +3349,9 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
             # D123-1: Lifecycle log — every entry to run_ws_loop
             _ws_attempt_count = getattr(_ws_runner, "_attempt_count", 0) + 1
             _ws_runner._attempt_count = _ws_attempt_count  # type: ignore[attr-defined]
+            if _radar_boot_state is not None:
+                _radar_boot_state.ws_attempt_count = _ws_attempt_count
+                _dump_radar_boot_state()
             first_asset = (sub.get("assets_ids") or ["(none)"])[0] if sub else "(none)"
             logger.info(
                 "[WS_RUNNER][ENTER] attempt=%d assets_count=%d first_asset=%s",
@@ -3211,8 +3364,8 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                     _on_message,
                     subscribe_payload=sub,
                     on_reconnect=lambda: _reconnect_all_entropy_windows(),  # D157-3: reconnect all per-token windows
-                    on_connect_cb=(lambda: (mc.on_ws_connected() if mc else None)) if mc else None,
-                    on_disconnect_cb=(lambda: (mc.on_ws_disconnected() if mc else None)) if mc else None,
+                    on_connect_cb=_on_ws_connected,
+                    on_disconnect_cb=_on_ws_disconnected,
                     close_event=_close_event,
                 )
                 # D121: run_ws_loop returned normally — reset 1009 flag so next attempt can proceed
@@ -3242,6 +3395,7 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
                 await asyncio.sleep(5)
 
     ws_task = asyncio.create_task(_ws_runner())
+    mark_radar_boot_released()
 
     # ── Phase 5: Whale Scanner — starts once, runs independently on 300s cadence ─
     if os.getenv("PANOPTICON_WHALE"):
@@ -3278,6 +3432,17 @@ async def _live_ticks(db: ShadowDB, signal_queue: asyncio.Queue | None = None) -
 
         # ── Heartbeat: refresh subscriptions every 10s ──────────────────────────
         if now_loop >= next_heartbeat:
+            if (
+                _radar_boot_state is not None
+                and _radar_boot_state.state in {RadarState.STARTING, RadarState.CONNECTING, RadarState.SYNCING}
+                and not _radar_boot_state.first_payload_seen
+                and now_loop > _first_payload_deadline
+            ):
+                _set_radar_state(
+                    RadarState.FAILED,
+                    error="boot_timeout:first_payload_not_seen",
+                )
+                raise RadarBootError("boot_timeout:first_payload_not_seen")
             # Concurrently refresh all tiers (asyncio.gather) then evaluate WS diffs.
             await _refresh_all_subscriptions(db)
             # D42: Propagate active market registry to whale_scanner so it can scan T1/T3/T5
@@ -3567,7 +3732,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.2.0-D168"
+PROCESS_VERSION = "v1.3.0-D172"
 
 
 def main() -> int:

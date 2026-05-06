@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
@@ -11,6 +14,7 @@ from panopticon_py.polymarket.link_resolver import backfill_unresolved_links_onc
 from panopticon_py.utils.process_guard import get_all_versions
 
 router = APIRouter(prefix="/api/system_health", tags=["system_health"])
+_RADAR_BOOT_STATE_PATH = Path(os.getenv("RADAR_BOOT_STATE_PATH", "data/radar_boot_state.json"))
 
 
 @router.get("/readiness", response_model=ReadinessResponse)
@@ -103,3 +107,15 @@ def get_watchdog_status() -> dict[str, Any]:
         "processes": processes,
         "checked_at": now.isoformat(),
     }
+
+
+@router.get("/radar_boot_state")
+def get_radar_boot_state() -> dict[str, Any]:
+    if not _RADAR_BOOT_STATE_PATH.exists():
+        return {"available": False, "reason": "not_found"}
+    try:
+        payload = json.loads(_RADAR_BOOT_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"available": False, "reason": f"read_failed:{exc!r}"}
+    payload["available"] = True
+    return payload
