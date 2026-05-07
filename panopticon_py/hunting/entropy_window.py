@@ -12,8 +12,11 @@ D165 (trigger lock unlock thresholds):
 ``_trigger_locked`` is cleared when EITHER condition is met (tested after each push):
   1. ``len(self._events) >= self._unlock_event_count``  (default 30; env HUNT_EW_UNLOCK_EVENT_COUNT)
   2. ``self._healthy_span >= self._unlock_healthy_span_sec``  (default 5.0s; env HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC)
+  3. D178: ``_last_recv_mono`` is set AND ``now - _last_recv_mono < _unlock_max_gap_sec`` AND ``len(_events) >= min(5, _unlock_event_count)``
+     — safe unlock for tokens with active market data but no explicit reconnect events.
 Low-frequency T2 markets that receive <1 tick/sec may never reach 30 events in a 5s window;
 D165 adds env-driven overrides so that a 10-event / 3s-unlock is achievable.
+D178 adds the gap-based safe-unlock to prevent permanent lockout when ``gap_flush_sec=float("inf")``.
 """
 
 from __future__ import annotations
@@ -99,6 +102,16 @@ class EntropyWindow:
         self._unlock_healthy_span_sec: float = float(
             os.getenv("HUNT_EW_UNLOCK_HEALTHY_SPAN_SEC", "5.0")
         )
+        # D178: Safe unlock for tokens with no WS reconnect events but active market data.
+        # Guards against permanently locked tokens when gap_flush_sec=float("inf").
+        self._unlock_max_gap_sec: float = float(
+            os.getenv("HUNT_EW_UNLOCK_MAX_GAP_SEC", "120.0")
+        )
+        if self._unlock_max_gap_sec < 30.0:
+            raise ValueError(
+                f"HUNT_EW_UNLOCK_MAX_GAP_SEC={self._unlock_max_gap_sec} is too low (min=30). "
+                "Tokens need at least 30s of gap-free data before unlocking."
+            )
         if self._unlock_event_count < 5:
             raise ValueError(
                 f"HUNT_EW_UNLOCK_EVENT_COUNT={self._unlock_event_count} is too low (min=5). "
@@ -160,6 +173,7 @@ class EntropyWindow:
         Returns reason string if buffer was flushed, else None.
         """
         flushed: str | None = None
+        prev_recv_mono = self._last_recv_mono
         if self._last_recv_mono is not None:
             dt = recv_mono - self._last_recv_mono
             if dt > self.gap_flush_sec:
@@ -185,6 +199,22 @@ class EntropyWindow:
         if self._trigger_locked and self._healthy_span >= self._unlock_healthy_span_sec:
             self._trigger_locked = False
             _logger.debug("[EW][D165] unlocked via healthy_span=%.1f", self._healthy_span)
+        # D178: Gap-based safe unlock — active tokens with no explicit reconnect events
+        # can unlock after receiving a burst of data. Requires:
+        #   (a) no gap detected (dt <= max_internal_gap_sec) on this push, AND
+        #   (b) at least min(5, _unlock_event_count) events accumulated, AND
+        #   (c) at least 2 samples in _h_history (entropy is meaningful)
+        if self._trigger_locked and prev_recv_mono is not None:
+            gap = recv_mono - prev_recv_mono
+            min_events = min(5, self._unlock_event_count)
+            if (gap <= self.max_internal_gap_sec
+                    and len(self._events) >= min_events
+                    and len(self._h_history) >= 2):
+                self._trigger_locked = False
+                _logger.info(
+                    "[EW][D178] unlocked via gap_safe gap=%.1f events=%d h_hist=%d",
+                    gap, len(self._events), len(self._h_history),
+                )
         return flushed
 
     def current_entropy(self) -> float | None:
