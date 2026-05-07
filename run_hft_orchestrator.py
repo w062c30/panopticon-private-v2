@@ -82,7 +82,7 @@ logging.getLogger().addHandler(_orch_file_handler)
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.6-D174"   # D174: boot lock cleanup + 5D calibration scaffold
+PROCESS_VERSION = "v1.7.7-D175"   # D175: inference log retention prune at startup
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -96,6 +96,7 @@ _DB_WRITER_HEARTBEAT_SEC = 5.0
 _DB_WRITER_BATCH_MAX = 100
 _DB_WRITER_BATCH_TIMEOUT = 0.1
 _DB_WRITER_PHASE1_RETRY_DELAY = 0.05
+_ISIL_RETENTION_DAYS = int(os.getenv("INSIDER_INFERENCE_RETENTION_DAYS", "30"))
 
 _writer_stats = {
     "batch_count": 0,
@@ -656,6 +657,14 @@ async def main_async() -> int:
     db = ShadowDB(db_path=args.db_path if args else "data/panopticon.db")
     db.bootstrap()
     logger.info("[DB] ShadowDB initialized at %s", db.path)
+    try:
+        db.prune_insider_score_inference_log(days=_ISIL_RETENTION_DAYS)
+    except Exception as exc:
+        logger.warning(
+            "[ISIL_PRUNE] startup prune failed days=%d err=%s",
+            _ISIL_RETENTION_DAYS,
+            exc,
+        )
 
     # ── D168: DBWriterQueue consumer thread (daemon + atexit sentinel) ──────
     writer_thread = threading.Thread(

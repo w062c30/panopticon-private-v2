@@ -2,7 +2,7 @@
   "_doc": "SOURCE OF TRUTH for process versions. Agents MUST update this file when modifying any process. See AGENTS.md §PROCESS-VERSION-PROTOCOL.",
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
   "radar": "v1.3.2-D174",
-  "orchestrator": "v1.7.6-D174",
+  "orchestrator": "v1.7.7-D175",
   "backend": "v1.1.48-D165",
   "frontend": "v1.1.12-D112",
   "analysis_worker": "v1.1.17-D168",
@@ -12,7 +12,7 @@
   "signal_engine": "v5.2.0-D171",
   "fingerprint_scrubber": "v1.1.0-D171",
   "transfer_graph": "v1.2.0-D171",
-  "last_updated": "2026-05-06T18:26:00Z",
-  "updated_by_sprint": "D174",
-  "updated_by_agent": "D174-coding-agent"
+  "last_updated": "2026-05-07T05:15:00Z",
+  "updated_by_sprint": "D175",
+  "updated_by_agent": "D175-coding-agent"
 }

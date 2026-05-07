@@ -11,6 +11,7 @@ from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 from panopticon_py.hunting.trade_aggregate import ParentTrade, VirtualEntity
 logger = logging.getLogger(__name__)
+_MAX_INFERENCE_PAYLOAD_BYTES = 8 * 1024
 
 EntityLabel = Literal[
     "POTENTIAL_INSIDER",
@@ -50,22 +51,61 @@ def _clamp01(v: float) -> float:
     return max(0.0, min(1.0, float(v)))
 
 
+def _safe_score01(value, default: float = 0.0) -> float:
+    try:
+        return _clamp01(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_fingerprint_payload(payload: dict | None) -> dict:
+    """
+    Normalize optional fingerprint payload to a schema-safe dict.
+
+    Contract:
+    - funding_source is optional and currently may be absent from producers.
+    - absent/invalid funding_source defaults to 0.0 (consumer-safe fallback).
+    - scoring consumes only normalized float values in [0, 1].
+    """
+    if not isinstance(payload, dict):
+        return {
+            "size_entropy": 0.0,
+            "timing_entropy": 0.0,
+            "concentration": {"max": 0.0, "all_unknown": True},
+            "funding_source": 0.0,
+            "insufficient_data": False,
+        }
+
+    conc_raw = payload.get("concentration")
+    conc_norm = {"max": 0.0}
+    if isinstance(conc_raw, dict):
+        conc_norm = dict(conc_raw)
+        conc_norm["max"] = _safe_score01(conc_raw.get("max", 0.0))
+
+    normalized = dict(payload)
+    normalized["size_entropy"] = _safe_score01(payload.get("size_entropy", 0.0))
+    normalized["concentration"] = conc_norm
+    normalized["funding_source"] = _safe_score01(payload.get("funding_source", 0.0))
+    normalized["insufficient_data"] = bool(payload.get("insufficient_data", False))
+    return normalized
+
+
 def _extract_fingerprint_dims(fingerprint: dict | None) -> tuple[float, float, float, bool]:
-    if not isinstance(fingerprint, dict):
-        return 0.0, 0.0, 0.0, False
-    conc = fingerprint.get("concentration")
+    normalized = normalize_fingerprint_payload(fingerprint)
+    conc = normalized.get("concentration")
     conc_max = conc.get("max", 0.0) if isinstance(conc, dict) else 0.0
     return (
-        _clamp01(float(fingerprint.get("size_entropy") or 0.0)),
-        _clamp01(float(conc_max or 0.0)),
-        _clamp01(float(fingerprint.get("funding_source") or 0.0)),
-        bool(fingerprint.get("insufficient_data", False)),
+        _safe_score01(normalized.get("size_entropy", 0.0)),
+        _safe_score01(conc_max or 0.0),
+        _safe_score01(normalized.get("funding_source", 0.0)),
+        bool(normalized.get("insufficient_data", False)),
     )
 
 
 def _compute_taker_ratio(parents: list[ParentTrade], assume_all_taker: bool) -> float:
     """
     Estimate taker ratio from directional imbalance.
+    This is a proxy heuristic (not exchange-native taker flags).
     TODO(D174/NQ-1): calibrate soft floor from backtest baseline.
     """
     if assume_all_taker:
@@ -123,24 +163,35 @@ def scores_from_parents(
 
 
 def _weights() -> tuple[float, float, float, float, float, float]:
-    w_idi = float(os.getenv("INSIDER_W_IDI", "0.30"))
-    w_burst = float(os.getenv("INSIDER_W_BURST", "0.25"))
-    w_taker = float(os.getenv("INSIDER_W_TAKER", "0.20"))
-    w_size = float(os.getenv("INSIDER_W_SIZE_ENT", "0.15"))
-    w_conc = float(os.getenv("INSIDER_W_CONC", "0.10"))
-    w_fund = float(os.getenv("INSIDER_W_FUND", "0.00"))
-    total = w_idi + w_burst + w_taker + w_size + w_conc + w_fund
+    def _env_float(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            logger.warning("[INSIDER_WEIGHTS] invalid %s=%r fallback=%s", name, raw, default)
+            return default
+
+    raw_values = [
+        _env_float("INSIDER_W_IDI", 0.30),
+        _env_float("INSIDER_W_BURST", 0.25),
+        _env_float("INSIDER_W_TAKER", 0.20),
+        _env_float("INSIDER_W_SIZE_ENT", 0.15),
+        _env_float("INSIDER_W_CONC", 0.10),
+        _env_float("INSIDER_W_FUND", 0.00),
+    ]
+    values = [_clamp01(v) for v in raw_values]
+    total = sum(values)
     if total <= 0:
         return 0.30, 0.25, 0.20, 0.15, 0.10, 0.0
-    if abs(total - 1.0) < 1e-6:
-        return w_idi, w_burst, w_taker, w_size, w_conc, w_fund
     return (
-        w_idi / total,
-        w_burst / total,
-        w_taker / total,
-        w_size / total,
-        w_conc / total,
-        w_fund / total,
+        values[0] / total,
+        values[1] / total,
+        values[2] / total,
+        values[3] / total,
+        values[4] / total,
+        values[5] / total,
     )
 
 
@@ -175,6 +226,22 @@ def _log_score_inference(
             },
             separators=(",", ":"),
         )
+        if len(payload.encode("utf-8")) > _MAX_INFERENCE_PAYLOAD_BYTES:
+            payload = json.dumps(
+                {
+                    "idi": scores.idi,
+                    "burst": scores.burst,
+                    "taker_ratio": scores.taker_ratio,
+                    "size_entropy": scores.size_entropy,
+                    "concentration": scores.concentration,
+                    "funding_source": scores.funding_source,
+                    "insufficient_data": scores.insufficient_data,
+                    "insider_score": insider_score,
+                    "created_at_utc": utc_now_rfc3339_ms(),
+                    "payload_trimmed": True,
+                },
+                separators=(",", ":"),
+            )
         db_conn.execute(
             """
             INSERT INTO insider_score_inference_log (wallet_address, inference_payload, created_at)
@@ -222,13 +289,14 @@ def load_fingerprint_from_watchlist(wallet_address: str, db_conn) -> dict | None
         if isinstance(raw, str):
             payload = json.loads(raw)
             if isinstance(payload, dict):
+                normalized = normalize_fingerprint_payload(payload)
                 logger.debug(
                     "[FP_LOAD] wallet=%s keys=%s has_funding_source=%s",
                     wallet_address[:20],
-                    sorted(payload.keys()),
-                    "funding_source" in payload,
+                    sorted(normalized.keys()),
+                    "funding_source" in normalized,
                 )
-                return payload
+                return normalized
             return None
     except Exception:
         return None

@@ -2196,6 +2196,29 @@ class ShadowDB:
             logger.error("[DB_MAINT] Maintenance error: %s", exc)
             raise
 
+    def prune_insider_score_inference_log(self, days: int = 30) -> int:
+        """Delete old inference rows and return deleted row count."""
+        retention_days = max(1, int(days))
+        try:
+            cur = self.conn.execute(
+                """
+                DELETE FROM insider_score_inference_log
+                WHERE created_at < datetime('now', ?)
+                """,
+                (f"-{retention_days} days",),
+            )
+            self.conn.commit()
+            deleted = int(cur.rowcount or 0)
+            logger.info(
+                "[ISIL_PRUNE] deleted=%d older_than_days=%d",
+                deleted,
+                retention_days,
+            )
+            return deleted
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def close(self) -> None:
         # Flush pending buffers before closing so no rows are lost
         self.flush_wallet_obs_buffer()

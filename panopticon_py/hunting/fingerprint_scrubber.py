@@ -107,7 +107,12 @@ def market_concentration(categories: list[str]) -> dict:
 
 
 def compute_fingerprint(wallet: str, trades: list[dict]) -> dict:
-    """Aggregate three dimensions from trade history."""
+    """
+    Aggregate three dimensions from trade history.
+
+    Note: `funding_source` is an optional future dimension and is intentionally
+    not produced here yet. Classifier consumers must treat missing values as 0.0.
+    """
     n = len(trades)
     base = {
         "computed_at_utc": utc_now_rfc3339_ms(),
