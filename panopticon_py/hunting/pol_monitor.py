@@ -32,7 +32,11 @@ from panopticon_py.db import ShadowDB
 from panopticon_py.time_utils import utc_now_rfc3339_ms
 
 logger = logging.getLogger(__name__)
-PROCESS_VERSION = "v1.0.0-D169"
+
+_PROCESS_VERSION = "v1.0.0-D169"
+_POL_WS_BACKOFF_BASE = float(os.getenv("POL_WS_BACKOFF_BASE_SEC", "60.0"))
+_POL_WS_BACKOFF_MAX = float(os.getenv("POL_WS_BACKOFF_MAX_SEC", "900.0"))
+_pol_ws_consecutive_failures = 0
 
 # Political market keyword whitelist (slug match, lowercase)
 POL_KEYWORDS: list[str] = [
@@ -520,10 +524,11 @@ class PolygonListener:
                     if not isinstance(sub_id, str):
                         logger.error("[POL_LISTENER] eth_subscribe failed: %s", sub_resp)
                         await asyncio.sleep(backoff)
-                        backoff = min(backoff * 2, 60.0)
+                        backoff = min(backoff * 2, _POL_WS_BACKOFF_MAX)
                         continue
                     logger.info("[POL_LISTENER] WSS subscribed sub_id=%s", sub_id)
                     backoff = 5.0
+                    _pol_ws_consecutive_failures = 0
 
                     async for raw in ws:
                         try:
@@ -539,10 +544,17 @@ class PolygonListener:
                             self._last_block = int(item["block"])
                             self._save_last_block(self._last_block)
             except Exception as exc:
-                logger.warning("[POL_LISTENER] WSS error: %s — fallback then reconnect", exc)
+                _pol_ws_consecutive_failures += 1
+                backoff = min(
+                    _POL_WS_BACKOFF_BASE * (2 ** (_pol_ws_consecutive_failures - 1)),
+                    _POL_WS_BACKOFF_MAX,
+                )
+                logger.warning(
+                    "[POL_LISTENER][D176] WSS error: %s — backoff=%.0fs (failure #%d)",
+                    exc, backoff, _pol_ws_consecutive_failures,
+                )
                 await self._http_fallback()
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
 
     async def run(self) -> None:
         if not self._api_key:
@@ -550,7 +562,7 @@ class PolygonListener:
             return
         logger.info(
             "[POL_LISTENER] starting version=%s last_block=%d",
-            PROCESS_VERSION,
+            _PROCESS_VERSION,
             self._last_block,
         )
         try:

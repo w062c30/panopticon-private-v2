@@ -83,6 +83,7 @@ class RadarBootError(RuntimeError):
 
 
 _RADAR_BOOT_STATE_PATH = Path(os.getenv("RADAR_BOOT_STATE_PATH", "data/radar_boot_state.json"))
+_RADAR_MANIFEST_PATH = Path(os.getenv("RADAR_MANIFEST_PATH", "run/process_manifest.json"))
 _BOOT_TIMEOUT_SEC = float(os.getenv("RADAR_BOOT_TIMEOUT_SEC", "45"))
 _radar_boot_lock = asyncio.Lock()
 _radar_boot_state: RadarBootState | None = None
@@ -100,7 +101,14 @@ def _new_boot_id() -> str:
     return f"radar-{int(time.time() * 1000)}-{uuid4().hex[:8]}"
 
 
+_DUMP_STATE_MAX_RETRIES = 3
+
+
 def _dump_radar_boot_state() -> None:
+    """
+    D176: Windows-atomic write with retry + direct fallback.
+    NEVER raises — callers (incl. _set_radar_state hot path) must not be disrupted.
+    """
     if _radar_boot_state is None:
         return
     _RADAR_BOOT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -117,9 +125,62 @@ def _dump_radar_boot_state() -> None:
         "ws_attempt_count": _radar_boot_state.ws_attempt_count,
         "written_at": _utc(),
     }
+    text = json.dumps(payload, separators=(",", ":"))
     tmp = _RADAR_BOOT_STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-    tmp.replace(_RADAR_BOOT_STATE_PATH)
+
+    # D176: retry loop for tmp.replace (Windows short-term lock usually clears)
+    for attempt in range(_DUMP_STATE_MAX_RETRIES):
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(_RADAR_BOOT_STATE_PATH)
+            return
+        except PermissionError as exc:
+            if attempt < _DUMP_STATE_MAX_RETRIES - 1:
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            # Final fallback: direct write (non-atomic, but better than silent fail)
+            try:
+                _RADAR_BOOT_STATE_PATH.write_text(text, encoding="utf-8")
+                logger.debug(
+                    "[RADAR_BOOT][D176] tmp.replace failed after %d retries, "
+                    "direct write succeeded: %s",
+                    _DUMP_STATE_MAX_RETRIES, exc,
+                )
+            except Exception as direct_exc:
+                logger.warning(
+                    "[RADAR_BOOT][D176] boot state write failed (both paths): %s | direct: %s",
+                    exc, direct_exc,
+                )
+            return
+        except Exception as exc:
+            logger.warning("[RADAR_BOOT][D176] boot state write unexpected error: %s", exc)
+            return
+
+
+def _update_radar_manifest_status(new_status: str) -> None:
+    """
+    D176: Update run/radar_manifest.json status field when radar transitions.
+    Non-blocking, best-effort. The manifest is written by orchestrator at startup;
+    this function only updates the 'status' and 'status_updated_at' fields.
+    """
+    try:
+        if not _RADAR_MANIFEST_PATH.exists():
+            return
+        raw = _RADAR_MANIFEST_PATH.read_text(encoding="utf-8")
+        manifest = json.loads(raw)
+        manifest["status"] = new_status
+        manifest["status_updated_at"] = _utc()
+        tmp = _RADAR_MANIFEST_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
+        try:
+            tmp.replace(_RADAR_MANIFEST_PATH)
+        except PermissionError:
+            _RADAR_MANIFEST_PATH.write_text(
+                json.dumps(manifest, separators=(",", ":")), encoding="utf-8"
+            )
+        logger.info("[RADAR_MANIFEST][D176] status updated to %s", new_status)
+    except Exception as exc:
+        logger.debug("[RADAR_MANIFEST][D176] update failed (non-critical): %s", exc)
 
 
 def _set_radar_state(new_state: RadarState, *, error: str | None = None, force: bool = False) -> None:
@@ -136,6 +197,10 @@ def _set_radar_state(new_state: RadarState, *, error: str | None = None, force: 
         _radar_boot_state.last_error = error
     logger.info("[RADAR_BOOT] state=%s boot_id=%s", new_state.value, _radar_boot_state.boot_id)
     _dump_radar_boot_state()
+
+    # D176: Sync radar manifest status on key transitions
+    if new_state in (RadarState.READY, RadarState.FAILED, RadarState.DEGRADED):
+        _update_radar_manifest_status(new_state.value)
 
 
 def mark_radar_boot_failure(error: str) -> None:
@@ -2566,6 +2631,11 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                     and (item.get("event_type") in {"book", "price_change", "last_trade_price"})
                 ):
                     _radar_boot_state.first_payload_seen = True
+                    logger.info(
+                        "[RADAR_BOOT][D176] first_payload_seen=True event_type=%s asset=%s",
+                        item.get("event_type"),
+                        (item.get("asset_id") or "")[:20],
+                    )
                     if _radar_boot_state.subscription_sync_ok:
                         _set_radar_state(RadarState.READY)
                 _dump_radar_boot_state()
@@ -3751,7 +3821,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.2-D174"
+PROCESS_VERSION = "v1.3.3-D176"
 
 
 def main() -> int:
