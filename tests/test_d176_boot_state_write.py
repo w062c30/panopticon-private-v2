@@ -59,14 +59,14 @@ def test_dump_state_all_paths_fail_no_raise(tmp_path: Path, monkeypatch):
 
 
 def test_manifest_status_update(tmp_path: Path, monkeypatch):
-    """_update_radar_manifest_status should update status field."""
+    """_update_radar_manifest_status should update radar.status field."""
     manifest = tmp_path / "process_manifest.json"
-    manifest.write_text(json.dumps({"version": "v1.3.3", "status": "initializing"}))
+    manifest.write_text(json.dumps({"radar": {"version": "v1.3.3", "status": "initializing"}}))
     monkeypatch.setattr(radar_mod, "_RADAR_MANIFEST_PATH", manifest)
     radar_mod._update_radar_manifest_status("ready")
     data = json.loads(manifest.read_text())
-    assert data["status"] == "ready"
-    assert "status_updated_at" in data
+    assert data["radar"]["status"] == "ready"
+    assert "status_updated_at" in data["radar"]
 
 
 def test_manifest_status_no_file_is_noop(tmp_path: Path, monkeypatch):
@@ -78,7 +78,7 @@ def test_manifest_status_no_file_is_noop(tmp_path: Path, monkeypatch):
 def test_set_radar_state_triggers_manifest_update(tmp_path: Path, monkeypatch):
     """_set_radar_state(READY) should call _update_radar_manifest_status."""
     manifest = tmp_path / "process_manifest.json"
-    manifest.write_text(json.dumps({"version": "v1.3.3", "status": "initializing"}))
+    manifest.write_text(json.dumps({"radar": {"version": "v1.3.3", "status": "initializing"}}))
     monkeypatch.setattr(radar_mod, "_RADAR_MANIFEST_PATH", manifest)
     monkeypatch.setattr(radar_mod, "_RADAR_BOOT_STATE_PATH", tmp_path / "radar_boot_state.json")
     from panopticon_py.hunting.run_radar import RadarBootState, RadarState
@@ -86,4 +86,4 @@ def test_set_radar_state_triggers_manifest_update(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(radar_mod, "_radar_boot_state", RadarBootState(boot_id="test-002", state=RadarState.CONNECTING))
     radar_mod._set_radar_state(RadarState.READY, force=True)
     data = json.loads(manifest.read_text())
-    assert data["status"] == "ready"
+    assert data["radar"]["status"] == "ready"

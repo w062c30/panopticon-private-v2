@@ -168,8 +168,8 @@ def _update_radar_manifest_status(new_status: str) -> None:
             return
         raw = _RADAR_MANIFEST_PATH.read_text(encoding="utf-8")
         manifest = json.loads(raw)
-        manifest["status"] = new_status
-        manifest["status_updated_at"] = _utc()
+        manifest["radar"]["status"] = new_status
+        manifest["radar"]["status_updated_at"] = _utc()
         tmp = _RADAR_MANIFEST_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
         try:

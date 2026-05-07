@@ -35,7 +35,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Library identity for versions_ref.json (shared by all acquire_singleton callers).
-PROCESS_GUARD_VERSION = "v1.1.1-D162"
+PROCESS_GUARD_VERSION = "v1.1.2-D177"
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _RUN_DIR = _PROJECT_ROOT / "run"
@@ -44,6 +44,11 @@ _MANIFEST = _RUN_DIR / "process_manifest.json"
 _MANIFEST_LOCK = _RUN_DIR / ".manifest.lock"
 
 VALID_PROCESS_NAMES = frozenset({"radar", "orchestrator", "backend", "frontend", "analysis_worker", "watchdog", "arb_scanner"})
+
+# D177: Status values written by the process itself (not by heartbeat).
+# update_heartbeat() must not overwrite these — they carry richer semantic meaning
+# than the generic "running" heartbeat status.
+_PROCESS_OWN_STATUSES = frozenset({"ready", "degraded", "failed"})
 
 
 # ── PID file helpers ────────────────────────────────────────────────────────────
@@ -320,6 +325,9 @@ def update_heartbeat(name: str) -> None:
     D115: If name not yet in manifest (e.g., watchdog just started), bootstrap a
     minimal entry so the heartbeat update does not silently fail.
     D116: Uses shared _acquire_lock / _release_lock with stale lock detection.
+    D177: Preserves status values in _PROCESS_OWN_STATUSES ("ready", "degraded",
+    "failed") — these are written by the process itself and carry semantic meaning
+    beyond the heartbeat's generic "running" status.
     """
     _RUN_DIR.mkdir(parents=True, exist_ok=True)
     _acquire_lock()
@@ -333,18 +341,26 @@ def update_heartbeat(name: str) -> None:
                 "status": "running",
             }
             logger.debug("[guard] update_heartbeat: bootstrapped entry for %s", name)
-        # D121 FIX: Preserve version/start_time from acquire_singleton call if already set.
-        # update_heartbeat and acquire_singleton both write the same PID, but update_heartbeat
-        # was overwriting version/start_time with defaults. Only set defaults for missing fields.
+
         existing = manifest[name]
+
+        # D121 FIX: Preserve version/start_time from acquire_singleton call if already set.
         if "start_time" not in existing:
             existing["start_time"] = datetime.now(timezone.utc).isoformat()
-        # D121 FIX: If version is still "unknown" but this PID has acquire_singleton'd (e.g., radar
-        # shadow task inside orchestrator), try to resolve from versions_ref.json to avoid "unknown".
+
+        # D121 FIX: Resolve "unknown" version from versions_ref.json.
         if existing.get("version") == "unknown":
             resolved = _read_expected_version(name)
             if resolved:
                 existing["version"] = resolved
+
+        # D177: Only write "running" if process hasn't self-reported a richer status.
+        # This prevents heartbeat loop from overwriting "ready"/"degraded"/"failed"
+        # that were written by _update_radar_manifest_status() or equivalent.
+        current_status = existing.get("status", "running")
+        if current_status not in _PROCESS_OWN_STATUSES:
+            manifest[name]["status"] = "running"
+
         manifest[name]["last_heartbeat_ts"] = datetime.now(timezone.utc).isoformat()
         manifest[name]["pid"] = os.getpid()  # keep pid current
         tmp = _MANIFEST.with_suffix(".tmp")
