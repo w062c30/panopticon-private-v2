@@ -106,6 +106,7 @@ class PipelineStats:
     """
     D180: Derived RVF pipeline smoothness / correctness ratios (no DB reads).
     Populated from MetricsCollector counters + data/entropy_status.json (optional).
+    D185: Added l2_eval_60s / l3_eval_60s counters.
     """
     z_ready_ratio: float = 0.0
     entropy_warmup_ratio: float = 0.0
@@ -116,6 +117,8 @@ class PipelineStats:
     kyle_readiness_ratio: float = 0.0
     active_window_breakdown: dict[str, int] = field(default_factory=dict)
     stale_seconds_max: float = 0.0
+    l2_eval_60s: int = 0
+    l3_eval_60s: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +131,8 @@ class PipelineStats:
             "kyle_readiness_ratio": self.kyle_readiness_ratio,
             "active_window_breakdown": dict(self.active_window_breakdown),
             "stale_seconds_max": self.stale_seconds_max,
+            "l2_eval_60s": self.l2_eval_60s,
+            "l3_eval_60s": self.l3_eval_60s,
         }
 
 

@@ -908,6 +908,10 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
     Process a single SignalEvent through the consensus Bayesian pipeline.
     Writes ONLY to execution_records — never touches wallet_market_positions or paper_trades.
     """
+    mc = _mc()
+    if mc is not None:
+        mc.on_l2_eval()
+
     z = event.z
     asset_short = str(event.token_id or event.market_id or "")[:14]
     _record_z_and_maybe_flush(asset_short, z)
@@ -1224,6 +1228,8 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
 
     # 9. L4 Fast Gate
     snapshot = _build_friction_snapshot()
+    if mc is not None:
+        mc.on_l3_eval()
     gate = fast_execution_gate(signal_input, snapshot)
 
     # P1 DIAG: Log FastSignalInput parameters for every gate call (regardless of decision)
@@ -1273,7 +1279,6 @@ async def _process_event(event: SignalEvent, db: ShadowDB) -> None:
         accepted = 1
 
     # ── MetricsCollector hook (in-process, no DB writes in hot path) ──────────
-    mc = _mc()
     if mc is not None:
         mc.on_gate_result(accepted=bool(accepted), ev=gate.ev_net)
         mc.on_signal_queued(

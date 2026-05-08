@@ -3996,7 +3996,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.12-D175"   # D175: CP-C3/CP-8 hardening rollout
+PROCESS_VERSION = "v1.3.13-D185"   # D185: RVF L2/L3 eval counter wiring
 
 
 def main() -> int:

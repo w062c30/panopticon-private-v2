@@ -1,8 +1,8 @@
 {
   "_doc": "SOURCE OF TRUTH for process versions. Agents MUST update this file when modifying any process. See AGENTS.md §PROCESS-VERSION-PROTOCOL.",
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
-  "radar": "v1.3.12-D175",
-  "orchestrator": "v1.7.15-D175",
+  "radar": "v1.3.13-D185",
+  "orchestrator": "v1.7.16-D185",
   "backend": "v1.1.49-D180",
   "frontend": "v1.1.15-D180",
   "analysis_worker": "v1.1.17-D168",
@@ -12,7 +12,7 @@
   "signal_engine": "v5.2.0-D171",
   "fingerprint_scrubber": "v1.1.0-D171",
   "transfer_graph": "v1.2.0-D171",
-  "last_updated": "2026-05-09T02:32:00Z",
-  "updated_by_sprint": "D175 CP-C3 trace guard + CP-8 env threshold hardening",
-  "updated_by_agent": "D175-coding-agent"
+  "last_updated": "2026-05-08T12:00:00Z",
+  "updated_by_sprint": "D185 RVF L2/L3 evaluation counter wiring",
+  "updated_by_agent": "D185-coding-agent"
 }

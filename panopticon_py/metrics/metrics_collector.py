@@ -144,6 +144,8 @@ class MetricsCollector:
         self._z_t2: deque[float] = deque()
         # D37 FIX: Track signal z-scores from entropy fires for mean_z_t1/t2
         self._signal_z_vals: deque[tuple[float, float]] = deque()  # (ts, z)
+        self._l2_eval_rc = _RateCounter(60.0)
+        self._l3_eval_rc = _RateCounter(60.0)
 
         # ── Gate stats ─────────────────────────────────────────────────────────
         self._gate_evaluated_rc = _RateCounter(60.0)
@@ -277,6 +279,18 @@ class MetricsCollector:
 
     def on_signal_processed(self) -> None:
         self._processed_60s.add()
+
+    def on_l2_eval(self) -> None:
+        """
+        D185: called when signal enters L2 validation in signal_engine.
+        """
+        self._l2_eval_rc.add()
+
+    def on_l3_eval(self) -> None:
+        """
+        D185: called when signal reaches L3 gate pre-check.
+        """
+        self._l3_eval_rc.add()
 
     def on_gate_result(self, accepted: bool, ev: float | None = None) -> None:
         now = time.time()
@@ -582,6 +596,8 @@ class MetricsCollector:
         processed_ct = self._processed_60s.count(now)
         gate_eval_ct = self._gate_evaluated_rc.count(now)
         gate_pass_ct = self._gate_pass_rc.count(now)
+        l2_eval_ct = self._l2_eval_rc.count(now)
+        l3_eval_ct = self._l3_eval_rc.count(now)
         entropy_fire_ct_60s = self._entropy_fire_rc_60s.count(now)
         entropy_fire_ct_300s = self._entropy_fire_rc.count(now)
 
@@ -609,6 +625,8 @@ class MetricsCollector:
             kyle_readiness_ratio=kyle_ready,
             active_window_breakdown=ew_breakdown,
             stale_seconds_max=float(ws_stale),
+            l2_eval_60s=l2_eval_ct,
+            l3_eval_60s=l3_eval_ct,
         )
 
         # D181d: throttled stale warning to avoid log flood from 1s collect loop.

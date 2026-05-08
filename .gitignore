@@ -84,6 +84,7 @@ test_*.py
 !tests/test_d182*.py
 !tests/test_d183*.py
 !tests/test_d184*.py
+!tests/test_d185*.py
 diag_*.ps1
 diag_*.py
 d[0-9][0-9]_*.py
