@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.11-D150"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters  # D149-1: _token_ids dataclass field explicit init  # D149-2: reconnect_count excludes first connection  # D149-4: opportunities_log deque(maxlen=10000)  # D150-2: books memory cap via _book_last_update stale cleanup
+PROCESS_VERSION = "v0.5.12-D179c"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters  # D149-1: _token_ids dataclass field explicit init  # D149-2: reconnect_count excludes first connection  # D149-4: opportunities_log deque(maxlen=10000)  # D150-2: books memory cap via _book_last_update stale cleanup  # D179c: +[ARB_TOKENS] self-explaining log at startup
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -483,6 +483,13 @@ class ArbScanner:
                         len(current_token_ids), sample, all_valid)
             if invalid:
                 logger.warning("[ARB_INIT] %d invalid token_ids: %s", len(invalid), invalid[:5])
+            # D179c: self-explaining log so future operators know 174 is the live Gamma count
+            logger.info(
+                "[ARB_TOKENS] subscribed=%d source=Gamma /markets?closed=false&limit=500 "
+                "filter=_is_tier5_sports_market refresh_on=ws_reconnect. "
+                "Stable count is expected when WS is stable.",
+                len(current_token_ids),
+            )
         else:
             logger.warning("[ARB] No T5 tokens at startup — WS starts with empty list; refresh on first reconnect")
 

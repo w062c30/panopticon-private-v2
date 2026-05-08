@@ -157,11 +157,11 @@ def test_gap_safe_unlock_logs_at_info(caplog):
     ew._last_recv_mono = time.monotonic()
     ew._events.extend([(time.monotonic(), 1.0, 0.0)] * 4)
     now = time.monotonic()
-    # D178 unlock logs at INFO level
+    # D179a unlock logs at INFO level (log message renamed from D178)
     with caplog.at_level(logging.INFO, logger="panopticon_py.hunting.entropy_window"):
         ew.push(now, buy_vol=1.0, sell_vol=0.0)
-    assert any("D178" in r.message and "gap_safe" in r.message for r in caplog.records), (
-        f"Expected INFO log with 'D178' and 'gap_safe', got: {[r.message for r in caplog.records]}"
+    assert any("D179" in r.message and "gap_safe" in r.message for r in caplog.records), (
+        f"Expected INFO log with 'D179' and 'gap_safe', got: {[r.message for r in caplog.records]}"
     )
 
 

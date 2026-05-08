@@ -496,6 +496,7 @@ class PolygonListener:
             await asyncio.sleep(0.2)
 
     async def _wss_loop(self) -> None:
+        global _pol_ws_consecutive_failures  # D179b: must declare or += in except raises UnboundLocalError
         backoff = 5.0
         while True:
             try:

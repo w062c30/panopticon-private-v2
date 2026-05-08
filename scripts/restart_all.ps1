@@ -57,10 +57,16 @@ function Wait-ManifestConverge {
     $deadline = (Get-Date).AddSeconds($MaxWaitSec)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path $ManifestPath) {
+            $parseOk = $false
+            $lastManifestPid = 0
             try {
                 $m = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+                $parseOk = $true
                 $entry = $m.$ServiceName
-                if ($null -ne $entry -and [int]$entry.pid -eq $ExpectedPid) {
+                if ($null -ne $entry) {
+                    $lastManifestPid = [int]($entry.pid 2>$null)
+                }
+                if ($null -ne $entry -and $lastManifestPid -eq $ExpectedPid) {
                     $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$ExpectedPid" -ErrorAction SilentlyContinue)
                     if ($alive) { return $true }
                 }
@@ -68,6 +74,9 @@ function Wait-ManifestConverge {
         }
         Start-Sleep -Milliseconds 500
     }
+    # D179d: emit [MANIFEST_TRACE] on failure for self-debugging
+    Write-Warning ("  [MANIFEST_TRACE] svc={0} expected_pid={1} last_manifest_pid={2} parse_ok={3}" -f `
+        $ServiceName, $ExpectedPid, $lastManifestPid, $parseOk)
     return $false
 }
 
@@ -339,12 +348,11 @@ function Full-Restart {
                     Write-Host "  PASS [${svc}] PID=$expectedPid RUNNING (manifest converged)"
                 }
             } else {
-                Write-Warning "  WARN [${svc}] manifest did not converge to PID=$expectedPid within 15s — CIM fallback"
                 $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$expectedPid" -ErrorAction SilentlyContinue)
                 if ($alive) {
                     Write-Host "  PASS [${svc}] PID=$expectedPid RUNNING (CIM only; manifest may still be stale)"
                 } else {
-                    Write-Warning "  FAIL [${svc}] PID=$expectedPid not running"
+                    Write-Warning ("  FAIL [${svc}] PID=$expectedPid not running (expected_pid={0} alive={1})" -f $expectedPid, $alive)
                     $ok = $false
                 }
             }

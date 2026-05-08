@@ -82,7 +82,7 @@ logging.getLogger().addHandler(_orch_file_handler)
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.9-D178"   # D178: gap-safe EW unlock
+PROCESS_VERSION = "v1.7.10-D179b"   # D179b: pol UnboundLocalError fix + radar DEGRADED→READY recovery
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -789,6 +789,32 @@ async def main_async() -> int:
     )
     logger.info("[ORCH] WhaleScanner + discovery_loop launched")
 
+    # D179d: self-check manifest task — catches phantom PID / stale version
+    async def _self_check_manifest() -> None:
+        import json as _json
+        while not _close_event.is_set():
+            await asyncio.sleep(60.0)
+            try:
+                with open("run/process_manifest.json", "r", encoding="utf-8") as f:
+                    m = _json.load(f)
+                entry = m.get("orchestrator") or {}
+                manifest_pid = int(entry.get("pid") or 0)
+                if manifest_pid != os.getpid():
+                    logger.warning(
+                        "[ORCH_SELFCHECK] manifest pid=%s != actual %d (possible double-start)",
+                        entry.get("pid"), os.getpid(),
+                    )
+                if entry.get("version") != PROCESS_VERSION:
+                    logger.warning(
+                        "[ORCH_SELFCHECK] manifest version=%s != actual %s (stale write?)",
+                        entry.get("version"), PROCESS_VERSION,
+                    )
+            except Exception:
+                pass  # debug level only
+
+    self_check_task = asyncio.create_task(_self_check_manifest(), name="self_check_manifest")
+    logger.info("[ORCH] Self-check manifest task launched")
+
     # NOTE: legacy discovery_loop (scripts/start_shadow_hydration.py) is separate.
 
     logger.info("[ORCH] All 7 tracks launched — monitoring for shutdown")
@@ -1224,7 +1250,8 @@ async def main_async() -> int:
     for task in [
             radar_task, ofi_task, graph_task, polygon_task, se_task,
             insider_task, te_recompute_task, whale_task, discovery_task,
-            fanout_task, transfer_graph_ingest_task, transfer_graph_init_task, fingerprint_task,
+            fanout_task, transfer_graph_ingest_task, transfer_graph_init_task,
+            fingerprint_task, self_check_task,
         ]:
         task.cancel()
         try:

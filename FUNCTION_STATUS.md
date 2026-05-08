@@ -1,6 +1,6 @@
 # FUNCTION_STATUS — Function Runtime State Index
 
-> Last updated: D169 (2026-05-06)
+> Last updated: D179c (2026-05-08)
 > Rule (D124): Any function intentionally blocked in production must have an entry here.
 
 ---
@@ -106,3 +106,14 @@ When blocking or changing the status of a function:
 4. Do NOT rely on code comments alone — this file is the authoritative source
 
 ---
+
+## panopticon_py/execution/arb_scanner.py  (separate process — NOT inside orchestrator)
+
+**D179c (2026-05-08):** `arb_scanner` runs as a standalone Python process (`python -m panopticon_py.execution.arb_scanner`), started by `scripts/restart_all.ps1`. Its logs go to `run/arb_scanner.err.log` — NOT `run/orchestrator.log`. Its PID is listed in `run/process_manifest.json` under `arb_scanner`. The orchestrator reads its metrics via the shared `arb_stats` SQLite table (D179c).
+
+|| Function | Status | Reason | Since |
+||---------|--------|--------|-------|
+|| `ArbScanner.run()` | ✅ ACTIVE | Standalone process; PID in `process_manifest.json`. Logs → `arb_scanner.err.log`. | D135 |
+|| `_fee_rate_refresh_loop()` | ✅ ACTIVE | Refreshes Gamma fee rates every 6 h. | D121-2 |
+|| `_flush_stats()` | ⏰ BACKGROUND_60S | Persists `arb_stats` rows to SQLite. Read by `_read_arb_snapshot` (D179c). | D148 |
+|| `_is_tier5_sports_market()` | ✅ ACTIVE | T5 filter. Changes MUST be mirrored in `run_radar.py` if relevant. | D118 |

@@ -358,6 +358,58 @@ async def _btc5m_resolve_loop(db: ShadowDB) -> None:
 
 # ── MetricsCollector JSON loop (5s cadence) ───────────────────────────────────
 
+def _seconds_since_iso(ts_utc: str) -> float | None:
+    """Parse RFC3339-ish timestamp and return seconds ago from now. Returns None on failure."""
+    try:
+        # Format: 2026-05-08T05:35:00.000Z
+        from datetime import datetime, timezone
+        dt = datetime.fromisoformat(ts_utc.replace("Z", "+00:00"))
+        return time.time() - dt.timestamp()
+    except Exception:
+        return None
+
+
+def _read_arb_snapshot(db) -> dict:
+    """
+    D179c: read the latest arb_stats row written by arb_scanner (separate process).
+    Best-effort; never raises into the metrics_json_loop.
+    """
+    try:
+        cur = db.conn.execute(
+            "SELECT ts_utc, ws_connected, tokens_subscribed, active_tokens, "
+            "       total_updates, reconnect_count, opp_count_total, opp_count_1h, "
+            "       best_profit, tokens_total, tokens_kept, tokens_excluded "
+            "FROM arb_stats ORDER BY id DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"present": False}
+        row_dict = dict(zip([
+            "ts_utc", "ws_connected", "tokens_subscribed", "active_tokens",
+            "total_updates", "reconnect_count", "opp_count_total", "opp_count_1h",
+            "best_profit", "tokens_total", "tokens_kept", "tokens_excluded",
+        ], row))
+        stale_seconds = _seconds_since_iso(row_dict["ts_utc"])
+        return {
+            "present": True,
+            "ws_connected": bool(row_dict["ws_connected"]),
+            "tokens_subscribed": int(row_dict["tokens_subscribed"] or 0),
+            "active_tokens": int(row_dict["active_tokens"] or 0),
+            "total_updates": int(row_dict["total_updates"] or 0),
+            "reconnect_count": int(row_dict["reconnect_count"] or 0),
+            "opp_count_total": int(row_dict["opp_count_total"] or 0),
+            "opp_count_1h": int(row_dict["opp_count_1h"] or 0),
+            "best_profit": float(row_dict["best_profit"] or 0.0),
+            "tokens_total": int(row_dict["tokens_total"] or 0),
+            "tokens_kept": int(row_dict["tokens_kept"] or 0),
+            "tokens_excluded": int(row_dict["tokens_excluded"] or 0),
+            "stale_seconds": round(stale_seconds, 1) if stale_seconds is not None else None,
+        }
+    except Exception as exc:
+        logger.debug("[RVF][ARB_SNAPSHOT] skipped: %s", exc)
+        return {"present": False, "error": str(exc)[:80]}
+
+
 def _write_entropy_snapshot(entropy_windows: dict) -> None:
     """
     D157-1: Write entropy window aggregate state to data/entropy_status.json.
@@ -432,6 +484,16 @@ async def _metrics_json_loop(
                 heartbeat_fixed_logged = True
             mc.sync_consensus_from_db(db)
             mc.persist_json(path=path)
+            # D179c: read arb_stats from shared DB and extend the snapshot
+            arb_snap = _read_arb_snapshot(db)
+            if arb_snap.get("present"):
+                try:
+                    import json as _json
+                    snap = _json.loads(Path(path).read_text())
+                    snap["arb"] = arb_snap
+                    Path(path).write_text(_json.dumps(snap, indent=2))
+                except Exception as exc:
+                    logger.debug("[RVF][ARB_SNAPSHOT] persist failed: %s", exc)
 
             # D157-1: Write per-token EntropyWindow state to JSON snapshot
             _write_entropy_snapshot(_entropy_windows)
@@ -936,8 +998,10 @@ def _reconnect_all_entropy_windows() -> None:
     D157-3: Called on actual WS disconnect — mark all token windows as disconnected.
     Preserves _h_history per D154 rules; clears tick buffer and locks trigger.
     """
+    n = len(_entropy_windows)
     for ew_obj in _entropy_windows.values():
         ew_obj.mark_reconnect(reason="ws_disconnect")
+    logger.info("[EW][D179a] WS reconnect flushed %d per-token windows", n)
 
 
 def _refresh_subscription_all(reason: str) -> None:
@@ -2604,7 +2668,10 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
     _entropy_hist_not_ready_count = 0
     _entropy_z_eval_ok_count = 0
     _entropy_z_below_threshold_count = 0
-    _entropy_z_samples = []
+    _entropy_z_samples: list[float] = []
+    # D179d: per-tier breakdown counters
+    _entropy_eval_by_tier: dict[str, int] = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
+    _entropy_z_eval_ok_by_tier: dict[str, int] = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
 
     # ── Message handler ────────────────────────────────────────────────────────
     async def _on_message(msg: dict | list) -> None:
@@ -2612,6 +2679,7 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
         nonlocal _evt_count, _entropy_eval_total, _entropy_locked_count
         nonlocal _entropy_hist_not_ready_count, _entropy_z_eval_ok_count
         nonlocal _entropy_z_below_threshold_count, _entropy_z_samples
+        nonlocal _entropy_eval_by_tier, _entropy_z_eval_ok_by_tier
 
         # P2 DIAG: WebSocket L1 counters — do NOT modify business logic
         global _ws_raw_msg_count, _ws_trade_count, _ws_real_trade_count, _ws_entropy_fire_count, _ws_kyle_sample_count
@@ -2626,18 +2694,19 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
             if _radar_boot_state is not None:
                 _radar_boot_state.last_payload_at = time.time()
                 _radar_boot_state.entropy_window_count = len(_entropy_windows)
+                # D179b: promote to READY whenever in SYNCING and subscription_sync_ok.
+                # Replaces the old first_payload_seen gate which blocked reconnect recovery.
                 if (
-                    not _radar_boot_state.first_payload_seen
-                    and (item.get("event_type") in {"book", "price_change", "last_trade_price"})
+                    _radar_boot_state.state == RadarState.SYNCING
+                    and _radar_boot_state.subscription_sync_ok
                 ):
-                    _radar_boot_state.first_payload_seen = True
+                    _set_radar_state(RadarState.READY)
                     logger.info(
-                        "[RADAR_BOOT][D176] first_payload_seen=True event_type=%s asset=%s",
+                        "[RADAR_BOOT][D179b] promoted to READY after reconnect payload "
+                        "event_type=%s asset=%s",
                         item.get("event_type"),
                         (item.get("asset_id") or "")[:20],
                     )
-                    if _radar_boot_state.subscription_sync_ok:
-                        _set_radar_state(RadarState.READY)
                 _dump_radar_boot_state()
 
             # D29: elapsed_since_last_ws_msg fix — update on every WS frame
@@ -2934,6 +3003,23 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                     t1_sell = trade_size if trade_side == "SELL" else 0.0
                     t1_ew.push(recv, t1_buy, t1_sell)
                     t1_ew.record_H_sample(recv)
+                    # D179a: count T1 in gate diagnostics so heartbeat eval matches reality
+                    # (T1 still does NOT go through consensus/signal_queue — continue preserved)
+                    _entropy_eval_total += 1
+                    _entropy_eval_by_tier["t1"] = _entropy_eval_by_tier.get("t1", 0) + 1
+                    t1_z_diag = t1_ew.zscore_of_latest_delta()
+                    t1_z_val = t1_z_diag[1] if t1_z_diag else None
+                    if t1_z_val is None:
+                        if t1_ew._trigger_locked:
+                            _entropy_locked_count += 1
+                        else:
+                            _entropy_hist_not_ready_count += 1
+                    else:
+                        _entropy_z_eval_ok_count += 1
+                        _entropy_z_eval_ok_by_tier["t1"] = _entropy_z_eval_ok_by_tier.get("t1", 0) + 1
+                        _entropy_z_samples.append(float(t1_z_val))
+                        if t1_z_val < get_z_threshold():
+                            _entropy_z_below_threshold_count += 1
                     # D96-B: STOP — Kyle λ can still compute (mid_before already captured above)
                     # but T1 does NOT go through consensus pipeline
                     continue
@@ -3090,6 +3176,7 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                 token_ew.record_H_sample(recv)
                 # D75: Entropy gate pre/post diagnostics to explain why fire doesn't happen.
                 _entropy_eval_total += 1
+                _entropy_eval_by_tier[tier] = _entropy_eval_by_tier.get(tier, 0) + 1
                 _d_diag, z_diag = token_ew.zscore_of_latest_delta()
                 state_diag = token_ew.state_dict()
                 if z_diag is None:
@@ -3099,6 +3186,7 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                         _entropy_hist_not_ready_count += 1
                 else:
                     _entropy_z_eval_ok_count += 1
+                    _entropy_z_eval_ok_by_tier[tier] = _entropy_z_eval_ok_by_tier.get(tier, 0) + 1
                     _entropy_z_samples.append(float(z_diag))
                     if z_diag < get_z_threshold():
                         _entropy_z_below_threshold_count += 1
@@ -3353,6 +3441,9 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
         if _radar_boot_state is not None:
             _radar_boot_state.ws_connected = True
             _radar_boot_state.last_error = None
+            # D179b: allow recovery from DEGRADED after reconnect (before first payload)
+            if _radar_boot_state.state == RadarState.DEGRADED:
+                _set_radar_state(RadarState.SYNCING)
             _dump_radar_boot_state()
 
     def _on_ws_disconnected() -> None:
@@ -3464,6 +3555,34 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                 await asyncio.sleep(5)
 
     ws_task = asyncio.create_task(_ws_runner())
+
+    # D179a: Periodic H-sample timer — decouples H-history growth from per-tick arrival.
+    # Without this, tokens with sparse trades never accumulate len(_events)>=2,
+    # so current_entropy() always returns None and _h_history stays empty.
+    async def _h_sample_tick_loop() -> None:
+        period = float(os.getenv("HUNT_H_SAMPLE_PERIOD_SEC", "5.0"))
+        if period < 1.0 or period > 60.0:
+            logger.error(
+                "[RADAR][D179a] HUNT_H_SAMPLE_PERIOD_SEC=%.1f invalid (need 1..60); using 5.0",
+                period,
+            )
+            period = 5.0
+        while not _close_event.is_set():
+            recv = time.monotonic()
+            for token_id in list(_entropy_windows.keys()):
+                ew = _entropy_windows.get(token_id)
+                if ew is None:
+                    continue
+                try:
+                    ew.record_H_sample(recv)
+                except Exception:
+                    logger.exception("[RADAR][D179a] record_H_sample failed token=%s", token_id[:16])
+            await asyncio.sleep(period)
+
+    h_sample_task = asyncio.create_task(_h_sample_tick_loop(), name="h_sample_tick")
+    logger.info("[RADAR][D179a] H-sample timer started period=%.1fs tokens=%d",
+                float(os.getenv("HUNT_H_SAMPLE_PERIOD_SEC", "5.0")),
+                len(_entropy_windows))
 
     # ── Phase 5: Whale Scanner — starts once, runs independently on 300s cadence ─
     if os.getenv("PANOPTICON_WHALE"):
@@ -3640,6 +3759,12 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                     _entropy_z_eval_ok_count, _entropy_z_below_threshold_count, _ws_entropy_fire_count,
                     z_min_str, z_p50_str, z_p90_str, z_max_str, threshold_str,
                 )
+                # D179d: per-tier eval breakdown
+                logger.info(
+                    "[D75_ENTROPY_GATE_TIER][D179d] eval_by_tier=%s z_ok_by_tier=%s",
+                    dict(_entropy_eval_by_tier),
+                    dict(_entropy_z_eval_ok_by_tier),
+                )
                 _evt_count = {"last_trade_price": 0, "book": 0, "price_change": 0, "other": 0}
                 _entropy_eval_total = 0
                 _entropy_locked_count = 0
@@ -3647,6 +3772,8 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                 _entropy_z_eval_ok_count = 0
                 _entropy_z_below_threshold_count = 0
                 _entropy_z_samples = []
+                _entropy_eval_by_tier = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
+                _entropy_z_eval_ok_by_tier = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
                 _last_ws_diag_log_ts = now
                 # ── MetricsCollector: collect + persist (every 60s) ─────────────────
                 # D77: Collect and persist metrics every 60s
@@ -3656,13 +3783,42 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                     mc.sync_consensus_from_db(db)  # D48: fill wallet/consensus stats from DB
                     mc.persist_db(db)
 
+                        # D179d: new heartbeat — per-tier breakdown, clear names
+            tier_counts: dict[str, int] = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
+            tier_h_hist_sum: dict[str, int] = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
+            tier_z_ready: dict[str, int] = {"t1": 0, "t2": 0, "t3": 0, "t5": 0, "other": 0}
+            for tok, ew in _entropy_windows.items():
+                t = (ew.tier or "other").lower()
+                bucket = t if t in tier_counts else "other"
+                tier_counts[bucket] += 1
+                tier_h_hist_sum[bucket] += len(ew._h_history)
+                if (not ew._trigger_locked) and len(ew._h_history) >= ew.min_history_for_z:
+                    tier_z_ready[bucket] += 1
             logger.info(
-                "[RADAR %s] Buffer Events: %s, Trigger Locked: %s, H Hist: %s",
+                "[RADAR_HB][D179d] pid=%s fired_events_recent=%d any_locked=%s "
+                "ew_count_total=%d "
+                "per_tier_count={t1:%d,t2:%d,t3:%d,t5:%d,other:%d} "
+                "per_tier_h_hist_sum={t1:%d,t2:%d,t3:%d,t5:%d,other:%d} "
+                "per_tier_z_ready={t1:%d,t2:%d,t3:%d,t5:%d,other:%d}",
                 os.getpid(),
-                len(recent),
+                len(recent),  # explicitly named "fired" not "buffer"
                 state.get("trigger_locked"),
-                state.get("h_hist"),
+                sum(tier_counts.values()),
+                *tier_counts.values(),
+                *tier_h_hist_sum.values(),
+                *tier_z_ready.values(),
             )
+            # D179d: boot-state heartbeat
+            if _radar_boot_state is not None:
+                logger.info(
+                    "[RADAR_BOOT_HB][D179d] state=%s ws_connected=%s first_payload_seen=%s "
+                    "subscription_sync_ok=%s last_payload_age_s=%.1f",
+                    _radar_boot_state.state.value,
+                    _radar_boot_state.ws_connected,
+                    _radar_boot_state.first_payload_seen,
+                    _radar_boot_state.subscription_sync_ok,
+                    time.time() - (_radar_boot_state.last_payload_at or time.time()),
+                )
             next_heartbeat = time.monotonic() + 10.0
 
         # Yield to WS runner task briefly — don't block the heartbeat loop
@@ -3821,7 +3977,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.4-D178"
+PROCESS_VERSION = "v1.3.6-D179a"   # D179a: H-sample timer + T1 gate accounting + D178 path-B deadlock fix
 
 
 def main() -> int:

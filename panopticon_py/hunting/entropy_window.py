@@ -204,16 +204,22 @@ class EntropyWindow:
         #   (a) no gap detected (dt <= max_internal_gap_sec) on this push, AND
         #   (b) at least min(5, _unlock_event_count) events accumulated, AND
         #   (c) at least 2 samples in _h_history (entropy is meaningful)
+        # D179a: path-B added — fresh tokens with no _h_history unlock when len(_events) >= min_events_strong.
         if self._trigger_locked and prev_recv_mono is not None:
             gap = recv_mono - prev_recv_mono
-            min_events = min(5, self._unlock_event_count)
-            if (gap <= self.max_internal_gap_sec
-                    and len(self._events) >= min_events
-                    and len(self._h_history) >= 2):
+            min_events_soft = min(5, self._unlock_event_count)
+            min_events_strong = min(10, self._unlock_event_count)
+            # path-A (D178): warm history preserved across reconnect
+            # path-B (D179a): fresh tokens with no history yet
+            if gap <= self.max_internal_gap_sec and (
+                (len(self._events) >= min_events_soft and len(self._h_history) >= 2)
+                or (len(self._events) >= min_events_strong)
+            ):
                 self._trigger_locked = False
                 _logger.info(
-                    "[EW][D178] unlocked via gap_safe gap=%.1f events=%d h_hist=%d",
+                    "[EW][D179a] unlocked gap_safe gap=%.1f events=%d h_hist=%d strong=%s",
                     gap, len(self._events), len(self._h_history),
+                    len(self._events) >= min_events_strong,
                 )
         return flushed
 
