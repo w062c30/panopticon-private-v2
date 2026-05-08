@@ -1,5 +1,5 @@
 """
-D181: Heavy market-level diagnostics (manual / on-demand only).
+D182: Heavy market-level diagnostics (manual / on-demand only).
 
 Aggregates hunting_shadow_hits, kyle_lambda_samples, polymarket_link_map,
 and optional data/entropy_status.json for human-readable breakdown.
@@ -19,6 +19,35 @@ from panopticon_py.time_utils import utc_now_rfc3339_ms
 logger = logging.getLogger(__name__)
 
 SortKey = Literal["abs_z", "hits", "kyle_n", "recent"]
+_ENTROPY_STALE_GRACE_SEC = float(os.getenv("ENTROPY_STALE_GRACE_SEC", "120"))
+
+
+def _is_entropy_snapshot_stale(ej: dict[str, Any], load_error: str | None) -> bool:
+    """
+    D182a: Returns True when entropy snapshot is missing, empty, or too old.
+    Conservative behavior: any parse/time error is treated as stale.
+    """
+    if load_error is not None:
+        return True
+    if not isinstance(ej, dict):
+        return True
+    total = int(ej.get("total", 0) or 0)
+    z_ready = int(ej.get("z_ready_count", 0) or 0)
+    if total == 0 and z_ready == 0:
+        return True
+    updated_ts = ej.get("updated_ts")
+    if not updated_ts:
+        return True
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(str(updated_ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age = time.time() - dt.timestamp()
+        return age > _ENTROPY_STALE_GRACE_SEC
+    except Exception:
+        return True
 
 
 def _open_sqlite_ro(db_path: str) -> sqlite3.Connection:
@@ -103,6 +132,7 @@ def build_market_breakdown(
     finally:
         conn.close()
 
+    _ej_ref: dict[str, Any] | None = None
     entropy_tokens: dict[str, Any] = {}
     entropy_token_unique_count = 0
     entropy_load_error: str | None = None
@@ -110,6 +140,7 @@ def build_market_breakdown(
         ent_t0 = time.perf_counter()
         raw = Path(entropy_path).read_text(encoding="utf-8")
         ej = json.loads(raw)
+        _ej_ref = ej if isinstance(ej, dict) else None
         raw_tokens = ej.get("tokens") if isinstance(ej, dict) and "tokens" in ej else ej
         if isinstance(raw_tokens, dict):
             entropy_token_unique_count = len(raw_tokens)
@@ -184,6 +215,9 @@ def build_market_breakdown(
 
     with_q = sum(1 for r in trimmed if r.get("question"))
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    entropy_snapshot_stale = _is_entropy_snapshot_stale(_ej_ref or {}, entropy_load_error)
+    entropy_total_windows = int((_ej_ref or {}).get("total", 0) or 0)
+    entropy_z_ready_count = int((_ej_ref or {}).get("z_ready_count", 0) or 0)
 
     return {
         "generated_at": utc_now_rfc3339_ms(),
@@ -198,5 +232,8 @@ def build_market_breakdown(
             "without_question": len(trimmed) - with_q,
             "entropy_tokens_loaded": entropy_token_unique_count,
             "entropy_load_error": entropy_load_error,
+            "entropy_snapshot_stale": entropy_snapshot_stale,
+            "entropy_total_windows": entropy_total_windows,
+            "entropy_z_ready_count": entropy_z_ready_count,
         },
     }

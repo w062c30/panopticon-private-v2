@@ -146,7 +146,17 @@ interface DiagnosticPayload {
   generated_at?: string;
   elapsed_ms?: number;
   rows?: DiagnosticRow[];
-  summary?: Record<string, number>;
+  summary?: {
+    total_markets_in_slice?: number;
+    total_candidates_scanned?: number;
+    with_question?: number;
+    without_question?: number;
+    entropy_tokens_loaded?: number;
+    entropy_load_error?: string | null;
+    entropy_snapshot_stale?: boolean;
+    entropy_total_windows?: number;
+    entropy_z_ready_count?: number;
+  };
   cache_hit?: boolean;
   detail?: string;
 }
@@ -748,6 +758,19 @@ export function RvfMetricsPanel() {
               {heavyData.summary && (
                 <span className="ml-2">
                   candidates {heavyData.summary.total_candidates_scanned ?? "—"} | with Q {heavyData.summary.with_question ?? "—"}
+                  {" | entropy "} {heavyData.summary.entropy_tokens_loaded ?? "—"}
+                  {heavyData.summary.entropy_snapshot_stale && (
+                    <span
+                      className="ml-1 rounded px-1.5 py-[1px] font-semibold tracking-wide"
+                      style={{
+                        background: "var(--color-warning-highlight, #ddcfc6)",
+                        color: "var(--color-warning, #964219)",
+                      }}
+                      title="Entropy snapshot is transiently empty or stale (startup grace period)"
+                    >
+                      STARTUP
+                    </span>
+                  )}
                 </span>
               )}
             </div>
