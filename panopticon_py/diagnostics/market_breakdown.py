@@ -150,7 +150,7 @@ def build_market_breakdown(
                     continue
                 lk = k.lower()
                 entropy_tokens[lk] = v
-                entropy_tokens[lk.lstrip("0x")] = v
+                entropy_tokens[lk.removeprefix("0x")] = v
         else:
             entropy_tokens = {}
             entropy_token_unique_count = 0
@@ -176,7 +176,7 @@ def build_market_breakdown(
         ky = kyle_by_asset.get(mid, {})
         link = link_by_token.get(mid, {})
         mid_l = mid.lower()
-        et = entropy_tokens.get(mid_l) or entropy_tokens.get(mid_l.lstrip("0x")) or {}
+        et = entropy_tokens.get(mid_l) or entropy_tokens.get(mid_l.removeprefix("0x")) or {}
         question = link.get("question") or ""
         slug = link.get("slug") or ""
         ev_count = int(et.get("events") or et.get("ev_count") or et.get("event_count") or 0) if et else 0
