@@ -1,5 +1,5 @@
 """
-Panopticon MetricsCollector — in-process RVF metrics aggregator.
+D181 MetricsCollector — in-process RVF metrics aggregator.
 
 Hooked into existing log calls and in-process signals.
 No DB reads in hot path (Invariant 4.2).
@@ -36,6 +36,10 @@ from panopticon_py.metrics.metrics_schema import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ARB_STALE_WARN_SEC = float(os.getenv("ARB_STALE_WARN_SEC", "300"))
+_ARB_STALE_CRIT_SEC = float(os.getenv("ARB_STALE_CRIT_SEC", "3600"))
+_STALE_WARN_INTERVAL_SEC = float(os.getenv("PIPELINE_STALE_WARN_INTERVAL_SEC", "60"))
 
 # ── Singleton factory ──────────────────────────────────────────────────────────
 
@@ -128,6 +132,8 @@ class MetricsCollector:
         self._last_cleanup_ts = 0.0
         # D37 FIX: Track entropy fires (active_entropy_windows from 5min rolling count)
         self._entropy_fire_rc = _RateCounter(300.0)
+        # D181a: 60s aligned entropy-fire counter for fire/gate ratio.
+        self._entropy_fire_rc_60s = _RateCounter(60.0)
 
         # ── Queue stats ─────────────────────────────────────────────────────────
         self._queue_depth = 0
@@ -174,6 +180,7 @@ class MetricsCollector:
         # ── D81: Identity coverage + TE stats ───────────────────────────────
         self._coverage_stats: dict = {}
         self._te_stats: dict = {}
+        self._last_stale_warn_ts: float = 0.0
 
     # ── Hooks (called from radar / signal_engine log handlers) ───────────────
 
@@ -248,6 +255,7 @@ class MetricsCollector:
         """
         now = time.time()
         self._entropy_fire_rc.add(now)
+        self._entropy_fire_rc_60s.add(now)
         self._active_entropy_windows = self._entropy_fire_rc.count()
         # Store z-score with timestamp for mean_z calculation
         self._signal_z_vals.append((now, z))
@@ -574,9 +582,12 @@ class MetricsCollector:
         processed_ct = self._processed_60s.count(now)
         gate_eval_ct = self._gate_evaluated_rc.count(now)
         gate_pass_ct = self._gate_pass_rc.count(now)
-        entropy_fire_ct = self._entropy_fire_rc.count(now)
+        entropy_fire_ct_60s = self._entropy_fire_rc_60s.count(now)
+        entropy_fire_ct_300s = self._entropy_fire_rc.count(now)
 
-        fire_rate = float(entropy_fire_ct) / float(max(gate_eval_ct, 1))
+        # D181a: fire_rate_60s numerator and denominator now both use 60s windows.
+        fire_rate = float(entropy_fire_ct_60s) / float(max(gate_eval_ct, 1))
+        fire_rate_300s_per_sec = float(entropy_fire_ct_300s) / 300.0
         gate_pass_rate = float(gate_pass_ct) / float(max(gate_eval_ct, 1))
         input_to_proc = min(
             1.0,
@@ -599,6 +610,20 @@ class MetricsCollector:
             active_window_breakdown=ew_breakdown,
             stale_seconds_max=float(ws_stale),
         )
+
+        # D181d: throttled stale warning to avoid log flood from 1s collect loop.
+        if pipeline_stats.stale_seconds_max > _ARB_STALE_WARN_SEC:
+            if (now - self._last_stale_warn_ts) >= _STALE_WARN_INTERVAL_SEC:
+                self._last_stale_warn_ts = now
+                lvl = "CRIT" if pipeline_stats.stale_seconds_max > _ARB_STALE_CRIT_SEC else "WARN"
+                logger.warning(
+                    "[PIPELINE][STALE_%s] stale_seconds_max=%.1fs warn=%.0fs crit=%.0fs fire_rate_300s_per_sec=%.4f",
+                    lvl,
+                    pipeline_stats.stale_seconds_max,
+                    _ARB_STALE_WARN_SEC,
+                    _ARB_STALE_CRIT_SEC,
+                    fire_rate_300s_per_sec,
+                )
 
         return MetricsSnapshot(
             ts_utc=datetime.now(timezone.utc).isoformat(),

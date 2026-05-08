@@ -97,3 +97,46 @@ def test_market_breakdown_joins_hits_and_kyle(tmp_path: Path, monkeypatch: pytes
     assert r0["kyle_n"] == 1
     assert r0["events"] == 5
     assert r0["z_ready"] is True
+    assert r0["ev_count"] == 5
+    assert r0["h_count"] == 10
+    assert out["summary"]["entropy_tokens_loaded"] >= 1
+    assert out["summary"]["entropy_load_error"] is None
+
+
+def test_market_breakdown_entropy_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dbp = tmp_path / "t.db"
+    conn = sqlite3.connect(str(dbp))
+    _bootstrap_minimal_schema(conn)
+    conn.execute(
+        """INSERT INTO hunting_shadow_hits VALUES
+        ('h1','0x1','0xAbC123',0,-5.0,-0.1,NULL,'{}','2026-01-01T00:00:00.000Z')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # D181b: support direct-root entropy format and case/0x normalization.
+    es = tmp_path / "entropy_status.json"
+    es.write_text(
+        json.dumps(
+            {
+                "abc123": {
+                    "events": 7,
+                    "h_hist": 9,
+                    "trigger_locked": True,
+                    "z_ready": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PANOPTICON_DB_PATH", str(dbp))
+    monkeypatch.setenv("ENTROPY_STATUS_PATH", str(es))
+
+    out = build_market_breakdown(limit=10, sort_key="abs_z")
+    r0 = out["rows"][0]
+    assert r0["market_id"] == "0xAbC123"
+    assert r0["events"] == 7
+    assert r0["h_hist"] == 9
+    assert r0["locked"] is True
+    assert r0["z_ready"] is False

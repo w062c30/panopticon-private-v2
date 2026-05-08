@@ -135,6 +135,8 @@ interface DiagnosticRow {
   kyle_n: number;
   events: number;
   h_hist: number;
+  ev_count?: number;
+  h_count?: number;
   locked: boolean;
   z_ready: boolean;
   last_fire_ts?: string | null;
@@ -771,7 +773,9 @@ export function RvfMetricsPanel() {
                       <td className="p-1 font-mono text-slate-300">{row.abs_z_max.toFixed(3)}</td>
                       <td className="p-1 font-mono">{row.fire_count}</td>
                       <td className="p-1 font-mono">{row.kyle_n}</td>
-                      <td className="p-1 font-mono text-slate-400">{row.events}/{row.h_hist}</td>
+                      <td className="p-1 font-mono text-slate-400">
+                        {(row.ev_count ?? row.events)}/{(row.h_count ?? row.h_hist)}
+                      </td>
                       <td className="p-1">{row.locked ? "Y" : "—"}</td>
                       <td className="p-1">{row.z_ready ? "Y" : "—"}</td>
                     </tr>

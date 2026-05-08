@@ -1,5 +1,5 @@
 """
-D180: Heavy market-level diagnostics (manual / on-demand only).
+D181: Heavy market-level diagnostics (manual / on-demand only).
 
 Aggregates hunting_shadow_hits, kyle_lambda_samples, polymarket_link_map,
 and optional data/entropy_status.json for human-readable breakdown.
@@ -10,10 +10,13 @@ import json
 import os
 import sqlite3
 import time
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
 from panopticon_py.time_utils import utc_now_rfc3339_ms
+
+logger = logging.getLogger(__name__)
 
 SortKey = Literal["abs_z", "hits", "kyle_n", "recent"]
 
@@ -101,11 +104,37 @@ def build_market_breakdown(
         conn.close()
 
     entropy_tokens: dict[str, Any] = {}
+    entropy_token_unique_count = 0
+    entropy_load_error: str | None = None
     try:
+        ent_t0 = time.perf_counter()
         raw = Path(entropy_path).read_text(encoding="utf-8")
         ej = json.loads(raw)
-        entropy_tokens = ej.get("tokens") or {}
-    except Exception:
+        raw_tokens = ej.get("tokens") if isinstance(ej, dict) and "tokens" in ej else ej
+        if isinstance(raw_tokens, dict):
+            entropy_token_unique_count = len(raw_tokens)
+            # D181b: normalize key formats to tolerate casing / optional 0x prefix.
+            for k, v in raw_tokens.items():
+                if not isinstance(k, str):
+                    continue
+                lk = k.lower()
+                entropy_tokens[lk] = v
+                entropy_tokens[lk.lstrip("0x")] = v
+        else:
+            entropy_tokens = {}
+            entropy_token_unique_count = 0
+        elapsed_ms = (time.perf_counter() - ent_t0) * 1000.0
+        if elapsed_ms > 50.0:
+            logger.warning("[DIAG][ENTROPY_LOAD_SLOW] elapsed_ms=%.1f path=%s", elapsed_ms, entropy_path)
+    except FileNotFoundError:
+        entropy_load_error = f"entropy_status not found: {entropy_path}"
+        logger.warning("[DIAG][ENTROPY_LOAD] %s", entropy_load_error)
+    except json.JSONDecodeError as exc:
+        entropy_load_error = f"entropy_status parse error: {exc}"
+        logger.warning("[DIAG][ENTROPY_LOAD] %s", entropy_load_error)
+    except Exception as exc:
+        entropy_load_error = f"entropy_status unexpected error: {exc}"
+        logger.warning("[DIAG][ENTROPY_LOAD] %s", entropy_load_error)
         entropy_tokens = {}
 
     all_ids = set(hits_by_market) | set(kyle_by_asset) | set(entropy_tokens)
@@ -115,9 +144,12 @@ def build_market_breakdown(
         h = hits_by_market.get(mid, {})
         ky = kyle_by_asset.get(mid, {})
         link = link_by_token.get(mid, {})
-        et = entropy_tokens.get(mid, {})
+        mid_l = mid.lower()
+        et = entropy_tokens.get(mid_l) or entropy_tokens.get(mid_l.lstrip("0x")) or {}
         question = link.get("question") or ""
         slug = link.get("slug") or ""
+        ev_count = int(et.get("events") or et.get("ev_count") or et.get("event_count") or 0) if et else 0
+        h_count = int(et.get("h_hist") or et.get("h_count") or et.get("entropy_hist") or 0) if et else 0
         rows.append(
             {
                 "market_id": mid,
@@ -127,8 +159,11 @@ def build_market_breakdown(
                 "fire_count": int(h.get("fire_count") or 0),
                 "kyle_n": int(ky.get("kyle_n") or 0),
                 "avg_lambda": float(ky.get("avg_lambda") or 0.0),
-                "events": int(et.get("events") or 0) if et else 0,
-                "h_hist": int(et.get("h_hist") or 0) if et else 0,
+                "events": ev_count,
+                "h_hist": h_count,
+                # D181c: frontend compatibility aliases for ev/h display.
+                "ev_count": ev_count,
+                "h_count": h_count,
                 "locked": bool(et.get("trigger_locked")) if et else False,
                 "z_ready": bool(et.get("z_ready")) if et else False,
                 "last_fire_ts": h.get("last_fire_ts"),
@@ -161,5 +196,7 @@ def build_market_breakdown(
             "total_candidates_scanned": len(rows),
             "with_question": with_q,
             "without_question": len(trimmed) - with_q,
+            "entropy_tokens_loaded": entropy_token_unique_count,
+            "entropy_load_error": entropy_load_error,
         },
     }
