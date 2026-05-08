@@ -13,6 +13,20 @@ from panopticon_py.hunting.trade_aggregate import ParentTrade, VirtualEntity
 logger = logging.getLogger(__name__)
 _MAX_INFERENCE_PAYLOAD_BYTES = 8 * 1024
 
+
+def _env_float(name: str, default: float) -> float:
+    """
+    D175 CP-8: defensive env float parser for thresholds/weights.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("[ENV_FLOAT] invalid %s=%r fallback=%s", name, raw, default)
+        return default
+
 EntityLabel = Literal[
     "POTENTIAL_INSIDER",
     "INSIDER_ALGO_SLICING",
@@ -163,16 +177,6 @@ def scores_from_parents(
 
 
 def _weights() -> tuple[float, float, float, float, float, float]:
-    def _env_float(name: str, default: float) -> float:
-        raw = os.getenv(name)
-        if raw is None:
-            return default
-        try:
-            return float(raw)
-        except (TypeError, ValueError):
-            logger.warning("[INSIDER_WEIGHTS] invalid %s=%r fallback=%s", name, raw, default)
-            return default
-
     raw_values = [
         _env_float("INSIDER_W_IDI", 0.30),
         _env_float("INSIDER_W_BURST", 0.25),
@@ -313,12 +317,12 @@ def classify_high_frequency_wallet(
     """
     Decision tree per hunting plan. ``parents`` should already be sweep-aggregated.
     """
-    thr = int(low_freq_threshold if low_freq_threshold is not None else os.getenv("HUNT_LOW_FREQ_PARENT_THRESHOLD", "8"))
-    idi_hi = float(os.getenv("HUNT_IDI_HIGH", "0.8"))
-    idi_lo = float(os.getenv("HUNT_IDI_LOW", "0.3"))
-    tk_hi = float(os.getenv("HUNT_TAKER_HIGH", "0.7"))
-    tk_lo = float(os.getenv("HUNT_TAKER_LOW", "0.2"))
-    bu_hi = float(os.getenv("HUNT_BURST_HIGH", "0.8"))
+    thr = int(low_freq_threshold if low_freq_threshold is not None else _env_float("HUNT_LOW_FREQ_PARENT_THRESHOLD", 8.0))
+    idi_hi = _env_float("HUNT_IDI_HIGH", 0.8)
+    idi_lo = _env_float("HUNT_IDI_LOW", 0.3)
+    tk_hi = _env_float("HUNT_TAKER_HIGH", 0.7)
+    tk_lo = _env_float("HUNT_TAKER_LOW", 0.2)
+    bu_hi = _env_float("HUNT_BURST_HIGH", 0.8)
 
     reasons: list[str] = []
     s = scores_from_parents(

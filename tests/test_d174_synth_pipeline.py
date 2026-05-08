@@ -216,11 +216,11 @@ class TestCP7ConcentrationSchemaDrift:
 
 
 class TestCP8EnvVarThreshold:
-    def test_invalid_idi_high_env_crashes(self, monkeypatch):
+    def test_invalid_idi_high_env_fallbacks_without_crash(self, monkeypatch):
         monkeypatch.setenv("HUNT_IDI_HIGH", "abc")
         parents = make_parents("insider_slicing")
-        with pytest.raises(ValueError):
-            classify_high_frequency_wallet(parents)
+        label, _, _ = classify_high_frequency_wallet(parents)
+        assert label in ("INSIDER_ALGO_SLICING", "POTENTIAL_INSIDER", "MARKET_MAKER_NOISE", "UNCERTAIN_NOISE")
 
 
 class TestEndToEndHappyPath:

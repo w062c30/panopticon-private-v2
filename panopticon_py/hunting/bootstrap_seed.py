@@ -69,9 +69,39 @@ def _rows_to_synthetic_trades(wallet: str, rows: list[dict]) -> list[dict]:
     return sorted(out, key=lambda x: x["timestamp"])
 
 
+def _get_cex_anonymized(trace: dict, wallet: str) -> bool:
+    """
+    D175 CP-C3: safe accessor with warning + fallback False.
+    """
+    log = logging.getLogger("bootstrap_seed")
+    if "cex_anonymized" not in trace:
+        log.warning(
+            "[BOOTSTRAP][CP_C3] trace missing cex_anonymized wallet=%s trace_keys=%s fallback=False",
+            wallet[:12],
+            sorted(trace.keys()),
+        )
+        return False
+    val = trace.get("cex_anonymized")
+    if not isinstance(val, bool):
+        log.warning(
+            "[BOOTSTRAP][CP_C3] cex_anonymized type=%s wallet=%s value=%r coercing-bool",
+            type(val).__name__,
+            wallet[:12],
+            val,
+        )
+    return bool(val)
+
+
 def _score_wallet(wallet: str, governor: RateLimitGovernor, db_conn) -> tuple[float, dict]:
     rows = fetch_wallet_erc20_transfers_capped(wallet, governor=governor)
     trace = trace_funding_roots(wallet, governor=governor)
+    if not isinstance(trace, dict):
+        logging.getLogger("bootstrap_seed").warning(
+            "[BOOTSTRAP][CP_C3] trace non-dict type=%s wallet=%s fallback={}",
+            type(trace).__name__,
+            wallet[:12],
+        )
+        trace = {}
     syn = _rows_to_synthetic_trades(wallet, rows)
     parents = aggregate_taker_sweeps(syn)
     fingerprint = load_fingerprint_from_watchlist(wallet, db_conn)
@@ -87,7 +117,7 @@ def _score_wallet(wallet: str, governor: RateLimitGovernor, db_conn) -> tuple[fl
         bonus = 5.0
     elif label == "POTENTIAL_INSIDER":
         bonus = 2.0
-    if trace["cex_anonymized"]:
+    if _get_cex_anonymized(trace, wallet):
         base *= 0.35
     score = base + bonus + scores.idi * 2.0 + insider_score_5d
     meta = {

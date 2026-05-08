@@ -93,7 +93,7 @@ class TestSeamCBootstrap:
         assert "insider_score_5d" in meta
         assert 0.0 <= meta["insider_score_5d"] <= 1.0
 
-    def test_e2e_bootstrap_trace_missing_key_crash(self, monkeypatch):
+    def test_e2e_bootstrap_trace_missing_key_fallback(self, monkeypatch):
         monkeypatch.setattr(bs, "fetch_wallet_erc20_transfers_capped", lambda w, **kw: _make_erc20_rows(5, 1, w))
         monkeypatch.setattr(bs, "trace_funding_roots", lambda w, **kw: {"roots": []})
 
@@ -105,7 +105,9 @@ class TestSeamCBootstrap:
         conn.commit()
         try:
             gov = RateLimitGovernor()
-            with pytest.raises(KeyError):
-                bs._score_wallet(WALLET, gov, conn)
+            score, meta = bs._score_wallet(WALLET, gov, conn)
+            assert isinstance(score, float)
+            assert "trace" in meta
+            assert isinstance(meta["trace"], dict)
         finally:
             conn.close()
