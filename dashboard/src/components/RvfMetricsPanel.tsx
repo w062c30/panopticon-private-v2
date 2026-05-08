@@ -2,13 +2,45 @@
  * RvfMetricsPanel — Live RVF pipeline health panel.
  *
  * Connects directly to /ws/rvf for 1s updates via Vite proxy (or VITE_API_BASE_URL).
- * Shows L1 WS status, Kyle accumulation, EntropyWindow state, Queue depth,
- * EV Gate results, Series intelligence, and Go-Live readiness gauges.
+ * D180: Pipeline derivative metrics, metric info icons, on-demand heavy diagnostics.
  */
 import { useEffect, useState } from "react";
 
-const WS_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8001").replace(/^http/, "ws") + "/ws/rvf";
-const REST_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8001") + "/api/rvf/snapshot";
+import { MetricInfoIcon } from "./MetricInfoIcon";
+import { RVF_METRIC_DEFINITIONS } from "../data/rvfMetricDefinitions";
+
+const D = RVF_METRIC_DEFINITIONS;
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001";
+const WS_URL = API_BASE.replace(/^http/, "ws") + "/ws/rvf";
+const REST_URL = API_BASE + "/api/rvf/snapshot";
+const DIAG_URL = API_BASE + "/api/diagnostics/market_breakdown";
+
+interface PipelineSnap {
+  z_ready_ratio?: number;
+  entropy_warmup_ratio?: number;
+  l0_locked_ratio?: number;
+  fire_rate_60s?: number;
+  gate_pass_rate_60s?: number;
+  input_to_processed_ratio_60s?: number;
+  kyle_readiness_ratio?: number;
+  stale_seconds_max?: number;
+  active_window_breakdown?: {
+    ready?: number;
+    warming?: number;
+    locked?: number;
+    total?: number;
+  };
+}
+
+interface ArbSnap {
+  present?: boolean;
+  stale_seconds?: number | null;
+  tokens_subscribed?: number;
+  total_updates?: number;
+  opp_count_total?: number;
+  ws_connected?: boolean;
+}
 
 interface RvfSnapshot {
   ts_utc?: string;
@@ -33,6 +65,7 @@ interface RvfSnapshot {
   window?: {
     active_entropy_windows?: number;
     last_cleanup_count?: number;
+    last_cleanup_ts?: number;
   };
   queue?: {
     depth?: number;
@@ -88,7 +121,32 @@ interface RvfSnapshot {
     paper_trades_total?: number;
     paper_win_count?: number;
   };
+  pipeline?: PipelineSnap;
+  arb?: ArbSnap;
   error?: boolean;
+}
+
+interface DiagnosticRow {
+  market_id: string;
+  question?: string | null;
+  slug?: string | null;
+  abs_z_max: number;
+  fire_count: number;
+  kyle_n: number;
+  events: number;
+  h_hist: number;
+  locked: boolean;
+  z_ready: boolean;
+  last_fire_ts?: string | null;
+}
+
+interface DiagnosticPayload {
+  generated_at?: string;
+  elapsed_ms?: number;
+  rows?: DiagnosticRow[];
+  summary?: Record<string, number>;
+  cache_hit?: boolean;
+  detail?: string;
 }
 
 function GaugeBar({ pct, label, color }: { pct: number; label: string; color: string }) {
@@ -122,14 +180,6 @@ function fmtNum(n: number | undefined, decimals = 0): string {
   return n.toFixed(decimals);
 }
 
-function fmtTs(ts: number | undefined): string {
-  if (!ts) return "—";
-  const d = new Date(ts * 1000);
-  return d.toISOString().slice(11, 19);
-}
-
-// ── Hover tooltip for consensus-ready markets ────────────────────────────────
-
 interface MarketEntry {
   slug: string;
   wallet_count: number;
@@ -155,7 +205,10 @@ function HoverableMarketsRow({
         onMouseEnter={() => setShow(true)}
         onMouseLeave={() => setShow(false)}
       >
-        準備好共識的Market: <span className="text-panGood">{displayLabel}</span>
+        <span className="inline-flex items-center gap-1">
+          <MetricInfoIcon definition={D["consensus.markets_ready"]} />
+          準備好共識的Market: <span className="text-panGood">{displayLabel}</span>
+        </span>
       </span>
       {show && consensusMarkets.length > 0 && (
         <div className="absolute z-50 left-0 top-5 bg-gray-800 bg-opacity-90 border border-slate-600 rounded-lg p-3 shadow-xl min-w-48">
@@ -178,8 +231,11 @@ export function RvfMetricsPanel() {
   const [snap, setSnap] = useState<RvfSnapshot | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [heavyLoading, setHeavyLoading] = useState(false);
+  const [heavyError, setHeavyError] = useState<string | null>(null);
+  const [heavyData, setHeavyData] = useState<DiagnosticPayload | null>(null);
+  const [heavyOpen, setHeavyOpen] = useState(false);
 
-  // D48: fetch REST immediately on mount so panel shows data without waiting for WS
   useEffect(() => {
     fetch(REST_URL)
       .then((r) => r.json())
@@ -187,7 +243,6 @@ export function RvfMetricsPanel() {
       .catch(() => {/* WS will populate once connected */});
   }, []);
 
-  // Manual refresh button handler
   const handleRefresh = () => {
     setRefreshing(true);
     fetch(REST_URL)
@@ -195,6 +250,25 @@ export function RvfMetricsPanel() {
       .then((data: RvfSnapshot) => { if (!data.error) setSnap(data); })
       .catch(() => {/* keep existing snap on error */})
       .finally(() => setRefreshing(false));
+  };
+
+  const handleHeavyDiagnostics = () => {
+    setHeavyLoading(true);
+    setHeavyError(null);
+    fetch(`${DIAG_URL}?limit=30&sort=abs_z`)
+      .then(async (r) => {
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          throw new Error((err as { detail?: string }).detail || r.statusText);
+        }
+        return r.json() as Promise<DiagnosticPayload>;
+      })
+      .then((data) => {
+        setHeavyData(data);
+        setHeavyOpen(true);
+      })
+      .catch((e: Error) => setHeavyError(e.message || "request failed"))
+      .finally(() => setHeavyLoading(false));
   };
 
   useEffect(() => {
@@ -271,29 +345,33 @@ export function RvfMetricsPanel() {
   const gate = snap.gate;
   const series = snap.series;
   const goLive = snap.go_live;
+  const pipe = snap.pipeline;
 
-  // kylePct: fraction toward 500-sample threshold
   const kylePct = ((kyle?.sample_count ?? 0) / 500);
 
   return (
-    <div className="rounded-xl border border-slate-700 bg-panPanel p-4 text-sm">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-3">
+    <div className="rounded-xl border border-slate-700 bg-panPanel p-4 text-sm relative">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <span className="font-semibold text-slate-200">RVF 管線監控</span>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {snap.ts_utc && (
             <span className="text-xs text-slate-500">{new Date(snap.ts_utc).toLocaleTimeString()}</span>
           )}
           <button
+            type="button"
+            onClick={handleHeavyDiagnostics}
+            disabled={heavyLoading}
+            className="px-2 py-0.5 rounded text-xs bg-amber-900/60 hover:bg-amber-800/80 text-amber-100 disabled:opacity-50 border border-amber-700/50"
+          >
+            {heavyLoading ? "診斷中…" : "Heavy Diagnostics"}
+          </button>
+          <button
+            type="button"
             onClick={handleRefresh}
             disabled={refreshing}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {refreshing ? (
-              <span className="animate-spin">&#8635;</span>
-            ) : (
-              <span>&#8635;</span>
-            )}
+            {refreshing ? <span className="animate-spin">&#8635;</span> : <span>&#8635;</span>}
             {refreshing ? "更新中..." : "重新整理"}
           </button>
           <span className={`flex items-center gap-1 text-xs ${wsConnected ? "text-panGood" : "text-red-400"}`}>
@@ -303,31 +381,41 @@ export function RvfMetricsPanel() {
         </div>
       </div>
 
+      {heavyError && (
+        <div className="mb-2 text-xs text-red-400">{heavyError}</div>
+      )}
+
       {/* L1 WS */}
       <div className="mb-3">
         <SectionHeader title="L1 WS 訂閱" dot={ws?.connected ? "green" : "red"} />
         <div className="grid grid-cols-4 gap-2 text-xs">
-          <div className="rounded bg-slate-800 p-2 text-center">
-            <div className="text-lg font-mono text-panGood">{ws?.t1 ?? 0}</div>
-            <div className="text-slate-500">T1</div>
-          </div>
-          <div className="rounded bg-slate-800 p-2 text-center">
-            <div className="text-lg font-mono text-yellow-400">{ws?.t2 ?? 0}</div>
-            <div className="text-slate-500">T2</div>
-          </div>
-          <div className="rounded bg-slate-800 p-2 text-center">
-            <div className="text-lg font-mono text-slate-400">{ws?.t3 ?? 0}</div>
-            <div className="text-slate-500">T3</div>
-          </div>
-          <div className="rounded bg-slate-800 p-2 text-center">
-            <div className="text-lg font-mono text-blue-400">{ws?.t5 ?? 0}</div>
-            <div className="text-slate-500">T5</div>
-          </div>
+          {(["t1", "t2", "t3", "t5"] as const).map((tier) => (
+            <div key={tier} className="rounded bg-slate-800 p-2 text-center">
+              <div className={`text-lg font-mono ${
+                tier === "t1" ? "text-panGood" : tier === "t2" ? "text-yellow-400" : tier === "t3" ? "text-slate-400" : "text-blue-400"
+              }`}>
+                {tier === "t1" ? ws?.t1 ?? 0 : tier === "t2" ? ws?.t2 ?? 0 : tier === "t3" ? ws?.t3 ?? 0 : ws?.t5 ?? 0}
+              </div>
+              <div className="text-slate-500 flex items-center justify-center gap-0.5">
+                <MetricInfoIcon definition={D[`ws.${tier}`]} />
+                {tier.toUpperCase()}
+              </div>
+            </div>
+          ))}
         </div>
         <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-slate-400">
-          <div>交易tick: <span className="text-slate-200">{ws?.trade_ticks_60s ?? 0}/60s</span></div>
-          <div>Book事件: <span className="text-slate-200">{ws?.book_events_60s ?? 0}/60s</span></div>
-          <div>T1窗口: <span className="text-slate-200">{ws?.secs_remaining_in_window?.toFixed(0) ?? 0}s</span></div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["ws.trade_ticks_60s"]} />
+            <span>交易tick: <span className="text-slate-200">{ws?.trade_ticks_60s ?? 0}/60s</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["ws.book_events_60s"]} />
+            <span>Book事件: <span className="text-slate-200">{ws?.book_events_60s ?? 0}/60s</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["ws.t1_window"]} />
+            <span>T1窗口: <span className="text-slate-200">{ws?.secs_remaining_in_window?.toFixed(0) ?? 0}s</span></span>
+          </div>
         </div>
       </div>
 
@@ -336,13 +424,25 @@ export function RvfMetricsPanel() {
         <SectionHeader title="L1.kyle Lambda" />
         <div className="space-y-1">
           <GaugeBar pct={kylePct} label="樣本進度" color="bg-blue-500" />
-          <div className="flex justify-between text-xs text-slate-400 mt-1">
-            <span>{kyle?.sample_count ?? 0} / 500 樣本</span>
-            <span>{kyle?.distinct_assets ?? 0} 資產</span>
-            <span>P75: {fmtNum(kyle?.p75_estimate, 6)}</span>
+          <div className="flex justify-between text-xs text-slate-400 mt-1 flex-wrap gap-2">
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["kyle.sample_count"]} />
+              {kyle?.sample_count ?? 0} / 500 樣本
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["kyle.distinct_assets"]} />
+              {kyle?.distinct_assets ?? 0} 資產
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["kyle.p75"]} />
+              P75: {fmtNum(kyle?.p75_estimate, 6)}
+            </span>
           </div>
-          <div className="flex justify-between text-xs text-slate-500">
-            <span>最後計算: {kyle?.last_compute_status ?? "—"}</span>
+          <div className="flex justify-between text-xs text-slate-500 flex-wrap gap-2">
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["kyle.last_compute"]} />
+              最後計算: {kyle?.last_compute_status ?? "—"}
+            </span>
             <span>{kyle?.last_compute_elapsed_sec?.toFixed(1) ?? "—"}s ago</span>
           </div>
         </div>
@@ -351,20 +451,113 @@ export function RvfMetricsPanel() {
       {/* L1 Window */}
       <div className="mb-3">
         <SectionHeader title="L1 EntropyWindow" />
-        <div className="flex justify-between text-xs text-slate-400">
-          <div>活躍窗口: <span className="text-slate-200">{window?.active_entropy_windows ?? 0}</span></div>
-          <div>清理延遲: <span className="text-slate-200">{window?.last_cleanup_count ?? 0}</span></div>
+        <div className="flex justify-between text-xs text-slate-400 flex-wrap gap-2">
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["window.active_entropy_windows"]} />
+            活躍窗口: <span className="text-slate-200">{window?.active_entropy_windows ?? 0}</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["window.cleanup"]} />
+            清理延遲: <span className="text-slate-200">{window?.last_cleanup_count ?? 0}</span>
+          </span>
         </div>
       </div>
+
+      {/* D180 Pipeline */}
+      <div className="mb-3 rounded-lg border border-slate-600/80 p-2 bg-slate-900/40">
+        <SectionHeader title="Pipeline 衍生 (L1)" dot="yellow" />
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.z_ready_ratio"]} />
+            z_ready: {fmtNum(pipe?.z_ready_ratio, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.entropy_warmup_ratio"]} />
+            暖機: {fmtNum(pipe?.entropy_warmup_ratio, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.l0_locked_ratio"]} />
+            L0 locked: {fmtNum(pipe?.l0_locked_ratio, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.fire_rate_60s"]} />
+            fire/gate: {fmtNum(pipe?.fire_rate_60s, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.gate_pass_rate_60s"]} />
+            gate通過率: {fmtNum(pipe?.gate_pass_rate_60s, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.input_to_processed_ratio_60s"]} />
+            輸入/處理: {fmtNum(pipe?.input_to_processed_ratio_60s, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.kyle_readiness_ratio"]} />
+            Kyle準備度: {fmtNum(pipe?.kyle_readiness_ratio, 3)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.stale_seconds_max"]} />
+            stale_max: {fmtNum(pipe?.stale_seconds_max, 1)}s
+          </span>
+        </div>
+        {pipe?.active_window_breakdown && (
+          <div className="mt-1 text-[11px] text-slate-500 inline-flex flex-wrap items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.breakdown"]} />
+            ready {pipe.active_window_breakdown.ready ?? 0} / warming {pipe.active_window_breakdown.warming ?? 0} / locked {pipe.active_window_breakdown.locked ?? 0} / total {pipe.active_window_breakdown.total ?? 0}
+          </div>
+        )}
+      </div>
+
+      {/* Arb snapshot (merged by radar after persist_json) */}
+      {snap.arb?.present && (
+        <div className="mb-3 rounded-lg border border-slate-600/60 p-2">
+          <SectionHeader title="Arb Scanner (快照)" />
+          <div className="grid grid-cols-2 gap-2 text-xs text-slate-400">
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["arb.stale"]} />
+              stale: {snap.arb.stale_seconds != null ? `${fmtNum(snap.arb.stale_seconds, 1)}s` : "—"}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["arb.tokens_subscribed"]} />
+              tokens: {snap.arb.tokens_subscribed ?? "—"}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <MetricInfoIcon definition={D["arb.updates"]} />
+              updates: {snap.arb.total_updates ?? 0}
+            </span>
+            <span>opp_total: {snap.arb.opp_count_total ?? 0}</span>
+          </div>
+        </div>
+      )}
 
       {/* L2/L3 Queue */}
       <div className="mb-3">
         <SectionHeader title="L2/L3 信號隊列" />
         <div className="grid grid-cols-2 gap-x-4 text-xs text-slate-400">
-          <div>隊列深度: <span className="text-slate-200">{queue?.depth ?? 0}</span></div>
-          <div>已處理60s: <span className="text-slate-200">{queue?.processed_60s ?? 0}</span></div>
-          <div>Mean p(T1): <span className="text-slate-200">{fmtNum(queue?.mean_p_posterior_t1, 3)}</span></div>
-          <div>Mean z(T1): <span className="text-slate-200">{fmtNum(queue?.mean_z_t1, 3)}</span></div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["queue.depth"]} />
+            <span>隊列深度: <span className="text-slate-200">{queue?.depth ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["queue.processed_60s"]} />
+            <span>已處理60s: <span className="text-slate-200">{queue?.processed_60s ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["queue.mean_p_t1"]} />
+            <span>Mean p(T1): <span className="text-slate-200">{fmtNum(queue?.mean_p_posterior_t1, 3)}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["queue.mean_p_t2"]} />
+            <span>Mean p(T2): <span className="text-slate-200">{fmtNum(queue?.mean_p_posterior_t2, 3)}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["queue.mean_z_t1"]} />
+            <span>Mean z(T1): <span className="text-slate-200">{fmtNum(queue?.mean_z_t1, 3)}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["queue.mean_z_t2"]} />
+            <span>Mean z(T2): <span className="text-slate-200">{fmtNum(queue?.mean_z_t2, 3)}</span></span>
+          </div>
         </div>
       </div>
 
@@ -372,14 +565,32 @@ export function RvfMetricsPanel() {
       <div className="mb-3">
         <SectionHeader title="L4 EV Gate" />
         <div className="grid grid-cols-3 gap-x-4 text-xs text-slate-400 mb-1">
-          <div>評估60s: <span className="text-slate-200">{gate?.evaluated_60s ?? 0}</span></div>
-          <div>通過: <span className="text-panGood">{gate?.pass_count_60s ?? 0}</span></div>
-          <div>否決: <span className="text-red-400">{gate?.abort_count_60s ?? 0}</span></div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["gate.evaluated_60s"]} />
+            <span>評估60s: <span className="text-slate-200">{gate?.evaluated_60s ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["gate.pass_60s"]} />
+            <span>通過: <span className="text-panGood">{gate?.pass_count_60s ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["gate.abort_60s"]} />
+            <span>否決: <span className="text-red-400">{gate?.abort_count_60s ?? 0}</span></span>
+          </div>
         </div>
-        <div className="flex justify-between text-xs text-slate-500">
-          <span>紙trade: {gate?.paper_trades_total ?? 0} / 100</span>
-          <span>勝率: {fmtNum((gate?.paper_win_rate ?? 0) * 100, 1)}%</span>
-          <span>Avg EV: {fmtNum(gate?.avg_ev, 2)}</span>
+        <div className="flex justify-between text-xs text-slate-500 flex-wrap gap-2">
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["gate.paper_trades"]} />
+            紙trade: {gate?.paper_trades_total ?? 0} / 100
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["gate.paper_win_rate"]} />
+            勝率: {fmtNum((gate?.paper_win_rate ?? 0) * 100, 1)}%
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["gate.avg_ev"]} />
+            Avg EV: {fmtNum(gate?.avg_ev, 2)}
+          </span>
         </div>
       </div>
 
@@ -387,9 +598,18 @@ export function RvfMetricsPanel() {
       <div className="mb-3">
         <SectionHeader title="Series Intelligence" />
         <div className="grid grid-cols-2 gap-x-4 text-xs text-slate-400 mb-1">
-          <div>Deadline ladders: <span className="text-slate-200">{series?.deadline_ladders ?? 0}</span></div>
-          <div>Rolling windows: <span className="text-slate-200">{series?.rolling_windows ?? 0}</span></div>
-          <div>Monotone violations: <span className={series?.monotone_violations ? "text-red-400" : "text-slate-200"}>{series?.monotone_violations ?? 0}</span></div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["series.deadline"]} />
+            <span>Deadline ladders: <span className="text-slate-200">{series?.deadline_ladders ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["series.rolling"]} />
+            <span>Rolling windows: <span className="text-slate-200">{series?.rolling_windows ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["series.violations"]} />
+            <span>Monotone violations: <span className={series?.monotone_violations ? "text-red-400" : "text-slate-200"}>{series?.monotone_violations ?? 0}</span></span>
+          </div>
           <div>Catalyst events: <span className="text-slate-200">{series?.catalyst_events_today ?? 0}</span></div>
         </div>
         {series?.monotone_violations && series?.last_violation_slug && (
@@ -399,22 +619,30 @@ export function RvfMetricsPanel() {
         )}
       </div>
 
-      {/* Consensus / Wallet Readiness */}
+      {/* Consensus */}
       <div className="mb-3">
         <SectionHeader title="L5 共識錢包" />
         <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-xs text-slate-400 mb-1">
-          <div>合規錢包: <span className="text-slate-200">{snap.consensus?.qualifying_wallets ?? 0}</span></div>
-          <div>新候選 (非PathB): <span className="text-slate-200">{snap.consensus?.new_candidates ?? 0}</span></div>
-          <div>PathB晉升: <span className="text-yellow-400">{snap.consensus?.path_b_promoted ?? 0}</span></div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["consensus.qualifying"]} />
+            <span>合規錢包: <span className="text-slate-200">{snap.consensus?.qualifying_wallets ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["consensus.new_candidates"]} />
+            <span>新候選 (非PathB): <span className="text-slate-200">{snap.consensus?.new_candidates ?? 0}</span></span>
+          </div>
+          <div className="flex items-start gap-1">
+            <MetricInfoIcon definition={D["consensus.path_b"]} />
+            <span>PathB晉升: <span className="text-yellow-400">{snap.consensus?.path_b_promoted ?? 0}</span></span>
+          </div>
         </div>
         <HoverableMarketsRow
           marketsConsensusReady={snap.consensus?.markets_consensus_ready ?? 0}
           marketsConsensusTotal={snap.consensus?.markets_consensus_total ?? 0}
           consensusMarkets={snap.consensus?.consensus_markets ?? []}
         />
-        {/* D50c: Price source debug row */}
         {snap.consensus?.price_debug && (
-          <div className="flex items-center gap-3 mt-1 text-xs">
+          <div className="flex items-center gap-3 mt-1 text-xs flex-wrap">
             <span>
               價格來源:{" "}
               <span className={
@@ -446,7 +674,13 @@ export function RvfMetricsPanel() {
         )}
       </div>
 
-      {/* Go-Live Readiness — go_live.locked is the authoritative gate */}
+      {/* Readiness strip */}
+      <div className="mb-2 text-xs text-slate-500 inline-flex items-center gap-1">
+        <MetricInfoIcon definition={D["readiness.all_ready"]} />
+        readiness.all_ready: <span className={snap.readiness?.all_ready ? "text-panGood" : "text-slate-400"}>{String(!!snap.readiness?.all_ready)}</span>
+      </div>
+
+      {/* Go-Live */}
       <div className="rounded-lg border border-slate-600 p-3">
         <SectionHeader
           title="Go-Live 就緒狀態"
@@ -462,23 +696,92 @@ export function RvfMetricsPanel() {
           />
         </div>
         <div className="mt-2 grid grid-cols-3 gap-x-2 text-xs text-slate-500 mb-1">
-          <div>Kyle: {goLive?.kyle_total ?? 0} / 500</div>
-          <div>Trades: {goLive?.paper_trades_total ?? 0} / 100</div>
+          <div className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["kyle.sample_count"]} />
+            Kyle: {goLive?.kyle_total ?? 0} / 500
+          </div>
+          <div className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["gate.paper_trades"]} />
+            Trades: {goLive?.paper_trades_total ?? 0} / 100
+          </div>
           <div>Wins: {goLive?.paper_win_count ?? 0}</div>
         </div>
-        <div className="mt-1 flex items-center justify-between">
-          <span className={`text-xs font-bold ${goLive?.locked === false ? "text-panGood" : "text-slate-400"}`}>
+        <div className="mt-1 flex items-center justify-between flex-wrap gap-2">
+          <span className={`text-xs font-bold inline-flex items-center gap-1 ${goLive?.locked === false ? "text-panGood" : "text-slate-400"}`}>
+            <MetricInfoIcon definition={D["go_live.locked"]} />
             {goLive?.locked === false
               ? " LIVE 解鎖 — 等待架構師批准"
               : " 等待累積"}
           </span>
           <span className="text-xs text-slate-600">
-            {goLive?.locked
-              ? `🔒 LOCKED`
-              : "✅ READY"}
+            {goLive?.locked ? "LOCKED" : "READY"}
           </span>
         </div>
       </div>
+
+      {/* Heavy diagnostics modal */}
+      {heavyOpen && heavyData && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="heavy-diag-title"
+        >
+          <div className="max-h-[85vh] w-full max-w-4xl overflow-hidden rounded-xl border border-slate-600 bg-slate-900 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-600 px-4 py-2">
+              <h2 id="heavy-diag-title" className="text-sm font-semibold text-slate-100">
+                Heavy Diagnostics — Market breakdown
+              </h2>
+              <button
+                type="button"
+                className="rounded px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200"
+                onClick={() => setHeavyOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="px-4 py-2 text-[11px] text-slate-400 border-b border-slate-700">
+              generated: {heavyData.generated_at ?? "—"} | elapsed: {heavyData.elapsed_ms ?? "—"} ms
+              {heavyData.cache_hit ? " | cached" : ""}
+              {heavyData.summary && (
+                <span className="ml-2">
+                  candidates {heavyData.summary.total_candidates_scanned ?? "—"} | with Q {heavyData.summary.with_question ?? "—"}
+                </span>
+              )}
+            </div>
+            <div className="overflow-auto flex-1 p-2">
+              <table className="w-full text-[11px] text-left border-collapse">
+                <thead className="sticky top-0 bg-slate-900 text-slate-400 border-b border-slate-600">
+                  <tr>
+                    <th className="p-1 font-medium">Question</th>
+                    <th className="p-1 font-medium">|z| max</th>
+                    <th className="p-1 font-medium">fires</th>
+                    <th className="p-1 font-medium">kyle n</th>
+                    <th className="p-1 font-medium">ev/h</th>
+                    <th className="p-1 font-medium">locked</th>
+                    <th className="p-1 font-medium">z_ready</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(heavyData.rows ?? []).map((row) => (
+                    <tr key={row.market_id} className="border-b border-slate-800 hover:bg-slate-800/50">
+                      <td className="p-1 text-slate-200 max-w-[14rem] truncate" title={row.question || row.market_id}>
+                        {row.question || row.slug || row.market_id.slice(0, 18) + "…"}
+                      </td>
+                      <td className="p-1 font-mono text-slate-300">{row.abs_z_max.toFixed(3)}</td>
+                      <td className="p-1 font-mono">{row.fire_count}</td>
+                      <td className="p-1 font-mono">{row.kyle_n}</td>
+                      <td className="p-1 font-mono text-slate-400">{row.events}/{row.h_hist}</td>
+                      <td className="p-1">{row.locked ? "Y" : "—"}</td>
+                      <td className="p-1">{row.z_ready ? "Y" : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

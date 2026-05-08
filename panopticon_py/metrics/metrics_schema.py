@@ -102,6 +102,36 @@ class GoLiveSnapshot:
 
 
 @dataclass
+class PipelineStats:
+    """
+    D180: Derived RVF pipeline smoothness / correctness ratios (no DB reads).
+    Populated from MetricsCollector counters + data/entropy_status.json (optional).
+    """
+    z_ready_ratio: float = 0.0
+    entropy_warmup_ratio: float = 0.0
+    l0_locked_ratio: float = 0.0
+    fire_rate_60s: float = 0.0  # entropy_fire_rc window / gate_evaluated_60s (windows may differ)
+    gate_pass_rate_60s: float = 0.0
+    input_to_processed_ratio_60s: float = 0.0
+    kyle_readiness_ratio: float = 0.0
+    active_window_breakdown: dict[str, int] = field(default_factory=dict)
+    stale_seconds_max: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "z_ready_ratio": self.z_ready_ratio,
+            "entropy_warmup_ratio": self.entropy_warmup_ratio,
+            "l0_locked_ratio": self.l0_locked_ratio,
+            "fire_rate_60s": self.fire_rate_60s,
+            "gate_pass_rate_60s": self.gate_pass_rate_60s,
+            "input_to_processed_ratio_60s": self.input_to_processed_ratio_60s,
+            "kyle_readiness_ratio": self.kyle_readiness_ratio,
+            "active_window_breakdown": dict(self.active_window_breakdown),
+            "stale_seconds_max": self.stale_seconds_max,
+        }
+
+
+@dataclass
 class ConsensusStats:
     """Insider consensus / wallet readiness statistics."""
     qualifying_wallets: int = 0           # total distinct wallets with insider_score >= threshold
@@ -144,6 +174,7 @@ class MetricsSnapshot:
     consensus: ConsensusStats = field(default_factory=ConsensusStats)
     readiness: ReadinessSnapshot = field(default_factory=ReadinessSnapshot)
     go_live: GoLiveSnapshot = field(default_factory=GoLiveSnapshot)
+    pipeline: PipelineStats = field(default_factory=PipelineStats)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +221,7 @@ class MetricsSnapshot:
                         "kyle_total": self.go_live.kyle_total,
                         "paper_trades_total": self.go_live.paper_trades_total,
                         "paper_win_count": self.go_live.paper_win_count},
+            "pipeline": self.pipeline.to_dict(),
             # D81: Identity coverage + Transfer Entropy — injected by MetricsCollector
             # (populated by sync_coverage_from_db() + sync_te_stats() at 60s cadence)
             "identity_coverage": {},

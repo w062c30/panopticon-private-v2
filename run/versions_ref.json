@@ -1,10 +1,10 @@
 {
   "_doc": "SOURCE OF TRUTH for process versions. Agents MUST update this file when modifying any process. See AGENTS.md §PROCESS-VERSION-PROTOCOL.",
   "_format": "v{MAJOR}.{MINOR}.{PATCH}-D{sprint}",
-  "radar": "v1.3.6-D179a",
+  "radar": "v1.3.7-D180",
   "orchestrator": "v1.7.10-D179b",
-  "backend": "v1.1.48-D165",
-  "frontend": "v1.1.12-D112",
+  "backend": "v1.1.49-D180",
+  "frontend": "v1.1.15-D180",
   "analysis_worker": "v1.1.17-D168",
   "watchdog": "v1.0.5-D146",
   "arb_scanner": "v0.5.12-D179c",
@@ -12,7 +12,7 @@
   "signal_engine": "v5.2.0-D171",
   "fingerprint_scrubber": "v1.1.0-D171",
   "transfer_graph": "v1.2.0-D171",
-  "last_updated": "2026-05-08T07:30:00Z",
-  "updated_by_sprint": "D179a-D179d (combined)",
-  "updated_by_agent": "D179-coding-agent"
+  "last_updated": "2026-05-08T10:45:00Z",
+  "updated_by_sprint": "D180 RVF monitor + diagnostics",
+  "updated_by_agent": "D180-coding-agent"
 }

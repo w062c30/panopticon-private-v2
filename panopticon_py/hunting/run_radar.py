@@ -410,6 +410,23 @@ def _read_arb_snapshot(db) -> dict:
         return {"present": False, "error": str(exc)[:80]}
 
 
+def _merge_pipeline_stale_seconds(snap: dict) -> None:
+    """
+    D180: After arb snapshot is merged into RVF JSON, pipeline.stale_seconds_max =
+    max(WS elapsed since last msg, arb stale_seconds).
+    """
+    try:
+        ws_block = snap.get("ws") or {}
+        el = float(ws_block.get("elapsed_since_last_ws_msg") or 0.0)
+        arb_block = snap.get("arb") or {}
+        stale = arb_block.get("stale_seconds")
+        arb_stale = 0.0 if stale is None else float(stale)
+        pip = snap.setdefault("pipeline", {})
+        pip["stale_seconds_max"] = max(el, arb_stale)
+    except Exception:
+        pass
+
+
 def _write_entropy_snapshot(entropy_windows: dict) -> None:
     """
     D157-1: Write entropy window aggregate state to data/entropy_status.json.
@@ -483,20 +500,22 @@ async def _metrics_json_loop(
                 logger.info("[D76_HEARTBEAT_FIXED] update_heartbeat resolved — metrics_json_loop stable")
                 heartbeat_fixed_logged = True
             mc.sync_consensus_from_db(db)
+            # D180: Entropy status JSON must exist before persist_json so pipeline ratios see fresh totals.
+            _write_entropy_snapshot(_entropy_windows)
             mc.persist_json(path=path)
             # D179c: read arb_stats from shared DB and extend the snapshot
             arb_snap = _read_arb_snapshot(db)
             if arb_snap.get("present"):
                 try:
                     import json as _json
-                    snap = _json.loads(Path(path).read_text())
+                    snap = _json.loads(Path(path).read_text(encoding="utf-8"))
                     snap["arb"] = arb_snap
-                    Path(path).write_text(_json.dumps(snap, indent=2))
+                    _merge_pipeline_stale_seconds(snap)
+                    Path(path).write_text(_json.dumps(snap, indent=2), encoding="utf-8")
                 except Exception as exc:
                     logger.debug("[RVF][ARB_SNAPSHOT] persist failed: %s", exc)
 
-            # D157-1: Write per-token EntropyWindow state to JSON snapshot
-            _write_entropy_snapshot(_entropy_windows)
+            # D157-1: per-token state already written above (before persist_json)
 
             # D81: Sync coverage + TE stats every 60s (every 12 × 5s iterations)
             if _loop_count % 12 == 0:
@@ -3977,7 +3996,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.6-D179a"   # D179a: H-sample timer + T1 gate accounting + D178 path-B deadlock fix
+PROCESS_VERSION = "v1.3.7-D180"   # D180: RVF pipeline derived metrics + entropy snapshot order before persist_json
 
 
 def main() -> int:

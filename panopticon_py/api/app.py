@@ -23,6 +23,7 @@ from panopticon_py.api.routers.system_health import router as system_health_rout
 from panopticon_py.api.routers.wallet_graph import router as wallet_graph_router
 from panopticon_py.api.routers.watchlist import router as watchlist_router
 from panopticon_py.api.routers.arb import router as arb_router  # D148-3
+from panopticon_py.api.routers.diagnostics import router as diagnostics_router  # D180
 from panopticon_py.load_env import load_repo_env
 
 load_repo_env()
@@ -30,7 +31,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.48-D165"   # ← AGENT: bump on every change  # D137-2: +GET /api/radar/active-markets  # D146-P1: /api/arb/health os.kill → is_process_alive()  # D148-3: +arb_router (/api/arb/health, /api/arb/stats)  # D150-1: +reconnect_critical field  # D152: no code change — investigation sprint  # D154: no backend change — entropy_window fix only  # D156-3: no backend change  # D157-2: +GET /api/entropy/status (reads JSON file)  # D164: /api/entropy/status extended with debug detail (DEBUG_STATS_ENABLED or LOG_LEVEL=DEBUG)  # D165: /api/entropy/status d164_debug→d165_debug; HUNT_EW_UNLOCK env vars surfaced
+PROCESS_VERSION = "v1.1.49-D180"   # D180: +/api/diagnostics/market_breakdown (heavy manual diagnostics); PipelineStats in RVF snapshot
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -159,6 +160,7 @@ app.include_router(system_health_router)
 app.include_router(wallet_graph_router)
 app.include_router(watchlist_router)
 app.include_router(arb_router)  # D148-3
+app.include_router(diagnostics_router)  # D180
 
 
 # Serve built dashboard from disk

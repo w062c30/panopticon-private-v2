@@ -12,8 +12,10 @@ Metrics are:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
+import os
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -25,6 +27,7 @@ from panopticon_py.metrics.metrics_schema import (
     GoLiveSnapshot,
     KyleStats,
     MetricsSnapshot,
+    PipelineStats,
     QueueStats,
     ReadinessSnapshot,
     SeriesStats,
@@ -541,6 +544,62 @@ class MetricsCollector:
             and win_rate >= WIN_RATE_THRESHOLD
         )
 
+        # ── D180: Pipeline derived ratios (entropy file read — optional, no DB) ───
+        entropy_path = os.getenv("ENTROPY_STATUS_PATH", "data/entropy_status.json")
+        total_ew = zr_ct = lc_ct = 0
+        try:
+            with open(entropy_path, encoding="utf-8") as ef:
+                ew_raw = json.load(ef)
+            total_ew = int(ew_raw.get("total") or 0)
+            zr_ct = int(ew_raw.get("z_ready_count") or 0)
+            lc_ct = int(ew_raw.get("locked_count") or 0)
+        except Exception:
+            pass
+
+        if total_ew > 0:
+            z_ready_ratio = float(zr_ct) / float(total_ew)
+            l0_locked_ratio = float(lc_ct) / float(total_ew)
+            entropy_warmup_ratio = float(max(0, total_ew - zr_ct - lc_ct)) / float(total_ew)
+        else:
+            z_ready_ratio = entropy_warmup_ratio = l0_locked_ratio = 0.0
+
+        ew_breakdown = {
+            "ready": zr_ct,
+            "warming": max(0, total_ew - zr_ct - lc_ct),
+            "locked": lc_ct,
+            "total": total_ew,
+        }
+
+        trade_ticks_ct = self._trade_ticks_60s.count(now)
+        processed_ct = self._processed_60s.count(now)
+        gate_eval_ct = self._gate_evaluated_rc.count(now)
+        gate_pass_ct = self._gate_pass_rc.count(now)
+        entropy_fire_ct = self._entropy_fire_rc.count(now)
+
+        fire_rate = float(entropy_fire_ct) / float(max(gate_eval_ct, 1))
+        gate_pass_rate = float(gate_pass_ct) / float(max(gate_eval_ct, 1))
+        input_to_proc = min(
+            1.0,
+            float(processed_ct) / float(max(trade_ticks_ct, 1)),
+        )
+        kyle_ready = min(1.0, float(len(recent)) / 500.0)
+
+        ws_stale = (
+            now - self._last_ws_msg_ts if self._last_ws_msg_ts > 0 else 9999.0
+        )
+
+        pipeline_stats = PipelineStats(
+            z_ready_ratio=z_ready_ratio,
+            entropy_warmup_ratio=entropy_warmup_ratio,
+            l0_locked_ratio=l0_locked_ratio,
+            fire_rate_60s=fire_rate,
+            gate_pass_rate_60s=gate_pass_rate,
+            input_to_processed_ratio_60s=input_to_proc,
+            kyle_readiness_ratio=kyle_ready,
+            active_window_breakdown=ew_breakdown,
+            stale_seconds_max=float(ws_stale),
+        )
+
         return MetricsSnapshot(
             ts_utc=datetime.now(timezone.utc).isoformat(),
             ws=WsStats(
@@ -625,6 +684,7 @@ class MetricsCollector:
                 paper_trades_total=paper_total,
                 paper_win_count=paper_wins,
             ),
+            pipeline=pipeline_stats,
         )
 
     # ── Persist: split cadence ────────────────────────────────────────────────
