@@ -64,8 +64,8 @@ export const RVF_METRIC_DEFINITIONS: Record<string, MetricDefinition> = {
     key: "kyle.sample_count",
     label: "Kyle 樣本數（滾動）",
     meaning: "最近 5 分鐘內累積的 Kyle λ 樣本數（非 DB 全量）。",
-    expected: "Go-live 門檻以 500 累積樣本為參考；面板進度條為 min(n/500,1)。",
-    controls: "readiness.kyle_pct、go_live 解鎖進度。",
+    expected: "主顯示維持 x/500（go-live 目標）；括號內 1h 為前端分鐘 bucket 視角（最近 1h 觀測到的 sample_count 最大值）。",
+    controls: "readiness.kyle_pct、go_live 解鎖進度（1h 僅觀測，不是決策門檻）。",
   },
   "kyle.distinct_assets": {
     key: "kyle.distinct_assets",
@@ -111,10 +111,10 @@ export const RVF_METRIC_DEFINITIONS: Record<string, MetricDefinition> = {
   },
   "queue.processed_60s": {
     key: "queue.processed_60s",
-    label: "已處理 / 60s",
-    meaning: "過去 60 秒內標記為已處理的信號數。",
-    expected: "與 trade_ticks_60s 對照；比率過低表示堵塞。",
-    controls: "pipeline.input_to_processed_ratio_60s。",
+    label: "已處理 (1h | 24h)",
+    meaning: "前端以分鐘 bucket 聚合 `processed_60s`，顯示 1h 與 24h 視窗總和（session-local）。",
+    expected: "稀有事件下 60s 常為 0；1h/24h 更適合看趨勢。",
+    controls: "pipeline.input_to_processed_ratio_60s（後端邏輯不變）。",
   },
   "queue.mean_p_t1": {
     key: "queue.mean_p_t1",
@@ -146,10 +146,10 @@ export const RVF_METRIC_DEFINITIONS: Record<string, MetricDefinition> = {
   },
   "gate.evaluated_60s": {
     key: "gate.evaluated_60s",
-    label: "L4 EV Gate 評估 / 60s",
-    meaning: "過去 60 秒內 EV gate 評估次數。",
-    expected: "與信號流量匹配；長期 0 表示未進入 gate。",
-    controls: "Paper / live 前的 EV 篩選頻率。",
+    label: "L4 EV Gate 評估 (1h | 24h)",
+    meaning: "前端以分鐘 bucket 聚合 `evaluated_60s`，顯示 1h/24h 觀測值（session-local）。",
+    expected: "可和 L2/L3 長窗一起看是否只是短窗稀疏。",
+    controls: "Paper / live 前的 EV 篩選頻率展示；不改 gate 決策。",
   },
   "gate.pass_60s": {
     key: "gate.pass_60s",
@@ -304,6 +304,20 @@ export const RVF_METRIC_DEFINITIONS: Record<string, MetricDefinition> = {
     meaning: "max(WS 距上次訊息秒數, arb stale_seconds)（合併 arb 後）。",
     expected: "WS < 數秒級为佳；arb stale 過大表示 arb 快照過舊。",
     controls: "資料新鮮度警訊。",
+  },
+  "pipeline.l2_eval_60s": {
+    key: "pipeline.l2_eval_60s",
+    label: "L2 eval (1h | 24h)",
+    meaning: "前端分鐘 bucket 聚合的 L2 入口活動度長窗觀測（來源仍為 `l2_eval_60s`）。",
+    expected: "1h/24h > 0 但 60s 常為 0 屬稀有事件常態。",
+    controls: "只影響可視化，不改 `_process_event` 或任何後端計數。",
+  },
+  "pipeline.l3_eval_60s": {
+    key: "pipeline.l3_eval_60s",
+    label: "L3 eval (1h | 24h)",
+    meaning: "前端分鐘 bucket 聚合的 L3 前置評估活動度（來源仍為 `l3_eval_60s`）。",
+    expected: "通常 <= L2；1h 與 24h 同為 0 才較可能代表長窗無事件。",
+    controls: "只影響前端顯示，不改 `fast_execution_gate` 流程。",
   },
   "pipeline.breakdown": {
     key: "pipeline.breakdown",

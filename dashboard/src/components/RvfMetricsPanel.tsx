@@ -15,6 +15,21 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001";
 const WS_URL = API_BASE.replace(/^http/, "ws") + "/ws/rvf";
 const REST_URL = API_BASE + "/api/rvf/snapshot";
 const DIAG_URL = API_BASE + "/api/diagnostics/market_breakdown";
+const MINUTE_MS = 60_000;
+const BUCKETS_1H = 60;
+const BUCKETS_24H = 24 * 60;
+
+type RareCounterKey = "l2Eval" | "l3Eval" | "queueProcessed" | "gateEvaluated";
+type RareCounterValues = Record<RareCounterKey, number>;
+
+interface RareCounterBucket extends RareCounterValues {
+  minuteTs: number;
+}
+
+interface KyleMinuteBucket {
+  minuteTs: number;
+  sampleCount: number;
+}
 
 interface PipelineSnap {
   z_ready_ratio?: number;
@@ -25,6 +40,8 @@ interface PipelineSnap {
   input_to_processed_ratio_60s?: number;
   kyle_readiness_ratio?: number;
   stale_seconds_max?: number;
+  l2_eval_60s?: number;
+  l3_eval_60s?: number;
   active_window_breakdown?: {
     ready?: number;
     warming?: number;
@@ -192,6 +209,84 @@ function fmtNum(n: number | undefined, decimals = 0): string {
   return n.toFixed(decimals);
 }
 
+function fmtHkt(ts: string | undefined): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return new Intl.DateTimeFormat("zh-HK", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
+function minuteBucketTs(ts: string | undefined): number {
+  const ms = Date.parse(ts ?? "");
+  const safeMs = Number.isFinite(ms) ? ms : Date.now();
+  return Math.floor(safeMs / MINUTE_MS) * MINUTE_MS;
+}
+
+function addOrMergeMinuteBucket(
+  prev: RareCounterBucket[],
+  minuteTs: number,
+  nextValues: RareCounterValues,
+): RareCounterBucket[] {
+  const next = [...prev];
+  const last = next[next.length - 1];
+  if (last && last.minuteTs === minuteTs) {
+    // Same minute: use max seen value to avoid over-counting on 1s snapshots.
+    last.l2Eval = Math.max(last.l2Eval, nextValues.l2Eval);
+    last.l3Eval = Math.max(last.l3Eval, nextValues.l3Eval);
+    last.queueProcessed = Math.max(last.queueProcessed, nextValues.queueProcessed);
+    last.gateEvaluated = Math.max(last.gateEvaluated, nextValues.gateEvaluated);
+  } else {
+    next.push({ minuteTs, ...nextValues });
+  }
+  if (next.length > BUCKETS_24H) {
+    return next.slice(next.length - BUCKETS_24H);
+  }
+  return next;
+}
+
+function sumBuckets(
+  buckets: RareCounterBucket[],
+  key: RareCounterKey,
+  takeLast: number,
+): number {
+  if (buckets.length === 0) return 0;
+  return buckets
+    .slice(Math.max(0, buckets.length - takeLast))
+    .reduce((acc, b) => acc + b[key], 0);
+}
+
+function addOrMergeKyleBucket(
+  prev: KyleMinuteBucket[],
+  minuteTs: number,
+  sampleCount: number,
+): KyleMinuteBucket[] {
+  const next = [...prev];
+  const last = next[next.length - 1];
+  if (last && last.minuteTs === minuteTs) {
+    last.sampleCount = Math.max(last.sampleCount, sampleCount);
+  } else {
+    next.push({ minuteTs, sampleCount });
+  }
+  if (next.length > BUCKETS_24H) {
+    return next.slice(next.length - BUCKETS_24H);
+  }
+  return next;
+}
+
+function maxKyleSampleCount(buckets: KyleMinuteBucket[], takeLast: number): number {
+  const window = buckets.slice(Math.max(0, buckets.length - takeLast));
+  return window.reduce((acc, b) => Math.max(acc, b.sampleCount), 0);
+}
+
 interface MarketEntry {
   slug: string;
   wallet_count: number;
@@ -247,6 +342,8 @@ export function RvfMetricsPanel() {
   const [heavyError, setHeavyError] = useState<string | null>(null);
   const [heavyData, setHeavyData] = useState<DiagnosticPayload | null>(null);
   const [heavyOpen, setHeavyOpen] = useState(false);
+  const [rareCounterBuckets, setRareCounterBuckets] = useState<RareCounterBucket[]>([]);
+  const [kyleMinuteBuckets, setKyleMinuteBuckets] = useState<KyleMinuteBucket[]>([]);
 
   useEffect(() => {
     fetch(REST_URL)
@@ -336,6 +433,33 @@ export function RvfMetricsPanel() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!snap || snap.error) return;
+    const minuteTs = minuteBucketTs(snap.ts_utc);
+    const sample: RareCounterValues = {
+      l2Eval: snap.pipeline?.l2_eval_60s ?? 0,
+      l3Eval: snap.pipeline?.l3_eval_60s ?? 0,
+      queueProcessed: snap.queue?.processed_60s ?? 0,
+      gateEvaluated: snap.gate?.evaluated_60s ?? 0,
+    };
+    setRareCounterBuckets((prev) => addOrMergeMinuteBucket(prev, minuteTs, sample));
+  }, [
+    snap?.ts_utc,
+    snap?.pipeline?.l2_eval_60s,
+    snap?.pipeline?.l3_eval_60s,
+    snap?.queue?.processed_60s,
+    snap?.gate?.evaluated_60s,
+    snap?.error,
+  ]);
+
+  useEffect(() => {
+    if (!snap || snap.error) return;
+    const minuteTs = minuteBucketTs(snap.ts_utc);
+    setKyleMinuteBuckets((prev) =>
+      addOrMergeKyleBucket(prev, minuteTs, snap.kyle?.sample_count ?? 0),
+    );
+  }, [snap?.ts_utc, snap?.kyle?.sample_count, snap?.error]);
+
   if (!snap || snap.error) {
     return (
       <div className="rounded-xl border border-slate-700 bg-panPanel p-4 text-sm text-slate-400">
@@ -358,6 +482,15 @@ export function RvfMetricsPanel() {
   const series = snap.series;
   const goLive = snap.go_live;
   const pipe = snap.pipeline;
+  const l2Eval1h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_1H);
+  const l2Eval24h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_24H);
+  const l3Eval1h = sumBuckets(rareCounterBuckets, "l3Eval", BUCKETS_1H);
+  const l3Eval24h = sumBuckets(rareCounterBuckets, "l3Eval", BUCKETS_24H);
+  const queueProcessed1h = sumBuckets(rareCounterBuckets, "queueProcessed", BUCKETS_1H);
+  const queueProcessed24h = sumBuckets(rareCounterBuckets, "queueProcessed", BUCKETS_24H);
+  const gateEval1h = sumBuckets(rareCounterBuckets, "gateEvaluated", BUCKETS_1H);
+  const gateEval24h = sumBuckets(rareCounterBuckets, "gateEvaluated", BUCKETS_24H);
+  const kyleSample1h = maxKyleSampleCount(kyleMinuteBuckets, BUCKETS_1H);
 
   const kylePct = ((kyle?.sample_count ?? 0) / 500);
 
@@ -439,7 +572,7 @@ export function RvfMetricsPanel() {
           <div className="flex justify-between text-xs text-slate-400 mt-1 flex-wrap gap-2">
             <span className="inline-flex items-center gap-1">
               <MetricInfoIcon definition={D["kyle.sample_count"]} />
-              {kyle?.sample_count ?? 0} / 500 樣本
+              {kyle?.sample_count ?? 0} / 500 樣本 (1h: {kyleSample1h})
             </span>
             <span className="inline-flex items-center gap-1">
               <MetricInfoIcon definition={D["kyle.distinct_assets"]} />
@@ -504,6 +637,14 @@ export function RvfMetricsPanel() {
             輸入/處理: {fmtNum(pipe?.input_to_processed_ratio_60s, 3)}
           </span>
           <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.l2_eval_60s"]} />
+            L2 eval(1h|24h): {l2Eval1h} | {l2Eval24h}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <MetricInfoIcon definition={D["pipeline.l3_eval_60s"]} />
+            L3 eval(1h|24h): {l3Eval1h} | {l3Eval24h}
+          </span>
+          <span className="inline-flex items-center gap-1">
             <MetricInfoIcon definition={D["pipeline.kyle_readiness_ratio"]} />
             Kyle準備度: {fmtNum(pipe?.kyle_readiness_ratio, 3)}
           </span>
@@ -516,6 +657,11 @@ export function RvfMetricsPanel() {
           <div className="mt-1 text-[11px] text-slate-500 inline-flex flex-wrap items-center gap-1">
             <MetricInfoIcon definition={D["pipeline.breakdown"]} />
             ready {pipe.active_window_breakdown.ready ?? 0} / warming {pipe.active_window_breakdown.warming ?? 0} / locked {pipe.active_window_breakdown.locked ?? 0} / total {pipe.active_window_breakdown.total ?? 0}
+          </div>
+        )}
+        {l2Eval1h === 0 && l3Eval1h === 0 && (
+          <div className="mt-1 text-[11px] text-slate-500">
+            L2/L3=0/0 代表目前 1h 視窗內尚未有事件進入 `_process_event`，不是欄位缺失。
           </div>
         )}
       </div>
@@ -552,7 +698,7 @@ export function RvfMetricsPanel() {
           </div>
           <div className="flex items-start gap-1">
             <MetricInfoIcon definition={D["queue.processed_60s"]} />
-            <span>已處理60s: <span className="text-slate-200">{queue?.processed_60s ?? 0}</span></span>
+            <span>已處理(1h|24h): <span className="text-slate-200">{queueProcessed1h} | {queueProcessed24h}</span></span>
           </div>
           <div className="flex items-start gap-1">
             <MetricInfoIcon definition={D["queue.mean_p_t1"]} />
@@ -579,7 +725,7 @@ export function RvfMetricsPanel() {
         <div className="grid grid-cols-3 gap-x-4 text-xs text-slate-400 mb-1">
           <div className="flex items-start gap-1">
             <MetricInfoIcon definition={D["gate.evaluated_60s"]} />
-            <span>評估60s: <span className="text-slate-200">{gate?.evaluated_60s ?? 0}</span></span>
+            <span>評估(1h|24h): <span className="text-slate-200">{gateEval1h} | {gateEval24h}</span></span>
           </div>
           <div className="flex items-start gap-1">
             <MetricInfoIcon definition={D["gate.pass_60s"]} />
@@ -753,7 +899,7 @@ export function RvfMetricsPanel() {
               </button>
             </div>
             <div className="px-4 py-2 text-[11px] text-slate-400 border-b border-slate-700">
-              generated: {heavyData.generated_at ?? "—"} | elapsed: {heavyData.elapsed_ms ?? "—"} ms
+              generated (HKT): <span title={heavyData.generated_at ?? ""}>{fmtHkt(heavyData.generated_at)}</span> | elapsed: {heavyData.elapsed_ms ?? "—"} ms
               {heavyData.cache_hit ? " | cached" : ""}
               {heavyData.summary && (
                 <span className="ml-2">

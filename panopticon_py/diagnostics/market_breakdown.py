@@ -1,5 +1,5 @@
 """
-D182: Heavy market-level diagnostics (manual / on-demand only).
+D184: Heavy market-level diagnostics (manual / on-demand only).
 
 Aggregates hunting_shadow_hits, kyle_lambda_samples, polymarket_link_map,
 and optional data/entropy_status.json for human-readable breakdown.
@@ -135,6 +135,7 @@ def build_market_breakdown(
     _ej_ref: dict[str, Any] | None = None
     entropy_tokens: dict[str, Any] = {}
     entropy_token_unique_count = 0
+    entropy_key_collisions = 0
     entropy_load_error: str | None = None
     try:
         ent_t0 = time.perf_counter()
@@ -144,19 +145,28 @@ def build_market_breakdown(
         raw_tokens = ej.get("tokens") if isinstance(ej, dict) and "tokens" in ej else ej
         if isinstance(raw_tokens, dict):
             entropy_token_unique_count = len(raw_tokens)
-            # D181b: normalize key formats to tolerate casing / optional 0x prefix.
+            # D184: collision-aware normalization.
+            # Policy: setdefault (first-write wins), with explicit collision counter.
             for k, v in raw_tokens.items():
                 if not isinstance(k, str):
                     continue
                 lk = k.lower()
-                entropy_tokens[lk] = v
-                entropy_tokens[lk.removeprefix("0x")] = v
+                if entropy_tokens.setdefault(lk, v) is not v:
+                    entropy_key_collisions += 1
+                bare = lk.removeprefix("0x")
+                if bare != lk and entropy_tokens.setdefault(bare, v) is not v:
+                    entropy_key_collisions += 1
         else:
             entropy_tokens = {}
             entropy_token_unique_count = 0
         elapsed_ms = (time.perf_counter() - ent_t0) * 1000.0
         if elapsed_ms > 50.0:
             logger.warning("[DIAG][ENTROPY_LOAD_SLOW] elapsed_ms=%.1f path=%s", elapsed_ms, entropy_path)
+        if entropy_key_collisions > 0:
+            logger.warning(
+                "[DIAG][ENTROPY_KEY_COLLISION] count=%d both 0x-prefixed and bare token forms coexist",
+                entropy_key_collisions,
+            )
     except FileNotFoundError:
         entropy_load_error = f"entropy_status not found: {entropy_path}"
         logger.warning("[DIAG][ENTROPY_LOAD] %s", entropy_load_error)
@@ -235,5 +245,6 @@ def build_market_breakdown(
             "entropy_snapshot_stale": entropy_snapshot_stale,
             "entropy_total_windows": entropy_total_windows,
             "entropy_z_ready_count": entropy_z_ready_count,
+            "entropy_key_collisions": entropy_key_collisions,
         },
     }

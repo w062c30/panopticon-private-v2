@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-PROCESS_VERSION = "v0.5.12-D179c"   # ← AGENT: bump on every change  # D138-P0: +top-level exception + crash manifest + D138-P1: +heartbeat_loop warning  # D139-P0: +WS reconnection loop  # D140-P0: acquire_singleton in __main__ (not run())  # D141-P2: re-fetch token_ids on each WS reconnect  # D142-P1: sync self._token_ids on reconnect  # D142-P2: fetch_t5_token_ids async httpx  # D146-P0: crash-protection (wait_for timeouts, run() restructure, ping_timeout, crash_time manifest)  # D148-1: arb_stats table added to DB schema  # D148-2: _flush_stats() writer + opp/reconnect counters  # D149-1: _token_ids dataclass field explicit init  # D149-2: reconnect_count excludes first connection  # D149-4: opportunities_log deque(maxlen=10000)  # D150-2: books memory cap via _book_last_update stale cleanup  # D179c: +[ARB_TOKENS] self-explaining log at startup
+PROCESS_VERSION = "v0.5.13-D186"   # D186: payload-key compatibility + independent arb_stats flush loop + flush observability
 
 ARB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 ARB_THRESHOLD = 0.97
@@ -427,8 +427,24 @@ class ArbScanner:
             self._last_flush_ts = time.time()
             # D148-2: reset _last_stats_log so _on_message 60s guard doesn't re-flush
             self._last_stats_log = time.time()
+            logger.info(
+                "[ARB_STATS_FLUSH] ts=%s subscribed=%d active=%d updates=%d opp_total=%d",
+                now_iso, n_subscribed, active_tokens, total_updates, self._opp_count_total,
+            )
         except Exception as e:
             logger.debug("[ARB_STATS] write failed: %s", e)
+
+    async def _stats_flush_loop(self, interval_sec: float = 60.0) -> None:
+        """
+        D186: Independent persistence loop so arb_stats freshness does not depend
+        on _on_message() key compatibility or message frequency.
+        """
+        while not self._stop_event.is_set():
+            try:
+                await self._flush_stats()
+            except Exception as exc:
+                logger.debug("[ARB_STATS_LOOP] flush failed: %s", exc)
+            await asyncio.sleep(interval_sec)
 
     async def run(self) -> None:
         """
@@ -494,19 +510,30 @@ class ArbScanner:
             logger.warning("[ARB] No T5 tokens at startup — WS starts with empty list; refresh on first reconnect")
 
         # Start background fee refresh loop (once per process lifetime)
+        stats_task: asyncio.Task | None = None
         if not self._refresh_started:
             self._refresh_started = True
             asyncio.create_task(self._fee_rate_refresh_loop())
+        # D186: independent flush loop for arb_stats liveness
+        stats_task = asyncio.create_task(self._stats_flush_loop())
 
         # ── Step 2: WS listener — handles all reconnects + token refresh internally ─
-        while True:
-            try:
-                await self._connect_and_listen(current_token_ids)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning("[ARB] Error in run loop: %s; reconnecting in 10s…", e)
-                await asyncio.sleep(10)
+        try:
+            while True:
+                try:
+                    await self._connect_and_listen(current_token_ids)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning("[ARB] Error in run loop: %s; reconnecting in 10s…", e)
+                    await asyncio.sleep(10)
+        finally:
+            if stats_task is not None:
+                stats_task.cancel()
+                try:
+                    await stats_task
+                except asyncio.CancelledError:
+                    pass
 
     async def _connect_and_listen(self, token_ids: list[str]) -> None:
         """
@@ -605,8 +632,10 @@ class ArbScanner:
                     )
 
     async def _on_message(self, data: dict) -> None:
-        # D120: Guard against missing market_id
-        market_id = data.get("market_id") if isinstance(data, dict) else None
+        # D186: compatibility for payloads that provide "market" instead of "market_id".
+        market_id = None
+        if isinstance(data, dict):
+            market_id = data.get("market_id") or data.get("market")
         if not market_id:
             return
 
