@@ -54,6 +54,9 @@ def test_read_rvf_merges_orchestrator_metrics(app_module, tmp_path):
     assert om["gate"]["pass_count_60s"] == 0
     assert om["gate"]["abort_count_60s"] == 2
     assert om["_written_at"] == 1715123456.78
+    assert "stale_seconds" in om
+    assert om["stale_seconds"] is not None
+    assert om["stale_seconds"] >= 0
 
 
 def test_read_rvf_missing_sidecar_no_block(app_module, tmp_path):

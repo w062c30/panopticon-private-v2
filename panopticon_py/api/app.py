@@ -31,7 +31,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.50-D187"   # D187: merge orchestrator orch_rvf_metrics.json into RVF snapshot API/WS
+PROCESS_VERSION = "v1.1.51-D188"   # D188: orchestrator_metrics stale_seconds; /api/diagnostics/execution_reasons
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -312,6 +312,7 @@ _rvf_ws_manager = _WsConnectionManager()
 def _merge_orchestrator_rvf_sidecar(base: dict) -> None:
     """
     D187: Attach orchestrator MetricsCollector snapshot subset under ``orchestrator_metrics``.
+    D188: Add ``stale_seconds`` from sidecar ``_written_at`` for health checks.
     Mutates ``base`` in place. Does not overwrite legacy ``pipeline`` / ``gate`` keys.
     """
     path = os.getenv("ORCH_RVF_METRICS_PATH", "data/orch_rvf_metrics.json")
@@ -320,6 +321,11 @@ def _merge_orchestrator_rvf_sidecar(base: dict) -> None:
             orch = json.load(f)
         pipe = orch.get("pipeline") or {}
         gate = orch.get("gate") or {}
+        written_at = orch.get("_written_at")
+        stale_seconds: float | None = None
+        if isinstance(written_at, (int, float)) and float(written_at) > 0:
+            stale_seconds = round(max(0.0, time.time() - float(written_at)), 1)
+
         base["orchestrator_metrics"] = {
             "ts_utc": orch.get("ts_utc"),
             "pipeline": {
@@ -331,7 +337,8 @@ def _merge_orchestrator_rvf_sidecar(base: dict) -> None:
                 "pass_count_60s": int(gate.get("pass_count_60s") or 0),
                 "abort_count_60s": int(gate.get("abort_count_60s") or 0),
             },
-            "_written_at": orch.get("_written_at"),
+            "_written_at": written_at,
+            "stale_seconds": stale_seconds,
         }
     except Exception:
         pass
@@ -343,7 +350,7 @@ async def ws_rvf_metrics(ws: WebSocket) -> None:
     Push RVF live metrics snapshot to connected dashboards every 1 second.
 
     Reads ``data/rvf_live_snapshot.json`` (radar MetricsCollector, ~5s) and merges
-    ``orchestrator_metrics`` from ``data/orch_rvf_metrics.json`` when present (D187).
+    ``orchestrator_metrics`` (incl. ``stale_seconds``, D188) when present (D187/D188).
     """
     await _rvf_ws_manager._connect(ws)
     try:

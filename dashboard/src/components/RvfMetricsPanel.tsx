@@ -149,6 +149,8 @@ interface RvfSnapshot {
       abort_count_60s?: number;
     };
     _written_at?: number;
+    /** D188: server-computed age of sidecar write (seconds). */
+    stale_seconds?: number | null;
   };
   arb?: ArbSnap;
   error?: boolean;
@@ -503,6 +505,11 @@ export function RvfMetricsPanel() {
     orch?._written_at != null && Number.isFinite(orch._written_at)
       ? Math.max(0, Date.now() / 1000 - orch._written_at)
       : null;
+  const orchStaleBackend = orch?.stale_seconds;
+  const orchDisplayAgeSec =
+    orchStaleBackend != null && Number.isFinite(orchStaleBackend)
+      ? orchStaleBackend
+      : orchSidecarAgeSec;
   const l2Eval1h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_1H);
   const l2Eval24h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_24H);
   const l3Eval1h = sumBuckets(rareCounterBuckets, "l3Eval", BUCKETS_1H);
@@ -643,9 +650,16 @@ export function RvfMetricsPanel() {
           >
             L2/L3 source: {orchMetricsSource}
           </span>
-          {orchSidecarAgeSec != null && (
-            <span className="text-[10px] text-slate-500" title="orchestrator_metrics._written_at 距今秒數">
-              sidecar Δt: {orchSidecarAgeSec.toFixed(0)}s
+          {orchDisplayAgeSec != null && (
+            <span
+              className={`text-[10px] ${
+                (orchStaleBackend ?? orchSidecarAgeSec ?? 0) > 30
+                  ? "text-amber-400"
+                  : "text-slate-500"
+              }`}
+              title="sidecar 距今秒數（優先 API stale_seconds）"
+            >
+              sidecar Δt: {orchDisplayAgeSec.toFixed(0)}s
             </span>
           )}
         </div>

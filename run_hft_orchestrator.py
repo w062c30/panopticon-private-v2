@@ -82,7 +82,7 @@ logging.getLogger().addHandler(_orch_file_handler)
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.17-D187"   # D187: orchestrator RVF metrics sidecar (orch_rvf_metrics.json)
+PROCESS_VERSION = "v1.7.18-D188"   # D188: sidecar path via ORCH_RVF_METRICS_PATH (RULE-PATH-1)
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -815,29 +815,44 @@ async def main_async() -> int:
     self_check_task = asyncio.create_task(_self_check_manifest(), name="self_check_manifest")
     logger.info("[ORCH] Self-check manifest task launched")
 
-    # D187: Orchestrator MetricsCollector sidecar for RVF merge (same PID as signal_engine).
+    # D187/D188: Orchestrator MetricsCollector sidecar for RVF merge (same PID as signal_engine).
     async def _orchestrator_metrics_json_loop(
         *,
-        path: str = "data/orch_rvf_metrics.json",
+        path: str | None = None,
         interval_sec: float = 5.0,
     ) -> None:
+        """
+        D188: Resolve path inside the coroutine (not module scope) so ORCH_RVF_METRICS_PATH
+        can be set at process start; aligns with backend merge (RULE-PATH-1).
+        """
+        import os as _os
+
         from panopticon_py.metrics import get_collector
 
+        resolved_path = path if path is not None else _os.getenv(
+            "ORCH_RVF_METRICS_PATH", "data/orch_rvf_metrics.json"
+        )
         mc = get_collector()
         while True:
             try:
                 await asyncio.sleep(interval_sec)
-                mc.persist_json(path=path)
+                mc.persist_json(path=resolved_path)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("[ORCH_METRICS_JSON][ERROR] %s", exc)
+                logger.warning(
+                    "[ORCH_METRICS_JSON][ERROR] path=%s err=%s", resolved_path, exc
+                )
 
+    _orch_sidecar_path = os.getenv("ORCH_RVF_METRICS_PATH", "data/orch_rvf_metrics.json")
     orch_metrics_task = asyncio.create_task(
         _orchestrator_metrics_json_loop(),
         name="orch_metrics_json",
     )
-    logger.info("[ORCH] Orchestrator metrics sidecar loop launched (5s -> %s)", "data/orch_rvf_metrics.json")
+    logger.info(
+        "[ORCH] Orchestrator metrics sidecar loop launched (5s -> %s)",
+        _orch_sidecar_path,
+    )
 
     # NOTE: legacy discovery_loop (scripts/start_shadow_hydration.py) is separate.
 
