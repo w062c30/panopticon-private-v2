@@ -31,7 +31,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.49-D180"   # D180: +/api/diagnostics/market_breakdown (heavy manual diagnostics); PipelineStats in RVF snapshot
+PROCESS_VERSION = "v1.1.50-D187"   # D187: merge orchestrator orch_rvf_metrics.json into RVF snapshot API/WS
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -309,14 +309,41 @@ async def ws_stream(ws: WebSocket) -> None:
 _rvf_ws_manager = _WsConnectionManager()
 
 
+def _merge_orchestrator_rvf_sidecar(base: dict) -> None:
+    """
+    D187: Attach orchestrator MetricsCollector snapshot subset under ``orchestrator_metrics``.
+    Mutates ``base`` in place. Does not overwrite legacy ``pipeline`` / ``gate`` keys.
+    """
+    path = os.getenv("ORCH_RVF_METRICS_PATH", "data/orch_rvf_metrics.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            orch = json.load(f)
+        pipe = orch.get("pipeline") or {}
+        gate = orch.get("gate") or {}
+        base["orchestrator_metrics"] = {
+            "ts_utc": orch.get("ts_utc"),
+            "pipeline": {
+                "l2_eval_60s": int(pipe.get("l2_eval_60s") or 0),
+                "l3_eval_60s": int(pipe.get("l3_eval_60s") or 0),
+            },
+            "gate": {
+                "evaluated_60s": int(gate.get("evaluated_60s") or 0),
+                "pass_count_60s": int(gate.get("pass_count_60s") or 0),
+                "abort_count_60s": int(gate.get("abort_count_60s") or 0),
+            },
+            "_written_at": orch.get("_written_at"),
+        }
+    except Exception:
+        pass
+
+
 @app.websocket("/ws/rvf")
 async def ws_rvf_metrics(ws: WebSocket) -> None:
     """
     Push RVF live metrics snapshot to connected dashboards every 1 second.
 
-    Reads from data/rvf_live_snapshot.json (written by MetricsCollector.persist()
-    inside run_radar.py every 60s). This JSON file is the cross-process
-    communication channel between the orchestrator and the FastAPI server.
+    Reads ``data/rvf_live_snapshot.json`` (radar MetricsCollector, ~5s) and merges
+    ``orchestrator_metrics`` from ``data/orch_rvf_metrics.json`` when present (D187).
     """
     await _rvf_ws_manager._connect(ws)
     try:
@@ -341,13 +368,15 @@ def api_rvf_snapshot() -> dict:
 
 
 def _read_rvf_snapshot() -> dict:
-    """Read last MetricsCollector snapshot from JSON file."""
+    """Read radar RVF JSON and merge orchestrator sidecar (D187)."""
     try:
         snap_path = os.getenv("RVF_SNAPSHOT_PATH", "data/rvf_live_snapshot.json")
-        with open(snap_path) as f:
-            return json.load(f)
+        with open(snap_path, encoding="utf-8") as f:
+            base = json.load(f)
     except Exception:
         return {"error": "snapshot not available"}
+    _merge_orchestrator_rvf_sidecar(base)
+    return base
 
 
 @app.get("/healthz")

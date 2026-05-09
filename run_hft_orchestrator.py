@@ -82,7 +82,7 @@ logging.getLogger().addHandler(_orch_file_handler)
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.16-D185"   # D185: RVF L2/L3 eval counter wiring
+PROCESS_VERSION = "v1.7.17-D187"   # D187: orchestrator RVF metrics sidecar (orch_rvf_metrics.json)
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -815,6 +815,30 @@ async def main_async() -> int:
     self_check_task = asyncio.create_task(_self_check_manifest(), name="self_check_manifest")
     logger.info("[ORCH] Self-check manifest task launched")
 
+    # D187: Orchestrator MetricsCollector sidecar for RVF merge (same PID as signal_engine).
+    async def _orchestrator_metrics_json_loop(
+        *,
+        path: str = "data/orch_rvf_metrics.json",
+        interval_sec: float = 5.0,
+    ) -> None:
+        from panopticon_py.metrics import get_collector
+
+        mc = get_collector()
+        while True:
+            try:
+                await asyncio.sleep(interval_sec)
+                mc.persist_json(path=path)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[ORCH_METRICS_JSON][ERROR] %s", exc)
+
+    orch_metrics_task = asyncio.create_task(
+        _orchestrator_metrics_json_loop(),
+        name="orch_metrics_json",
+    )
+    logger.info("[ORCH] Orchestrator metrics sidecar loop launched (5s -> %s)", "data/orch_rvf_metrics.json")
+
     # NOTE: legacy discovery_loop (scripts/start_shadow_hydration.py) is separate.
 
     logger.info("[ORCH] All 7 tracks launched — monitoring for shutdown")
@@ -1210,6 +1234,7 @@ async def main_async() -> int:
             radar_task, ofi_task, graph_task, polygon_task, se_task,
             insider_task, te_recompute_task, whale_task, discovery_task,
             fanout_task, transfer_graph_ingest_task, fingerprint_task,
+            orch_metrics_task,
         ] if t.done() and t.exception()]
         for task in crashed:
             logger.error("[ORCH] %s crashed: %s", task.get_name(), task.exception())
@@ -1251,7 +1276,7 @@ async def main_async() -> int:
             radar_task, ofi_task, graph_task, polygon_task, se_task,
             insider_task, te_recompute_task, whale_task, discovery_task,
             fanout_task, transfer_graph_ingest_task, transfer_graph_init_task,
-            fingerprint_task, self_check_task,
+            fingerprint_task, self_check_task, orch_metrics_task,
         ]:
         task.cancel()
         try:

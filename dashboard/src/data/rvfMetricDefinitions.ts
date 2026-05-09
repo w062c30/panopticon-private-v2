@@ -308,16 +308,18 @@ export const RVF_METRIC_DEFINITIONS: Record<string, MetricDefinition> = {
   "pipeline.l2_eval_60s": {
     key: "pipeline.l2_eval_60s",
     label: "L2 eval (1h | 24h)",
-    meaning: "前端分鐘 bucket 聚合的 L2 入口活動度長窗觀測（來源仍為 `l2_eval_60s`）。",
-    expected: "1h/24h > 0 但 60s 常為 0 屬稀有事件常態。",
-    controls: "只影響可視化，不改 `_process_event` 或任何後端計數。",
+    meaning:
+      "D187：優先使用 API 合併的 `orchestrator_metrics.pipeline.l2_eval_60s`（orchestrator `signal_engine` 計數）；缺 sidecar 時 fallback 雷達快照。前端以分鐘 bucket 聚合 1h/24h。",
+    expected: "1h/24h > 0 但 60s 常為 0 屬稀有事件常態；請看面板 `L2/L3 source` 標籤。",
+    controls: "僅觀測；不改 `_process_event`。",
   },
   "pipeline.l3_eval_60s": {
     key: "pipeline.l3_eval_60s",
     label: "L3 eval (1h | 24h)",
-    meaning: "前端分鐘 bucket 聚合的 L3 前置評估活動度（來源仍為 `l3_eval_60s`）。",
-    expected: "通常 <= L2；1h 與 24h 同為 0 才較可能代表長窗無事件。",
-    controls: "只影響前端顯示，不改 `fast_execution_gate` 流程。",
+    meaning:
+      "D187：優先 `orchestrator_metrics.pipeline.l3_eval_60s`（`fast_execution_gate` 前計數）；缺 sidecar 時 fallback 雷達快照。前端以分鐘 bucket 聚合 1h/24h。",
+    expected: "通常 <= L2；解讀零值時須確認 source=orchestrator。",
+    controls: "僅觀測；不改 gate 邏輯。",
   },
   "pipeline.breakdown": {
     key: "pipeline.breakdown",

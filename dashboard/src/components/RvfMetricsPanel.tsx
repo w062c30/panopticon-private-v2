@@ -139,6 +139,17 @@ interface RvfSnapshot {
     paper_win_count?: number;
   };
   pipeline?: PipelineSnap;
+  /** D187: Orchestrator MetricsCollector sidecar (merged by backend from orch_rvf_metrics.json). */
+  orchestrator_metrics?: {
+    ts_utc?: string;
+    pipeline?: { l2_eval_60s?: number; l3_eval_60s?: number };
+    gate?: {
+      evaluated_60s?: number;
+      pass_count_60s?: number;
+      abort_count_60s?: number;
+    };
+    _written_at?: number;
+  };
   arb?: ArbSnap;
   error?: boolean;
 }
@@ -436,15 +447,19 @@ export function RvfMetricsPanel() {
   useEffect(() => {
     if (!snap || snap.error) return;
     const minuteTs = minuteBucketTs(snap.ts_utc);
+    const orch = snap.orchestrator_metrics;
     const sample: RareCounterValues = {
-      l2Eval: snap.pipeline?.l2_eval_60s ?? 0,
-      l3Eval: snap.pipeline?.l3_eval_60s ?? 0,
+      l2Eval: orch?.pipeline?.l2_eval_60s ?? snap.pipeline?.l2_eval_60s ?? 0,
+      l3Eval: orch?.pipeline?.l3_eval_60s ?? snap.pipeline?.l3_eval_60s ?? 0,
       queueProcessed: snap.queue?.processed_60s ?? 0,
-      gateEvaluated: snap.gate?.evaluated_60s ?? 0,
+      gateEvaluated: orch?.gate?.evaluated_60s ?? snap.gate?.evaluated_60s ?? 0,
     };
     setRareCounterBuckets((prev) => addOrMergeMinuteBucket(prev, minuteTs, sample));
   }, [
     snap?.ts_utc,
+    snap?.orchestrator_metrics?.pipeline?.l2_eval_60s,
+    snap?.orchestrator_metrics?.pipeline?.l3_eval_60s,
+    snap?.orchestrator_metrics?.gate?.evaluated_60s,
     snap?.pipeline?.l2_eval_60s,
     snap?.pipeline?.l3_eval_60s,
     snap?.queue?.processed_60s,
@@ -482,6 +497,12 @@ export function RvfMetricsPanel() {
   const series = snap.series;
   const goLive = snap.go_live;
   const pipe = snap.pipeline;
+  const orch = snap.orchestrator_metrics;
+  const orchMetricsSource = orch ? "orchestrator" : "radar-fallback";
+  const orchSidecarAgeSec =
+    orch?._written_at != null && Number.isFinite(orch._written_at)
+      ? Math.max(0, Date.now() / 1000 - orch._written_at)
+      : null;
   const l2Eval1h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_1H);
   const l2Eval24h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_24H);
   const l3Eval1h = sumBuckets(rareCounterBuckets, "l3Eval", BUCKETS_1H);
@@ -610,7 +631,24 @@ export function RvfMetricsPanel() {
 
       {/* D180 Pipeline */}
       <div className="mb-3 rounded-lg border border-slate-600/80 p-2 bg-slate-900/40">
-        <SectionHeader title="Pipeline 衍生 (L1)" dot="yellow" />
+        <div className="flex flex-wrap items-center gap-2 mb-1">
+          <SectionHeader title="Pipeline 衍生 (L1)" dot="yellow" />
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded border ${
+              orchMetricsSource === "orchestrator"
+                ? "border-emerald-700/60 text-emerald-200 bg-emerald-950/40"
+                : "border-amber-700/60 text-amber-200 bg-amber-950/40"
+            }`}
+            title="L2/L3/gate(1h|24h) 計數主來源：orchestrator sidecar 或 radar 快照 fallback"
+          >
+            L2/L3 source: {orchMetricsSource}
+          </span>
+          {orchSidecarAgeSec != null && (
+            <span className="text-[10px] text-slate-500" title="orchestrator_metrics._written_at 距今秒數">
+              sidecar Δt: {orchSidecarAgeSec.toFixed(0)}s
+            </span>
+          )}
+        </div>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
           <span className="inline-flex items-center gap-1">
             <MetricInfoIcon definition={D["pipeline.z_ready_ratio"]} />
@@ -659,9 +697,15 @@ export function RvfMetricsPanel() {
             ready {pipe.active_window_breakdown.ready ?? 0} / warming {pipe.active_window_breakdown.warming ?? 0} / locked {pipe.active_window_breakdown.locked ?? 0} / total {pipe.active_window_breakdown.total ?? 0}
           </div>
         )}
-        {l2Eval1h === 0 && l3Eval1h === 0 && (
+        {l2Eval1h === 0 && l3Eval1h === 0 && orchMetricsSource === "orchestrator" && (
           <div className="mt-1 text-[11px] text-slate-500">
-            L2/L3=0/0 代表目前 1h 視窗內尚未有事件進入 `_process_event`，不是欄位缺失。
+            L2/L3=0/0（1h）：目前視窗內 orchestrator 未觀測到 L2/L3 計數增量；來源為 orchestrator sidecar，非欄位缺失。
+          </div>
+        )}
+        {l2Eval1h === 0 && l3Eval1h === 0 && orchMetricsSource === "radar-fallback" && (
+          <div className="mt-1 text-[11px] text-slate-500">
+            L2/L3=0/0（1h）：來源為 radar-fallback（缺 orchestrator sidecar），無法以此斷言 `_process_event` 是否閒置；請確認 orchestrator 與{" "}
+            <code className="text-slate-400">data/orch_rvf_metrics.json</code>。
           </div>
         )}
       </div>
@@ -669,7 +713,20 @@ export function RvfMetricsPanel() {
       {/* Arb snapshot (merged by radar after persist_json) */}
       {snap.arb?.present && (
         <div className="mb-3 rounded-lg border border-slate-600/60 p-2">
-          <SectionHeader title="Arb Scanner (快照)" />
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <SectionHeader title="Arb Scanner (快照)" />
+            {snap.arb.stale_seconds != null && snap.arb.stale_seconds > 120 && (
+              snap.arb.stale_seconds > 300 ? (
+                <span className="text-[10px] px-1.5 py-0.5 rounded border border-red-700/70 text-red-200 bg-red-950/50">
+                  writer CRIT
+                </span>
+              ) : (
+                <span className="text-[10px] px-1.5 py-0.5 rounded border border-yellow-700/70 text-yellow-100 bg-yellow-950/40">
+                  writer WARN
+                </span>
+              )
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-2 text-xs text-slate-400">
             <span className="inline-flex items-center gap-1">
               <MetricInfoIcon definition={D["arb.stale"]} />
