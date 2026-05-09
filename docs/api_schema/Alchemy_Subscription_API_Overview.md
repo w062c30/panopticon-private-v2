@@ -1,0 +1,152 @@
+# Subscription API Overview
+
+> Learn how to subscribe to pending transactions, log events, new blocks, account and program updates, and more using WebSockets on Ethereum, Polygon, Arbitrum, Optimism, and Solana.
+
+> For the complete documentation index, see [llms.txt](/docs/llms.txt).
+
+# Getting started
+
+The primary way to use the Subscription API is through standard JSON-RPC methods. See the [Using JSON-RPC requests section](#using-json-rpc-requests-to-access-websockets) below to get started.
+
+# Subscription API endpoints
+
+For a full list of Subscription API endpoints and supported chains see the [Subscription API Endpoints](/docs/reference/subscription-api-endpoints) doc. Below are the subscription endpoints available and the corresponding docs for each of them.
+
+<Info>
+  Note: `alchemy_minedTransactions` and `alchemy_pendingTransactions` are only
+  supported on the following: Ethereum, Arbitrum, Polygon and Optimism.
+</Info>
+
+| Subscription Type                                                     | Description                                                                                                            |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| [alchemy\_minedTransactions](/docs/reference/alchemy-minedtransactions)     | Emits full transaction objects or hashes that are mined on the network based on provided filters and block tags.       |
+| [alchemy\_pendingTransactions](/docs/reference/alchemy-pendingtransactions) | Emits full transaction objects or hashes that are sent to the network, marked as "pending", based on provided filters. |
+| [newPendingTransactions](/docs/reference/newpendingtransactions)           | Emits transaction hashes that are sent to the network and marked as "pending".                                         |
+| [newHeads](/docs/reference/newheads)                                       | Emits new blocks that are added to the blockchain.                                                                     |
+| [logs](/docs/reference/logs)                                               | Emits logs attached to a new block that match certain topic filters.                                                   |
+| [monadNewHeads](/docs/reference/monadnewheads)                             | Fires a notification each time as soon as a block is Proposed and the node has a chance to speculatively execute.     |
+| [monadLogs](/docs/reference/monadlogs)                                     | Emits logs attached to a new block that match certain topic filters as soon as the block is Proposed and the node has a chance to speculatively execute.                  |
+
+## Solana subscription endpoints
+
+Solana uses native `*Subscribe` / `*Unsubscribe` PubSub methods (not `eth_subscribe`). Each `*Subscribe` call returns a numeric subscription id that you pass to the matching `*Unsubscribe` to cancel the stream. See the [Solana Subscription API Endpoints](/docs/reference/solana-subscription-api-endpoints) index for shared request/notification format details.
+
+<Info>
+  **Pricing:** See the [Solana Subscription API Endpoints](/docs/reference/solana-subscription-api-endpoints#pricing) page for a full breakdown.
+</Info>
+
+**Accounts**
+
+| Subscription Type                                         | Description                                                            |
+| --------------------------------------------------------- | ---------------------------------------------------------------------- |
+| [accountSubscribe](/docs/reference/account-subscribe)     | Subscribe to notifications when one account's lamports or data change. |
+| [programSubscribe](/docs/reference/program-subscribe)     | Subscribe to notifications for accounts owned by a program.            |
+
+**Transactions**
+
+| Subscription Type                                             | Description                                                      |
+| ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| [logsSubscribe](/docs/reference/logs-subscribe)               | Subscribe to transaction log messages that match a log filter.   |
+| [signatureSubscribe](/docs/reference/signature-subscribe)     | Subscribe to status notifications for one transaction signature. |
+
+**Cluster**
+
+| Subscription Type                                                       | Description                                                          |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| [rootSubscribe](/docs/reference/root-subscribe)                         | Subscribe to notifications when the validator sets a new root slot.  |
+| [slotSubscribe](/docs/reference/slot-subscribe)                         | Subscribe to notifications when the validator processes a new slot.  |
+
+# What are WebSockets and how do they differ from HTTP?
+
+WebSocket is a bidirectional communication protocol that maintains a network connection between a server and a client. Unlike HTTP, with WebSocket you don't need to continuously make requests when you want information.
+
+Instead, an open WebSocket connection can push network updates to you by allowing subscriptions to certain network states, such as new transactions or blocks being added to the blockchain.
+
+<Warning>
+  **Keep subscription scope narrow**
+
+  WebSocket subscriptions on Alchemy are billed based on the bandwidth
+  delivered as part of the subscription. Broad or unfiltered subscriptions can
+  produce high event volumes, especially for pending or mined transaction
+  streams.
+
+  To keep usage predictable:
+
+  * Prefer narrow filters when the subscription supports them.
+  * Prefer smaller payloads, such as hashes, when you do not need full
+    transaction objects.
+  * Set [usage limits](/docs/how-to-set-usage-limits-and-alerts-for-your-account)
+    and [usage alerts](/docs/dashboard-alerts) before running high-volume
+    streams in production.
+
+  For pricing details, see
+  [Compute Unit Costs](/docs/reference/compute-unit-costs#webhooks-and-subscription-apis).
+</Warning>
+
+## Using JSON-RPC requests to access WebSockets
+
+The `eth_subscribe` and `eth_unsubscribe` JSON-RPC methods allow you to access WebSockets.
+
+To begin, open a WebSocket using the WebSocket URL for your app. You can find your app's WebSocket URL by opening the app's page in the [Alchemy Dashboard](https://dashboard.alchemy.com/signup) and clicking "View Key".
+
+Note that your app's URL for WebSockets is different from its URL for HTTP requests, but both can be found in the app's "Network" tab.
+
+![](https://alchemyapi-res.cloudinary.com/image/upload/v1764180092/docs/api-reference/websockets/2cbc56a-image.png)
+
+Next, install a command line tool for making WebSocket requests such as [wscat](https://github.com/websockets/wscat). Using `wscat`, you can send requests as follows:
+
+<CodeGroup>
+  ```shell Shell
+  $ wscat -c wss://eth-mainnet.ws.g.alchemy.com/v2/demo
+
+  // create subscription
+
+  > {"id": 1, "method": "eth_subscribe", "params": ["newHeads"]}
+
+  < {"jsonrpc":"2.0","id":1,"result":"0xcd0c3e8af590364c09d0fa6a1210faf5"}
+
+  // incoming notifications
+
+  < {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xcd0c3e8af590364c09d0fa6a1210faf5","result":{"difficulty":"0xd9263f42a87",<...>, "uncles":[]}}}
+  < {"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xcd0c3e8af590364c09d0fa6a1210faf5","result":{"difficulty":"0xd90b1a7ad02", <...>, "uncles":["0x80aacd1ea4c9da32efd8c2cc9ab38f8f70578fcd46a1a4ed73f82f3e0957f936"]}}}
+
+  // cancel subscription
+
+  > {"id": 1, "method": "eth_unsubscribe", "params": ["0xcd0c3e8af590364c09d0fa6a1210faf5"]}
+
+  < {"jsonrpc":"2.0","id":1,"result":true}
+  ```
+</CodeGroup>
+
+<Warning>
+  **Don't use HTTP methods over WebSockets**
+
+  Though it's currently possible to send all your HTTP requests over WebSocket connections, we discourage doing so. You should only send `eth_subscribe` and `eth_unsubscribe` requests over WebSockets.
+
+  This is for several reasons:
+
+  * You won't receive HTTP status codes in WebSocket responses, which can be useful and actionable.
+  * Because individual HTTP requests are load-balanced in our infrastructure to the fastest possible server, you'll add additional latency by sending JSON-RPC requests over WebSocket connections.
+  * WebSocket client-side handling has many tricky edge cases and silent failure modes, which can make your dApp less stable.
+</Warning>
+
+# WebSocket limits
+
+The following limits apply for WebSocket connections:
+
+* There is a limit of **100 WebSocket connections** for the FREE tier and **2,000 WebSocket connections** for all other tiers.
+* There is a limit of **1,000 unique subscriptions** per WebSocket connection.
+* The maximum size of a JSON-RPC `batch` request that can be sent over a WebSocket connection is 1000
+* The maximum number of concurrent JSON-RPC requests (i.e. requests awaiting responses) on a single WebSocket connection is 200
+
+***
+
+# Error codes
+
+| Error Code | Error Message                                                                                                                                         | Solution                                                                                                                                                         |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `32600`    | `"Sorry, the maximum batch request size is 1000. Please reduce the size of your request and try again."`                                              | Occurs when you attempt to send high-volume JSON-RPC traffic over WebSocket connections. We recommend sending this traffic over HTTP instead to optimize server backends. |
+| `1008`     | `"WebSocket connection limit reached for this app. Please close existing connections and try again."`                                                 | Triggered when the number of open WebSocket connections for the app reaches the allowed limit. Close unused connections to restore access.                       |
+| `1008`     | `"This app has exceeded its limit of open WebSockets. Please close some other connections first."`                                                    | Triggered when the team previously exceeded the limit and tries to reconnect again before the backoff interval expires. Close existing connections and wait.     |
+| `1008`     | `"You have exceeded the maximum number of concurrent requests on a single WebSocket. At most 200 concurrent requests are allowed per WebSocket."`     | Triggered when a client has too many pending JSON-RPC requests on a single WebSocket. Ensure each request completes before sending more.                         |
+| `32603`    | `"You have exceeded the maximum number of subscriptions on a single WebSocket."`                                                                      | Triggered when a client has too many subscriptions on a single WebSocket. Unsubscribe before creating new subscriptions.                                         |
