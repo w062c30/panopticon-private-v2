@@ -91,10 +91,19 @@ class EntropyWindow:
         self.window_sec = resolve_window_sec_for_tier(self.tier)
         self.gap_flush_sec = float(os.getenv("HUNT_ENTROPY_GAP_FLUSH_SEC", str(self.gap_flush_sec)))
         self.max_internal_gap_sec = float(os.getenv("HUNT_ENTROPY_MAX_INTERNAL_GAP_SEC", str(self.max_internal_gap_sec)))
-        # D159: single source — config.get_min_history_for_z() (HUNT_MIN_HISTORY_FOR_Z, default 5)
+        # D159: T1 uses HUNT_MIN_HISTORY_FOR_Z via config (default 5).
+        # D189: T2/T3/T5 use EW_MIN_HISTORY_FOR_Z (default 3, clamped 3–10) for low tick-rate markets.
         from config import get_min_history_for_z
 
-        self.min_history_for_z = get_min_history_for_z()
+        if self.tier == "t1":
+            self.min_history_for_z = get_min_history_for_z()
+        else:
+            raw = os.getenv("EW_MIN_HISTORY_FOR_Z", "3").strip()
+            try:
+                v = int(raw)
+            except ValueError:
+                v = 3
+            self.min_history_for_z = max(3, min(10, v))
         # D165: unlock threshold controls (low-frequency T2 markets)
         self._unlock_event_count: int = int(
             os.getenv("HUNT_EW_UNLOCK_EVENT_COUNT", "30")
@@ -152,9 +161,26 @@ class EntropyWindow:
         D154: _h_history intentionally NOT cleared — H distribution is market-level
         state that survives subscription refreshes. Only _events (tick buffer) is
         cleared because the tick sequence is discontinuous across reconnects.
-        _trigger_locked is still set to ensure 30-event warm-up before next signal.
+        D189: Lock only when there is no H baseline yet; otherwise a global reconnect
+        flush left tokens locked with no way to reach h_history>=2 unlock (deadlock).
         """
-        self._flush(reason)
+        self._events.clear()
+        self._last_recv_mono = None
+        self._healthy_span = 0.0
+        self._last_reason = reason
+        if len(self._h_history) == 0:
+            self._trigger_locked = True
+            _logger.debug(
+                "[EW][D189] mark_reconnect → LOCKED (no h_history) reason=%s",
+                reason,
+            )
+        else:
+            self._trigger_locked = False
+            _logger.debug(
+                "[EW][D189] mark_reconnect → NOT locked h_hist=%d reason=%s",
+                len(self._h_history),
+                reason,
+            )
 
     def _flush(self, reason: str) -> None:
         self._events.clear()

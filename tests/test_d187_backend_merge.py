@@ -57,6 +57,7 @@ def test_read_rvf_merges_orchestrator_metrics(app_module, tmp_path):
     assert "stale_seconds" in om
     assert om["stale_seconds"] is not None
     assert om["stale_seconds"] >= 0
+    assert om.get("process_start_ts") is None
 
 
 def test_read_rvf_missing_sidecar_no_block(app_module, tmp_path):

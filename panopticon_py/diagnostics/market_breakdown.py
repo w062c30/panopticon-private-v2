@@ -246,5 +246,6 @@ def build_market_breakdown(
             "entropy_total_windows": entropy_total_windows,
             "entropy_z_ready_count": entropy_z_ready_count,
             "entropy_key_collisions": entropy_key_collisions,
+            "entropy_file_updated_ts": (_ej_ref or {}).get("updated_ts"),
         },
     }

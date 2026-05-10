@@ -42,6 +42,7 @@ interface PipelineSnap {
   stale_seconds_max?: number;
   l2_eval_60s?: number;
   l3_eval_60s?: number;
+  recon_lock_skip_60s?: number;
   active_window_breakdown?: {
     ready?: number;
     warming?: number;
@@ -151,6 +152,8 @@ interface RvfSnapshot {
     _written_at?: number;
     /** D188: server-computed age of sidecar write (seconds). */
     stale_seconds?: number | null;
+    /** D190: orchestrator ``time.time()`` at process start — correlate rolling counters with boot. */
+    process_start_ts?: number | null;
   };
   arb?: ArbSnap;
   error?: boolean;
@@ -186,6 +189,7 @@ interface DiagnosticPayload {
     entropy_snapshot_stale?: boolean;
     entropy_total_windows?: number;
     entropy_z_ready_count?: number;
+    entropy_file_updated_ts?: string | null;
   };
   cache_hit?: boolean;
   detail?: string;
@@ -377,7 +381,8 @@ export function RvfMetricsPanel() {
   const handleHeavyDiagnostics = () => {
     setHeavyLoading(true);
     setHeavyError(null);
-    fetch(`${DIAG_URL}?limit=30&sort=abs_z`)
+    const bust = `_cb=${Date.now()}`;
+    fetch(`${DIAG_URL}?limit=30&sort=abs_z&${bust}`, { cache: "no-store" })
       .then(async (r) => {
         if (!r.ok) {
           const err = await r.json().catch(() => ({}));
@@ -510,6 +515,29 @@ export function RvfMetricsPanel() {
     orchStaleBackend != null && Number.isFinite(orchStaleBackend)
       ? orchStaleBackend
       : orchSidecarAgeSec;
+  /** D190: sidecar write vs process start — interpret z_eval / rolling counters vs restart (plan: <120s → FRESH). */
+  const zEvalBootTieIn =
+    orch?._written_at != null &&
+    orch?.process_start_ts != null &&
+    Number.isFinite(orch._written_at) &&
+    Number.isFinite(orch.process_start_ts)
+      ? orch._written_at - (orch.process_start_ts as number) < 120
+        ? "fresh"
+        : "postRestart"
+      : null;
+  const arbStaleSec = Number(snap.arb?.stale_seconds ?? 0);
+  const wsStaleSec = Number(snap.ws?.elapsed_since_last_ws_msg ?? 0);
+  const arbCrit = arbStaleSec > 300;
+  const pipelineCrit = (pipe?.stale_seconds_max ?? 0) > 300;
+  const showDegradationBanner = arbCrit || pipelineCrit;
+  /** Aligns with radar _merge_pipeline_stale_seconds: max(ws idle, arb row age). */
+  const STALE_MAX_SLACK_SEC = 3;
+  let staleMaxDriver: "ws" | "arb" | "both" | null = null;
+  if (pipelineCrit) {
+    if (wsStaleSec - arbStaleSec > STALE_MAX_SLACK_SEC) staleMaxDriver = "ws";
+    else if (arbStaleSec - wsStaleSec > STALE_MAX_SLACK_SEC) staleMaxDriver = "arb";
+    else staleMaxDriver = "both";
+  }
   const l2Eval1h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_1H);
   const l2Eval24h = sumBuckets(rareCounterBuckets, "l2Eval", BUCKETS_24H);
   const l3Eval1h = sumBuckets(rareCounterBuckets, "l3Eval", BUCKETS_1H);
@@ -556,6 +584,41 @@ export function RvfMetricsPanel() {
 
       {heavyError && (
         <div className="mb-2 text-xs text-red-400">{heavyError}</div>
+      )}
+      {showDegradationBanner && (
+        <div className="mb-3 rounded-lg border border-red-700/60 bg-red-950/40 p-2 text-xs text-red-200">
+          <span className="font-semibold mr-1">管線降級</span>
+          {arbCrit && <span>Arb Scanner 停寫 &gt;5m</span>}
+          {arbCrit && pipelineCrit && <span className="mx-1">·</span>}
+          {pipelineCrit && (
+            <span
+              title={`stale_max=max(L1 無 WS 訊息 ${fmtNum(wsStaleSec, 1)}s, arb 快照 ${fmtNum(arbStaleSec, 1)}s)`}
+            >
+              pipeline stale_max 超限
+              {staleMaxDriver != null && (
+                <span className="text-red-300/90">
+                  {" "}
+                  (主因:
+                  {staleMaxDriver === "ws" && "L1 WS)"}
+                  {staleMaxDriver === "arb" && "arb 快照)"}
+                  {staleMaxDriver === "both" && "WS≈arb)"}
+                </span>
+              )}
+            </span>
+          )}
+          <div className="mt-1.5 text-red-400 space-y-0.5">
+            {arbCrit && (
+              <div>→ 確認 <code className="text-red-200/90">arb_scanner</code> 進程與 <code className="text-red-200/90">run/arb_scanner*.log</code></div>
+            )}
+            {pipelineCrit && staleMaxDriver !== "arb" && (
+              <div>
+                → 確認 radar/orchestrator 與 L1 CLOB WS（斷線會推高 stale_max；
+                <code className="text-red-200/90"> run/orchestrator*.log</code>）
+              </div>
+            )}
+            <div className="text-red-300/85">必要時執行 <code className="text-red-200/90">scripts/restart_all.ps1</code></div>
+          </div>
+        </div>
       )}
 
       {/* L1 WS */}
@@ -662,6 +725,22 @@ export function RvfMetricsPanel() {
               sidecar Δt: {orchDisplayAgeSec.toFixed(0)}s
             </span>
           )}
+          {zEvalBootTieIn === "fresh" && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-700/50 text-emerald-200 bg-emerald-950/30"
+              title="D190: 此筆 sidecar 寫入發生在 orchestrator 啟動後 120s 內；與當前 boot 對齊（解讀 z_eval_ok / 熵計數時優先參考）"
+            >
+              z_eval tie-in: FRESH
+            </span>
+          )}
+          {zEvalBootTieIn === "postRestart" && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded border border-amber-700/50 text-amber-200 bg-amber-950/30"
+              title="D190: sidecar 寫入距 process_start_ts ≥120s；若 z_eval_ok 非零請對照 entropy 日誌/重啟時間，避免舊視窗誤判"
+            >
+              z_eval tie-in: POST-RESTART
+            </span>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-400">
           <span className="inline-flex items-center gap-1">
@@ -704,6 +783,15 @@ export function RvfMetricsPanel() {
             <MetricInfoIcon definition={D["pipeline.stale_seconds_max"]} />
             stale_max: {fmtNum(pipe?.stale_seconds_max, 1)}s
           </span>
+          {(pipe?.recon_lock_skip_60s ?? 0) > 0 && (
+            <span
+              className={`inline-flex items-center gap-1 ${
+                (pipe?.recon_lock_skip_60s ?? 0) > 5 ? "text-red-300" : "text-yellow-300"
+              }`}
+            >
+              recon_lock_skip/60s: {pipe?.recon_lock_skip_60s}
+            </span>
+          )}
         </div>
         {pipe?.active_window_breakdown && (
           <div className="mt-1 text-[11px] text-slate-500 inline-flex flex-wrap items-center gap-1">
@@ -986,6 +1074,15 @@ export function RvfMetricsPanel() {
                       title="Entropy snapshot is transiently empty or stale (startup grace period)"
                     >
                       STARTUP
+                    </span>
+                  )}
+                  {heavyData.summary.entropy_file_updated_ts != null &&
+                    String(heavyData.summary.entropy_file_updated_ts) !== "" && (
+                    <span
+                      className="ml-2 text-slate-500"
+                      title="data/entropy_status.json updated_ts (radar writer)"
+                    >
+                      | entropy file: {fmtHkt(String(heavyData.summary.entropy_file_updated_ts))}
                     </span>
                   )}
                 </span>

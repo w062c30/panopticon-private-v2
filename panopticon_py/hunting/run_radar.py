@@ -191,6 +191,13 @@ def _set_radar_state(new_state: RadarState, *, error: str | None = None, force: 
     if not force and new_state != old_state and new_state not in _ALLOWED_TRANSITIONS.get(old_state, set()):
         logger.warning("[RADAR_BOOT] invalid transition ignored: %s -> %s", old_state.value, new_state.value)
         return
+    # D189: allow READY recovery after WS reconnect — first_payload_seen was one-shot
+    if new_state in (RadarState.DEGRADED, RadarState.CONNECTING):
+        _radar_boot_state.first_payload_seen = False
+        logger.debug(
+            "[RADAR_STATE][D189] first_payload_seen reset on → %s",
+            new_state.value,
+        )
     _radar_boot_state.state = new_state
     _radar_boot_state.last_transition_at = time.time()
     if error:
@@ -2551,30 +2558,23 @@ def try_match_or_open(raw: dict, db) -> str:
     """
     Redirect to order_reconstruction_engine.try_match_or_open.
     Kept as module-level alias for backward compatibility with _poll_data_api_for_takers.
+
+    D190: No time.sleep() retries — this runs on the asyncio event loop (WS handler);
+    blocking sleeps starve heartbeats and trigger watchdog restarts. On DB lock,
+    fail open (empty order_id) immediately.
     """
     from panopticon_py.ingestion.order_reconstruction_engine import try_match_or_open as _impl
 
-    backoffs = (0.0, 0.05, 0.20, 0.50)
-    for attempt, delay_sec in enumerate(backoffs, start=1):
-        if delay_sec > 0:
-            time.sleep(delay_sec)
-        try:
-            return _impl(raw, db)
-        except sqlite3.OperationalError as exc:
-            if "database is locked" not in str(exc).lower():
-                raise
-            if attempt == len(backoffs):
-                logger.warning(
-                    "[ORDER_RECON][SKIP] database locked after retries attempts=%d",
-                    attempt,
-                )
-                return ""
-            logger.warning(
-                "[ORDER_RECON][RETRY] database locked attempt=%d delay=%.2fs",
-                attempt,
-                backoffs[attempt],
-            )
-    return ""
+    try:
+        return _impl(raw, db)
+    except sqlite3.OperationalError as exc:
+        if "database is locked" not in str(exc).lower():
+            raise
+        mc = _mc()
+        if mc is not None:
+            mc.on_recon_lock_skip()
+        logger.warning("[ORDER_RECON][SKIP] database locked (D190: no blocking retry)")
+        return ""
 
 
 
@@ -3455,6 +3455,7 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
     _first_payload_deadline = time.monotonic() + _BOOT_TIMEOUT_SEC
 
     def _on_ws_connected() -> None:
+        nonlocal _first_payload_deadline
         if mc:
             mc.on_ws_connected()
         if _radar_boot_state is not None:
@@ -3464,6 +3465,9 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
             if _radar_boot_state.state == RadarState.DEGRADED:
                 _set_radar_state(RadarState.SYNCING)
             _dump_radar_boot_state()
+        # D190: deadline was set once at loop start; without reset, SYNCING after reconnect
+        # always trips boot_timeout:first_payload_not_seen once uptime > RADAR_BOOT_TIMEOUT_SEC.
+        _first_payload_deadline = time.monotonic() + _BOOT_TIMEOUT_SEC
 
     def _on_ws_disconnected() -> None:
         if mc:
@@ -3996,7 +4000,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.13-D185"   # D185: RVF L2/L3 eval counter wiring
+PROCESS_VERSION = "v1.3.16-D191"   # D191: recon lock skip telemetry for DB-lock fail-open path
 
 
 def main() -> int:

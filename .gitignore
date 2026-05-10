@@ -88,6 +88,9 @@ test_*.py
 !tests/test_d186*.py
 !tests/test_d187*.py
 !tests/test_d188*.py
+!tests/test_d189*.py
+!tests/test_d190*.py
+!tests/test_d191*.py
 diag_*.ps1
 diag_*.py
 d[0-9][0-9]_*.py

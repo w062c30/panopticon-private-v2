@@ -31,7 +31,7 @@ load_repo_env()
 # ── Step 2: PROCESS_VERSION must be before _lifespan (D108-1 fix) ──
 from panopticon_py.utils.process_guard import acquire_singleton, get_all_versions, update_heartbeat
 from panopticon_py.time_utils import utc_now_rfc3339_ms
-PROCESS_VERSION = "v1.1.51-D188"   # D188: orchestrator_metrics stale_seconds; /api/diagnostics/execution_reasons
+PROCESS_VERSION = "v1.1.53-D190"   # D190b: market_breakdown default cache off + no-store headers
 acquire_singleton("backend", PROCESS_VERSION)
 
 # ── Step 3: lifespan (now safely references PROCESS_VERSION above) ──
@@ -322,6 +322,7 @@ def _merge_orchestrator_rvf_sidecar(base: dict) -> None:
         pipe = orch.get("pipeline") or {}
         gate = orch.get("gate") or {}
         written_at = orch.get("_written_at")
+        proc_start = orch.get("process_start_ts")
         stale_seconds: float | None = None
         if isinstance(written_at, (int, float)) and float(written_at) > 0:
             stale_seconds = round(max(0.0, time.time() - float(written_at)), 1)
@@ -339,6 +340,7 @@ def _merge_orchestrator_rvf_sidecar(base: dict) -> None:
             },
             "_written_at": written_at,
             "stale_seconds": stale_seconds,
+            "process_start_ts": float(proc_start) if isinstance(proc_start, (int, float)) else None,
         }
     except Exception:
         pass

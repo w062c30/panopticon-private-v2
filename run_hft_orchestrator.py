@@ -82,7 +82,7 @@ logging.getLogger().addHandler(_orch_file_handler)
 # D78: Singleton enforcement FIRST — kills stale instance before lock-file check
 # This must be the first executable line so stale PIDs are cleaned before any exit.
 from panopticon_py.utils.process_guard import acquire_singleton, update_heartbeat
-PROCESS_VERSION = "v1.7.18-D188"   # D188: sidecar path via ORCH_RVF_METRICS_PATH (RULE-PATH-1)
+PROCESS_VERSION = "v1.7.20-D190"   # D190: orch sidecar process_start_ts; pairs with radar D190
 acquire_singleton("orchestrator", PROCESS_VERSION)
 
 _LOCK_FILE = os.path.join("data", "orchestrator.lock")   # ← orchestrator-specific lock file
@@ -815,7 +815,9 @@ async def main_async() -> int:
     self_check_task = asyncio.create_task(_self_check_manifest(), name="self_check_manifest")
     logger.info("[ORCH] Self-check manifest task launched")
 
-    # D187/D188: Orchestrator MetricsCollector sidecar for RVF merge (same PID as signal_engine).
+    # D187/D188/D190: Orchestrator MetricsCollector sidecar for RVF merge (same PID as signal_engine).
+    _orch_process_start_ts = time.time()
+
     async def _orchestrator_metrics_json_loop(
         *,
         path: str | None = None,
@@ -824,6 +826,9 @@ async def main_async() -> int:
         """
         D188: Resolve path inside the coroutine (not module scope) so ORCH_RVF_METRICS_PATH
         can be set at process start; aligns with backend merge (RULE-PATH-1).
+
+        D190: ``process_start_ts`` in JSON lets the dashboard judge whether counters
+        (e.g. z_eval via entropy file) are tied to the current orchestrator boot.
         """
         import os as _os
 
@@ -836,7 +841,10 @@ async def main_async() -> int:
         while True:
             try:
                 await asyncio.sleep(interval_sec)
-                mc.persist_json(path=resolved_path)
+                mc.persist_json(
+                    path=resolved_path,
+                    extra={"process_start_ts": _orch_process_start_ts},
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

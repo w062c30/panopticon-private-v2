@@ -80,6 +80,35 @@ function Wait-ManifestConverge {
     return $false
 }
 
+function Get-ManifestServiceRuntime {
+    param(
+        [string]$ManifestPath,
+        [string]$ServiceName
+    )
+    $out = [ordered]@{
+        parse_ok = $false
+        pid = 0
+        alive = $false
+        version = $null
+    }
+    if (-not (Test-Path $ManifestPath)) {
+        return [pscustomobject]$out
+    }
+    try {
+        $m = Get-Content $ManifestPath -Raw | ConvertFrom-Json
+        $out.parse_ok = $true
+        $entry = $m.$ServiceName
+        if ($null -ne $entry) {
+            $out.pid = [int]($entry.pid 2>$null)
+            $out.version = $entry.version
+            if ($out.pid -gt 0) {
+                $out.alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$($out.pid)" -ErrorAction SilentlyContinue)
+            }
+        }
+    } catch {}
+    return [pscustomobject]$out
+}
+
 function Start-Backend {
     # D78: pre-flight check — abort if port 8001 already in use
     $inUse = Get-NetTCPConnection -LocalPort 8001 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq "Listen" }
@@ -329,6 +358,7 @@ function Full-Restart {
     Write-Host "== STEP 4: SINGLETON VERIFICATION (manifest-based) ==" -ForegroundColor Cyan
     $manifest = "$projDir\run\process_manifest.json"
     $ok = $true
+    $resolvedPids = @{}
     if (Test-Path $manifest) {
         # D159-4: verify each service against the PID we started + manifest convergence (not stale rows)
         foreach ($svc in @("backend","orchestrator","analysis_worker","arb_scanner","watchdog")) {
@@ -336,10 +366,12 @@ function Full-Restart {
             if ($expectedPid -le 0) {
                 Write-Warning "  WARN [${svc}] no start PID (process may have failed to spawn)"
                 $ok = $false
+                $resolvedPids[$svc] = 0
                 continue
             }
             $converged = Wait-ManifestConverge -ManifestPath $manifest -ServiceName $svc -ExpectedPid $expectedPid -MaxWaitSec 15
             if ($converged) {
+                $resolvedPids[$svc] = $expectedPid
                 try {
                     $m = Get-Content $manifest -Raw | ConvertFrom-Json
                     $ver = $m.$svc.version
@@ -350,16 +382,31 @@ function Full-Restart {
             } else {
                 $alive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$expectedPid" -ErrorAction SilentlyContinue)
                 if ($alive) {
+                    $resolvedPids[$svc] = $expectedPid
                     Write-Host "  PASS [${svc}] PID=$expectedPid RUNNING (CIM only; manifest may still be stale)"
                 } else {
-                    Write-Warning ("  FAIL [${svc}] PID=$expectedPid not running (expected_pid={0} alive={1})" -f $expectedPid, $alive)
-                    $ok = $false
+                    $runtime = Get-ManifestServiceRuntime -ManifestPath $manifest -ServiceName $svc
+                    if ($runtime.alive -and $runtime.pid -gt 0) {
+                        $resolvedPids[$svc] = $runtime.pid
+                        if ($runtime.version) {
+                            Write-Host ("  PASS [${svc}] PID={0} version={1} RUNNING (manifest adopted; start_pid={2})" -f $runtime.pid, $runtime.version, $expectedPid)
+                        } else {
+                            Write-Host ("  PASS [${svc}] PID={0} RUNNING (manifest adopted; start_pid={1})" -f $runtime.pid, $expectedPid)
+                        }
+                        Write-Warning ("  [PID_HANDOFF] svc={0} start_pid={1} manifest_pid={2} manifest_alive={3}" -f `
+                            $svc, $expectedPid, $runtime.pid, $runtime.alive)
+                    } else {
+                        $resolvedPids[$svc] = 0
+                        Write-Warning ("  FAIL [${svc}] start_pid={0} dead; manifest_pid={1}; manifest_alive={2}; parse_ok={3}" -f `
+                            $expectedPid, $runtime.pid, $runtime.alive, $runtime.parse_ok)
+                        $ok = $false
+                    }
                 }
             }
         }
 
-        # D79: Radar shadow — same PID as orchestrator we started
-        $orchPid = $startedPids["orchestrator"]
+        # D79: Radar shadow — same PID as orchestrator (resolved from start PID or manifest adoption)
+        $orchPid = $(if ($resolvedPids.ContainsKey("orchestrator")) { [int]$resolvedPids["orchestrator"] } else { [int]$startedPids["orchestrator"] })
         if ($orchPid -gt 0) {
             $orchAlive = $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$orchPid" -ErrorAction SilentlyContinue)
             if ($orchAlive) {

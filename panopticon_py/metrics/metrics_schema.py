@@ -119,6 +119,7 @@ class PipelineStats:
     stale_seconds_max: float = 0.0
     l2_eval_60s: int = 0
     l3_eval_60s: int = 0
+    recon_lock_skip_60s: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +134,7 @@ class PipelineStats:
             "stale_seconds_max": self.stale_seconds_max,
             "l2_eval_60s": self.l2_eval_60s,
             "l3_eval_60s": self.l3_eval_60s,
+            "recon_lock_skip_60s": self.recon_lock_skip_60s,
         }
 
 

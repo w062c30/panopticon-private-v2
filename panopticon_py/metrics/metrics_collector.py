@@ -19,7 +19,7 @@ import os
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from panopticon_py.metrics.metrics_schema import (
     ConsensusStats,
@@ -146,6 +146,7 @@ class MetricsCollector:
         self._signal_z_vals: deque[tuple[float, float]] = deque()  # (ts, z)
         self._l2_eval_rc = _RateCounter(60.0)
         self._l3_eval_rc = _RateCounter(60.0)
+        self._recon_lock_skip_rc = _RateCounter(60.0)
 
         # ── Gate stats ─────────────────────────────────────────────────────────
         self._gate_evaluated_rc = _RateCounter(60.0)
@@ -291,6 +292,10 @@ class MetricsCollector:
         D185: called when signal reaches L3 gate pre-check.
         """
         self._l3_eval_rc.add()
+
+    def on_recon_lock_skip(self) -> None:
+        """D191: called when order reconstruction skips due to DB lock."""
+        self._recon_lock_skip_rc.add()
 
     def on_gate_result(self, accepted: bool, ev: float | None = None) -> None:
         now = time.time()
@@ -598,6 +603,7 @@ class MetricsCollector:
         gate_pass_ct = self._gate_pass_rc.count(now)
         l2_eval_ct = self._l2_eval_rc.count(now)
         l3_eval_ct = self._l3_eval_rc.count(now)
+        recon_lock_skip_ct = self._recon_lock_skip_rc.count(now)
         entropy_fire_ct_60s = self._entropy_fire_rc_60s.count(now)
         entropy_fire_ct_300s = self._entropy_fire_rc.count(now)
 
@@ -627,6 +633,7 @@ class MetricsCollector:
             stale_seconds_max=float(ws_stale),
             l2_eval_60s=l2_eval_ct,
             l3_eval_60s=l3_eval_ct,
+            recon_lock_skip_60s=recon_lock_skip_ct,
         )
 
         # D181d: throttled stale warning to avoid log flood from 1s collect loop.
@@ -732,18 +739,27 @@ class MetricsCollector:
 
     # ── Persist: split cadence ────────────────────────────────────────────────
 
-    def persist_json(self, *, path: str = "data/rvf_live_snapshot.json") -> None:
+    def persist_json(
+        self,
+        *,
+        path: str = "data/rvf_live_snapshot.json",
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         """
         Write snapshot to JSON file only (no DB write).
         Called every 5s from _metrics_json_loop() in run_radar.py.
 
         Uses atomic rename (write to .tmp then os.replace) to prevent
         FastAPI from reading a partially-written file.
+
+        D190: ``extra`` merges top-level keys (e.g. process_start_ts for RVF UI).
         """
         import json as _json
         import os as _os
         snap = self.collect().to_dict()
         snap["_written_at"] = time.time()
+        if extra:
+            snap.update(extra)
         # D81: Inject synced coverage + TE stats (written by sync_coverage_from_db / sync_te_stats)
         snap["identity_coverage"] = getattr(self, "_coverage_stats", {})
         snap["transfer_entropy"]  = getattr(self, "_te_stats", {})
