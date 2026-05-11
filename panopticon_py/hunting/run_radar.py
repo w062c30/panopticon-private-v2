@@ -493,6 +493,8 @@ async def _metrics_json_loop(
     import urllib.request, json as _json
     import urllib.parse
 
+    global _D193_QUIET_MARKET_COUNTER  # D193: RULE-CLOSURE-1; must declare before mutation
+
     last_event_fetch = 0.0
     fetch_interval = 3600  # 1 hour between batch fetches
     heartbeat_fixed_logged = False
@@ -528,6 +530,29 @@ async def _metrics_json_loop(
             if _loop_count % 12 == 0:
                 mc.sync_coverage_from_db(db)
                 mc.sync_te_stats()
+
+            # D193: quiet-market diagnostic (D193_CONFIG_CHECK already fires at module level)
+            # Only available when _metrics_json_loop is running (not inside synthetic/single-token tests)
+            if mc is not None and _entropy_windows:
+                z_ready = sum(
+                    1 for ew in _entropy_windows.values()
+                    if (not getattr(ew, "_trigger_locked", False))
+                    and (len(getattr(ew, "_h_history", [])) >= getattr(ew, "min_history_for_z", 999))
+                )
+                fires = getattr(mc, "_entropy_fires_60s_count", None)
+                if fires is None:
+                    fires = mc._entropy_fires_rc.count(time.monotonic()) if hasattr(mc, "_entropy_fires_rc") else 0
+                if z_ready > 20 and fires == 0:
+                    _D193_QUIET_MARKET_COUNTER += 1
+                    if _D193_QUIET_MARKET_COUNTER % 12 == 0:   # 12 loops × 5s = 60s
+                        logger.info(
+                            "[D193_QUIET_MARKET] z_ready=%d fire_60s=0 "
+                            "total_tokens=%d — market appears calm; "
+                            "if persists >30m with z_ready>50, consider lowering EW_Z_THRESHOLD (current: %.2f)",
+                            z_ready, len(_entropy_windows), -4.0,
+                        )
+                else:
+                    _D193_QUIET_MARKET_COUNTER = 0
 
             # Background job: fetch event names for markets without them
             now = time.time()
@@ -2596,6 +2621,9 @@ _d75_hb_entropy_base = 0
 _d77_tick_last = 0.0
 _d77_tick_n = 0
 
+# D193: quiet-market diagnostic counter
+_D193_QUIET_MARKET_COUNTER: int = 0   # increments when z_ready>20 but fires==0 per loop; resets when fires>0
+
 # D96-NEW-1a/1b: Triggered identity poll state
 _triggered_poll_cooldown: dict[str, float] = {}   # market_id -> last trigger monotonic ts
 _last_poll_ts: dict[str, int] = {}              # token_id -> last seen trade Unix ms
@@ -2634,8 +2662,10 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
     global _last_ws_diag_log_ts, _live_loop_started
     global _d75_hb_last, _d77_tick_last, _d77_tick_n
     global _d75_hb_trade_base, _d75_hb_entropy_base
+    global _d75_hb_real_trade_base  # D193: RULE-CLOSURE-1; previously had only in-loop local assignment
     global _last_pol_refresh  # D112: added missing declaration — crash at L2736 if absent
     global _radar_boot_state
+    global _D193_QUIET_MARKET_COUNTER  # D193: RULE-CLOSURE-1; must be declared in every writer function
 
     _radar_boot_state = RadarBootState(boot_id=_new_boot_id(), state=RadarState.STARTING)
     _dump_radar_boot_state()
@@ -2660,8 +2690,23 @@ async def _live_ticks_unlocked(db: ShadowDB, signal_queue: asyncio.Queue | None 
                 secs_remaining=float(_t1_secs_left),
             )
         logger.info("[STARTUP][T1_WINDOW] ts=%d secs_left=%d", _t1_start_ts, _t1_secs_left)
+
     except Exception as e:
         logger.warning("[STARTUP][T1_WINDOW][ERROR] %s", e)
+
+    # D193: Log z_threshold config for diagnostics — if fire_rate=0 persists >30m with z_ready>50,
+    # consider lowering EW_Z_THRESHOLD (current default: -4.0)
+    try:
+        from config import get_z_threshold
+        _z_thresh = get_z_threshold()
+        logger.info(
+            "[D193_CONFIG_CHECK] z_threshold=%.4f — "
+            "if fire_rate=0 persists >30m with z_ready>50, "
+            "consider lowering HUNT_MIN_ENTROPY_Z_THRESHOLD (currently: %.4f)",
+            _z_thresh, _z_thresh,
+        )
+    except Exception as e:
+        logger.warning("[D193_CONFIG_CHECK][ERROR] %s", e)
 
     # ── Start 5s JSON write loop (caller passes db explicitly) ──────────────────
     if mc is not None:
@@ -4000,7 +4045,7 @@ async def _main_async(args: argparse.Namespace, signal_queue: asyncio.Queue | No
 
 # D167: Module-level PROCESS_VERSION for cross-process import
 # Must be kept in sync with the version in main() below.
-PROCESS_VERSION = "v1.3.16-D191"   # D191: recon lock skip telemetry for DB-lock fail-open path
+PROCESS_VERSION = "v1.3.17-D193"   # D193: _d75_hb_real_trade_base global decl, quiet-market log, z_threshold startup diag
 
 
 def main() -> int:
